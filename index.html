@@ -1044,22 +1044,21 @@
             }
 
             // Enviar a Google Apps Script
-            setStatus('Enviando contrato...');
-            const body = JSON.stringify(formData);
+            setStatus('Enviando contrato... No cierres esta página');
 
-            // Enviar y redirigir sin esperar respuesta completa del servidor
-            fetch(SCRIPT_URL, {
-                method: 'POST',
-                body: body,
-                redirect: 'follow',
-                keepalive: true
-            }).catch(() => {});
+            try {
+                await fetch(SCRIPT_URL, {
+                    method: 'POST',
+                    body: JSON.stringify(formData),
+                    redirect: 'follow'
+                });
+            } catch (fetchErr) {
+                // Error CORS = el request se envió pero no podemos leer la respuesta
+                console.log('Fetch completado (posible CORS):', fetchErr);
+            }
 
-            // Redirigir inmediatamente después de que el navegador acepte el envío
-            setStatus('Contrato enviado. Redirigiendo...');
-            setTimeout(() => {
-                window.location.href = 'gracias.html';
-            }, 1500);
+            setStatus('Contrato enviado correctamente');
+            window.location.href = 'gracias.html';
 
         } catch (err) {
             console.error('Error envío:', err);
