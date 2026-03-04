@@ -1082,9 +1082,38 @@
 
         } catch (err) {
             console.error('Error envío:', err);
-            alert('Error al enviar el formulario. Por favor, inténtalo de nuevo.\n\nDetalle: ' + err.message);
             btn.classList.remove('loading');
             btn.disabled = false;
+            setStatus('');
+
+            // Construir resumen de datos para el email manual
+            const resumen = [
+                'Comercial: ' + form.quien_eres.value,
+                'Compañía: ' + form.compania.value,
+                'CUPS: ' + form.cups.value,
+                'Titular: ' + form.titular.value,
+                'CIF/NIF: ' + form.cif_nif.value,
+                'Tarifa: ' + form.tarifa.value,
+                'Dirección: ' + form.dir_suministro.value,
+                'Móvil: ' + form.movil.value
+            ].join('%0A');
+
+            // Mostrar overlay de error con instrucciones
+            const overlay = document.createElement('div');
+            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:1rem';
+            overlay.innerHTML = '<div style="background:#fff;border-radius:16px;padding:2.5rem;max-width:500px;width:100%;text-align:center;box-shadow:0 10px 25px rgba(0,0,0,.15)">'
+                + '<div style="width:64px;height:64px;background:#FEE2E2;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.25rem;font-size:1.8rem">&#9888;</div>'
+                + '<h3 style="font-size:1.2rem;color:#DC2626;margin-bottom:.75rem">Error al enviar el formulario</h3>'
+                + '<p style="color:#6B7280;font-size:.95rem;line-height:1.6;margin-bottom:1.5rem">'
+                + 'No se ha podido enviar el contrato automáticamente. Por favor, <strong>envía los datos y documentación por email</strong> para que podamos tramitarlo.'
+                + '</p>'
+                + '<a href="mailto:escaneos@gruponew.energy?subject=Contrato%20para%20tramitar%20-%20' + encodeURIComponent(form.titular.value) + '&body=' + resumen + '%0A%0AAdjunto%20la%20documentación%20escaneada." '
+                + 'style="display:inline-block;padding:.75rem 2rem;background:#0B6E4F;color:#fff;text-decoration:none;border-radius:10px;font-weight:600;font-size:.95rem;margin-bottom:.75rem">'
+                + 'Enviar por email a escaneos@gruponew.energy</a>'
+                + '<p style="color:#9CA3AF;font-size:.8rem;margin-bottom:1rem">Recuerda adjuntar los contratos escaneados al email</p>'
+                + '<button onclick="this.closest(\'div[style]\').remove()" style="padding:.5rem 1.5rem;border:1px solid #E2E8F0;border-radius:8px;background:#fff;cursor:pointer;font-family:inherit;color:#6B7280;font-size:.85rem">Cerrar e intentar de nuevo</button>'
+                + '</div>';
+            document.body.appendChild(overlay);
         }
     });
 
