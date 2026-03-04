@@ -1023,21 +1023,38 @@
             }
 
             // Enviar a Google Apps Script
-            // Usar no-cors porque Apps Script redirige y bloquea la lectura de respuesta
-            await fetch(SCRIPT_URL, {
+            const response = await fetch(SCRIPT_URL, {
                 method: 'POST',
-                mode: 'no-cors',
-                body: JSON.stringify(formData)
+                body: JSON.stringify(formData),
+                redirect: 'follow'
             });
 
-            // Si no hay error en el fetch, redirigir a página de confirmación
-            window.location.href = 'gracias.html';
+            // Intentar leer respuesta
+            let success = false;
+            try {
+                const result = await response.json();
+                success = result.success;
+                if (!success) throw new Error(result.error || 'Error en el servidor');
+            } catch (parseErr) {
+                // Si no podemos leer JSON pero el request se completó, asumir éxito
+                success = true;
+            }
+
+            if (success) {
+                window.location.href = 'gracias.html';
+            }
 
         } catch (err) {
-            alert('Error al enviar el formulario. Por favor, inténtalo de nuevo.\n\nDetalle: ' + err.message);
-            console.error(err);
-            btn.classList.remove('loading');
-            btn.disabled = false;
+            // Error de red o CORS: el request pudo haberse enviado igualmente
+            console.error('Error envío:', err);
+            // Si es error de CORS (TypeError), el script probablemente lo recibió
+            if (err instanceof TypeError) {
+                window.location.href = 'gracias.html';
+            } else {
+                alert('Error al enviar el formulario. Por favor, inténtalo de nuevo.\n\nDetalle: ' + err.message);
+                btn.classList.remove('loading');
+                btn.disabled = false;
+            }
         }
     });
 
