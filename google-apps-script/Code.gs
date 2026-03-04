@@ -78,7 +78,7 @@ function doPost(e) {
       try {
         const emailHtml = buildEmailHtml(data, fileLinks, folderUrl, refId);
         GmailApp.sendEmail(EMAIL_TO,
-          refId + ' - Nuevo Contrato - ' + (data.titular || 'Sin titular') + ' - ' + (data.compania || ''),
+          'Nuevo Contrato - ' + (data.compania || '') + ' - ' + (data.quien_eres || '') + ' - ' + (data.cups || ''),
           '',
           {
             htmlBody: emailHtml,
