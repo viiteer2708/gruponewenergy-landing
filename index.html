@@ -1043,22 +1043,42 @@
                 formData.archivos = await Promise.all(filePromises);
             }
 
-            // Enviar a Google Apps Script
-            setStatus('Enviando contrato... No cierres esta página');
+            // Enviar a Google Apps Script con reintentos
+            const body = JSON.stringify(formData);
+            const maxRetries = 3;
+            let sent = false;
 
-            try {
-                await fetch(SCRIPT_URL, {
-                    method: 'POST',
-                    body: JSON.stringify(formData),
-                    redirect: 'follow'
-                });
-            } catch (fetchErr) {
-                // Error CORS = el request se envió pero no podemos leer la respuesta
-                console.log('Fetch completado (posible CORS):', fetchErr);
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                setStatus(attempt === 1
+                    ? 'Enviando contrato... No cierres esta página'
+                    : 'Reintentando envío (' + attempt + '/' + maxRetries + ')...');
+                try {
+                    await fetch(SCRIPT_URL, {
+                        method: 'POST',
+                        body: body,
+                        redirect: 'follow'
+                    });
+                    sent = true;
+                    break;
+                } catch (fetchErr) {
+                    // TypeError = CORS, el request se envió pero no podemos leer respuesta
+                    if (fetchErr instanceof TypeError) {
+                        sent = true;
+                        break;
+                    }
+                    // Error de red real: reintentar
+                    if (attempt < maxRetries) {
+                        await new Promise(r => setTimeout(r, 2000));
+                    }
+                }
             }
 
-            setStatus('Contrato enviado correctamente');
-            window.location.href = 'gracias.html';
+            if (sent) {
+                setStatus('Contrato enviado correctamente');
+                window.location.href = 'gracias.html';
+            } else {
+                throw new Error('No se pudo conectar con el servidor después de ' + maxRetries + ' intentos');
+            }
 
         } catch (err) {
             console.error('Error envío:', err);
