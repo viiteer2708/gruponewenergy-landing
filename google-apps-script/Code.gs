@@ -7,40 +7,28 @@
  * 3. Crea una carpeta en Google Drive llamada "Contratos Tramitados"
  * 4. Copia el ID de esa carpeta (la parte de la URL después de /folders/)
  * 5. Pega ese ID abajo en FOLDER_ID
- * 6. Crea una Google Sheet llamada "Registro Contratos" y copia su ID
- * 7. Pega ese ID abajo en SHEET_ID
- * 8. Haz clic en "Implementar" > "Nueva implementación"
- * 9. Tipo: "Aplicación web"
- * 10. Ejecutar como: "Yo" (tu cuenta)
- * 11. Acceso: "Cualquier persona"
- * 12. Copia la URL generada y pégala en index.html (variable SCRIPT_URL)
+ * 6. Haz clic en "Implementar" > "Nueva implementación"
+ * 7. Tipo: "Aplicación web"
+ * 8. Ejecutar como: "Yo" (tu cuenta)
+ * 9. Acceso: "Cualquier persona"
+ * 10. Copia la URL generada y pégala en index.html (variable SCRIPT_URL)
  */
 
 const EMAIL_TO = 'escaneos@gruponew.energy';
 const FOLDER_ID = '1UF1OLd9E0GOpnA721GOq4bLyFPC5S4Jc';
-const SHEET_ID = 'PEGA_AQUI_EL_ID_DE_TU_GOOGLE_SHEET';
 
 function doPost(e) {
   const refId = generateRefId();
   let data;
   let folderUrl = '';
   let emailSent = false;
-  let sheetLogged = false;
   let driveOk = false;
   let errorMsg = '';
 
   try {
     data = JSON.parse(e.postData.contents);
 
-    // 1. GOOGLE SHEETS - Registrar PRIMERO (es lo más rápido y fiable)
-    try {
-      logToSheet(data, refId);
-      sheetLogged = true;
-    } catch (sheetErr) {
-      errorMsg += 'Sheet: ' + sheetErr.toString() + '; ';
-    }
-
-    // 2. GOOGLE DRIVE - Guardar archivos
+    // 1. GOOGLE DRIVE - Guardar archivos
     let fileLinks = [];
     try {
       const parentFolder = DriveApp.getFolderById(FOLDER_ID);
@@ -85,43 +73,39 @@ function doPost(e) {
       errorMsg += 'Drive: ' + driveErr.toString() + '; ';
     }
 
-    // 3. EMAIL - Enviar notificación
-    try {
-      const emailHtml = buildEmailHtml(data, fileLinks, folderUrl, refId);
-      GmailApp.sendEmail(EMAIL_TO,
-        refId + ' - Nuevo Contrato - ' + (data.titular || 'Sin titular') + ' - ' + (data.compania || ''),
-        '',
-        {
-          htmlBody: emailHtml,
-          name: 'Grupo New Energy - Tramitaciones',
-          replyTo: data.email_comercial || ''
-        }
-      );
-      emailSent = true;
-    } catch (emailErr) {
-      errorMsg += 'Email: ' + emailErr.toString() + '; ';
-    }
-
-    // 4. Actualizar estado en Sheet
-    if (sheetLogged) {
+    // 2. EMAIL - Enviar notificación (intenta 2 veces)
+    for (let attempt = 1; attempt <= 2; attempt++) {
       try {
-        updateSheetStatus(refId, driveOk, emailSent, folderUrl);
-      } catch (updateErr) {}
+        const emailHtml = buildEmailHtml(data, fileLinks, folderUrl, refId);
+        GmailApp.sendEmail(EMAIL_TO,
+          refId + ' - Nuevo Contrato - ' + (data.titular || 'Sin titular') + ' - ' + (data.compania || ''),
+          '',
+          {
+            htmlBody: emailHtml,
+            name: 'Grupo New Energy - Tramitaciones',
+            replyTo: data.email_comercial || ''
+          }
+        );
+        emailSent = true;
+        break;
+      } catch (emailErr) {
+        errorMsg += 'Email intento ' + attempt + ': ' + emailErr.toString() + '; ';
+        if (attempt < 2) Utilities.sleep(2000);
+      }
     }
 
-    // Si al menos Sheet O Drive funcionaron, consideramos éxito
-    if (sheetLogged || driveOk) {
+    // Si Drive funcionó, consideramos éxito (los datos están guardados)
+    if (driveOk) {
       return ContentService
         .createTextOutput(JSON.stringify({
           success: true,
           refId: refId,
           emailSent: emailSent,
-          driveOk: driveOk,
-          sheetLogged: sheetLogged
+          driveOk: driveOk
         }))
         .setMimeType(ContentService.MimeType.JSON);
     } else {
-      throw new Error('Ningún sistema de respaldo funcionó: ' + errorMsg);
+      throw new Error('No se pudieron guardar los archivos: ' + errorMsg);
     }
 
   } catch (error) {
@@ -144,53 +128,6 @@ function generateRefId() {
   const date = Utilities.formatDate(now, 'Europe/Madrid', 'yyyyMMdd');
   const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
   return 'GNE-' + date + '-' + rand;
-}
-
-function logToSheet(data, refId) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  let sheet = ss.getSheetByName('Contratos');
-  if (!sheet) {
-    sheet = ss.insertSheet('Contratos');
-    sheet.appendRow([
-      'Ref', 'Fecha', 'Comercial', 'Email Comercial', 'Compañía', 'CUPS',
-      'Oferta', 'Tarifa', 'Potencias', 'Titular', 'CIF/NIF',
-      'Nombre Firmante', 'DNI Firmante', 'Dir. Suministro', 'CP',
-      'Población', 'Provincia', 'Móvil', 'Email Cliente',
-      'Cuenta Bancaria', 'Cambio Titular', 'Nuevo Titular',
-      'Observaciones', 'Nº Archivos', 'Drive OK', 'Email OK', 'Carpeta Drive'
-    ]);
-    sheet.getRange(1, 1, 1, 27).setFontWeight('bold');
-  }
-
-  const potencias = formatPotencias(data);
-  const timestamp = Utilities.formatDate(new Date(), 'Europe/Madrid', 'dd/MM/yyyy HH:mm:ss');
-
-  sheet.appendRow([
-    refId, timestamp, data.quien_eres, data.email_comercial, data.compania,
-    data.cups, data.oferta, data.tarifa, potencias, data.titular,
-    data.cif_nif, data.nombre_firmante, data.dni_firmante,
-    data.dir_suministro, data.codigo_postal, data.poblacion,
-    data.provincia, data.movil, data.email_cliente,
-    data.cuenta_bancaria, data.cambio_titular, data.nuevo_titular,
-    data.observaciones, data.archivos ? data.archivos.length : 0,
-    'Pendiente', 'Pendiente', ''
-  ]);
-}
-
-function updateSheetStatus(refId, driveOk, emailSent, folderUrl) {
-  const ss = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = ss.getSheetByName('Contratos');
-  if (!sheet) return;
-
-  const data = sheet.getDataRange().getValues();
-  for (let i = data.length - 1; i >= 1; i--) {
-    if (data[i][0] === refId) {
-      sheet.getRange(i + 1, 25).setValue(driveOk ? 'OK' : 'ERROR');
-      sheet.getRange(i + 1, 26).setValue(emailSent ? 'OK' : 'ERROR');
-      sheet.getRange(i + 1, 27).setValue(folderUrl);
-      break;
-    }
-  }
 }
 
 function buildEmailHtml(data, fileLinks, folderUrl, refId) {
