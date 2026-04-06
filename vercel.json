@@ -1,0 +1,6 @@
+{
+  "rewrites": [
+    { "source": "/mega", "destination": "/mega.html" },
+    { "source": "/gracias-mega", "destination": "/gracias-mega.html" }
+  ]
+}

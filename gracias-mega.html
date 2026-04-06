@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contrato Enviado | Mega Energia</title>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+            background: #F5F7FA;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem 1rem;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .card {
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: 0 10px 25px -5px rgba(0,0,0,.1);
+            padding: 3rem 2.5rem;
+            text-align: center;
+            max-width: 480px;
+            width: 100%;
+        }
+
+        .check-circle {
+            width: 80px;
+            height: 80px;
+            background: #DCFCE7;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1.5rem;
+            animation: scaleIn .4s ease;
+        }
+
+        .check-circle svg {
+            width: 40px;
+            height: 40px;
+            stroke: #16A34A;
+            stroke-width: 3;
+            fill: none;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }
+
+        @keyframes scaleIn {
+            from { opacity: 0; transform: scale(.5); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        .logo {
+            width: 160px;
+            margin-bottom: 2rem;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #0D9488;
+            margin-bottom: .75rem;
+        }
+
+        p {
+            color: #64748B;
+            font-size: 1rem;
+            line-height: 1.7;
+            margin-bottom: 1.5rem;
+        }
+
+        .info-box {
+            background: #f0fdfa;
+            border: 1px solid #99f6e4;
+            border-radius: 10px;
+            padding: 1rem 1.25rem;
+            font-size: .875rem;
+            color: #0D9488;
+            margin-bottom: 2rem;
+            line-height: 1.6;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: .75rem 2rem;
+            background: #14B8A6;
+            color: #fff;
+            text-decoration: none;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: .95rem;
+            transition: background .2s;
+        }
+
+        .btn:hover {
+            background: #0D9488;
+        }
+
+        footer {
+            margin-top: 2rem;
+            color: #9CA3AF;
+            font-size: .8rem;
+        }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <img src="logo-mega-energia.png"
+         alt="Mega Energia" class="logo">
+
+    <div class="check-circle">
+        <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg>
+    </div>
+
+    <h1>Contrato Enviado</h1>
+    <p>Hemos recibido tu solicitud con toda la documentacion adjunta. Nos ponemos YA con la tramitacion de tu contrato.</p>
+
+    <div class="info-box">
+        Los datos y archivos adjuntos han sido enviados a<br>
+        <strong>administracion@megaenergia.es</strong>
+    </div>
+
+    <a href="mega.html" class="btn">Tramitar otro contrato</a>
+</div>
+
+<footer>&copy; 2026 Mega Energia</footer>
+
+</body>
+</html>
