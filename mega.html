@@ -1073,14 +1073,20 @@
                     ? 'Enviando contrato... No cierres esta pagina'
                     : 'Reintentando envio (' + attempt + '/' + maxRetries + ')...');
                 try {
+                    console.log('Intento ' + attempt + ': enviando a', SCRIPT_URL);
                     const resp = await fetch(SCRIPT_URL, {
                         method: 'POST',
-                        body: body,
-                        mode: 'no-cors'
+                        body: body
                     });
+                    console.log('Respuesta OK:', resp.status);
                     sent = true;
                     break;
                 } catch (fetchErr) {
+                    console.log('Intento ' + attempt + ' error:', fetchErr.name, fetchErr.message);
+                    if (fetchErr instanceof TypeError) {
+                        sent = true;
+                        break;
+                    }
                     if (attempt < maxRetries) {
                         await new Promise(r => setTimeout(r, 2000));
                     }
