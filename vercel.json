@@ -1,4 +1,7 @@
 {
+  "redirects": [
+    { "source": "/", "destination": "/gnew", "statusCode": 302 }
+  ],
   "rewrites": [
     { "source": "/gnew", "destination": "/gnew.html" },
     { "source": "/mega", "destination": "/mega.html" },
