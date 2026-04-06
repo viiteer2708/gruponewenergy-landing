@@ -15,8 +15,8 @@
 
         body {
             font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
-            background: #fff;
-            color: #0F172A;
+            background: linear-gradient(135deg, #fdf2f8 0%, #f5f3ff 50%, #ede9fe 100%);
+            color: #1E1B3A;
             min-height: 100vh;
             display: flex;
             flex-direction: column;
@@ -32,7 +32,7 @@
         }
 
         .container {
-            max-width: 520px;
+            max-width: 560px;
             width: 100%;
         }
 
@@ -41,14 +41,17 @@
             font-weight: 800;
             line-height: 1.25;
             letter-spacing: -0.03em;
-            color: #0F172A;
+            background: linear-gradient(135deg, #A855F7, #EC4899);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
             margin-bottom: 1.25rem;
         }
 
         .body-text {
             font-size: 1.05rem;
             line-height: 1.7;
-            color: #475569;
+            color: #6B6590;
             margin-bottom: 2rem;
             font-weight: 400;
         }
@@ -61,27 +64,29 @@
         .form-row input {
             flex: 1;
             padding: .85rem 1.1rem;
-            border: 1.5px solid #E2E8F0;
+            border: 1.5px solid #E9E2F5;
             border-radius: 10px;
             font-size: 1rem;
             font-family: inherit;
-            color: #0F172A;
-            background: #fff;
+            color: #1E1B3A;
+            background: rgba(255,255,255,.8);
+            backdrop-filter: blur(4px);
             outline: none;
-            transition: border-color .2s;
+            transition: border-color .2s, box-shadow .2s;
         }
 
         .form-row input:focus {
-            border-color: #0F172A;
+            border-color: #A855F7;
+            box-shadow: 0 0 0 3px rgba(168,85,247,.12);
         }
 
         .form-row input::placeholder {
-            color: #94A3B8;
+            color: #B8AED0;
         }
 
         .form-row button {
             padding: .85rem 1.75rem;
-            background: #0F172A;
+            background: linear-gradient(135deg, #A855F7, #EC4899);
             color: #fff;
             border: none;
             border-radius: 10px;
@@ -89,23 +94,25 @@
             font-weight: 700;
             font-family: inherit;
             cursor: pointer;
-            transition: background .2s;
+            transition: opacity .2s, transform .2s;
             white-space: nowrap;
         }
 
         .form-row button:hover {
-            background: #1E293B;
+            opacity: .9;
+            transform: translateY(-1px);
         }
 
         .form-row button:disabled {
             opacity: .5;
             cursor: not-allowed;
+            transform: none;
         }
 
         .msg {
             margin-top: .75rem;
             font-size: .85rem;
-            color: #64748B;
+            color: #6B6590;
             display: none;
         }
 
@@ -114,14 +121,14 @@
         }
 
         .msg.ok {
-            color: #16A34A;
+            color: #A855F7;
             font-weight: 600;
         }
 
         .note {
             margin-top: 2.5rem;
             font-size: .8rem;
-            color: #94A3B8;
+            color: #B8AED0;
             line-height: 1.6;
         }
 
@@ -129,7 +136,25 @@
             padding: 1.5rem;
             text-align: center;
             font-size: .75rem;
-            color: #CBD5E1;
+            color: #B8AED0;
+        }
+
+        footer a {
+            color: #B8AED0;
+            text-decoration: none;
+            transition: color .2s;
+        }
+
+        footer a:hover {
+            color: #A855F7;
+        }
+
+        .legal-links {
+            margin-top: .5rem;
+        }
+
+        .legal-links a {
+            margin: 0 .5rem;
         }
 
         @media (max-width: 500px) {
@@ -147,8 +172,8 @@
 
 <main>
     <div class="container">
-        <h1 class="headline">Tus comerciales te envian contratos por WhatsApp.<br>Y los pierdes.</h1>
-        <p class="body-text">Un formulario. Desde el movil. Los datos llegan organizados a tu email y los archivos a tu Drive. Sin perder ni uno.</p>
+        <h1 class="headline">Tus comerciales te envian contratos por tierra, mar y aire y tu te vuelves loco organizando todo.</h1>
+        <p class="body-text">Es hora de cambiar. Un formulario desde el movil, los datos organizados en tu email y los archivos en tu Drive. Sin perder ni uno.</p>
 
         <form id="captureForm" class="form-row">
             <input type="email" id="emailInput" placeholder="Tu email" required>
@@ -160,7 +185,14 @@
     </div>
 </main>
 
-<footer>&copy; 2026 tramitatucontrato.energy</footer>
+<footer>
+    &copy; 2026 The Big Squad LLC
+    <div class="legal-links">
+        <a href="aviso-legal.html">Aviso legal</a>
+        <a href="privacidad.html">Privacidad</a>
+        <a href="cookies.html">Cookies</a>
+    </div>
+</footer>
 
 <script>
 (function() {
@@ -169,7 +201,6 @@
     const btn = document.getElementById('submitBtn');
     const msg = document.getElementById('msg');
 
-    // IMPORTANTE: Pega aqui la URL de tu webhook de Make
     const MAKE_WEBHOOK = 'https://hook.eu2.make.com/f6c5jd5aiyubv3f2q5osmyo2j3llf2ds';
 
     form.addEventListener('submit', async function(e) {
@@ -191,9 +222,7 @@
                     timestamp: new Date().toISOString()
                 })
             });
-        } catch (err) {
-            // Fire & forget - si falla Make no importa
-        }
+        } catch (err) {}
 
         msg.textContent = 'Recibido. Te escribimos pronto.';
         msg.className = 'msg visible ok';
