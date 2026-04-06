@@ -637,7 +637,26 @@
                     </div>
                     <div class="field">
                         <label>Tarifa <span class="required">*</span></label>
-                        <input type="text" name="tarifa" placeholder="Ej: 2.0TD, 3.0TD, 6.1TD..." required>
+                        <select name="tarifa" required>
+                            <option value="">Selecciona tarifa</option>
+                            <optgroup label="Luz">
+                                <option>2.0TD</option>
+                                <option>3.0TD</option>
+                                <option>6.1TD</option>
+                                <option>6.2TD</option>
+                                <option>6.3TD</option>
+                                <option>6.4TD</option>
+                            </optgroup>
+                            <optgroup label="Gas">
+                                <option>RL.1</option>
+                                <option>RL.2</option>
+                                <option>RL.3</option>
+                                <option>RL.4</option>
+                                <option>RL.5</option>
+                                <option>RL.6</option>
+                                <option>RL.7</option>
+                            </optgroup>
+                        </select>
                     </div>
                     <div class="field">
                         <label>Tipo de Suministro <span class="required">*</span></label>
