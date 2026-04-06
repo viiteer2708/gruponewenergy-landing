@@ -659,13 +659,8 @@
                         </select>
                     </div>
                     <div class="field">
-                        <label>Tipo de Suministro <span class="required">*</span></label>
-                        <select name="tipo_suministro" required>
-                            <option value="">Selecciona tipo</option>
-                            <option>Luz</option>
-                            <option>Gas</option>
-                            <option>Luz + Gas</option>
-                        </select>
+                        <label>Tipo de Suministro</label>
+                        <input type="text" name="tipo_suministro" id="tipoSuministro" readonly placeholder="Se detecta automaticamente segun la tarifa" style="background:#f0fdfa;color:var(--primary-dark);font-weight:600">
                     </div>
 
                     <!-- Potencias -->
@@ -851,6 +846,21 @@
 
 <script>
 (function() {
+    // ===== TIPO SUMINISTRO AUTOMATICO =====
+    const tarifaSelect = document.querySelector('[name="tarifa"]');
+    const tipoSuministro = document.getElementById('tipoSuministro');
+
+    tarifaSelect.addEventListener('change', function() {
+        const val = this.value;
+        if (!val) {
+            tipoSuministro.value = '';
+        } else if (val.startsWith('RL')) {
+            tipoSuministro.value = 'Gas';
+        } else {
+            tipoSuministro.value = 'Luz';
+        }
+    });
+
     // ===== CAMBIO TITULAR TOGGLE =====
     const cambioSelect = document.getElementById('cambioTitular');
     const nuevoField = document.getElementById('nuevoTitularField');
