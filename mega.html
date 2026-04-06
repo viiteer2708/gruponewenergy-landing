@@ -1044,18 +1044,14 @@
                     ? 'Enviando contrato... No cierres esta pagina'
                     : 'Reintentando envio (' + attempt + '/' + maxRetries + ')...');
                 try {
-                    await fetch(SCRIPT_URL, {
+                    const resp = await fetch(SCRIPT_URL, {
                         method: 'POST',
                         body: body,
-                        redirect: 'follow'
+                        mode: 'no-cors'
                     });
                     sent = true;
                     break;
                 } catch (fetchErr) {
-                    if (fetchErr instanceof TypeError) {
-                        sent = true;
-                        break;
-                    }
                     if (attempt < maxRetries) {
                         await new Promise(r => setTimeout(r, 2000));
                     }
