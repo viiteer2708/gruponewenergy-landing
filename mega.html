@@ -847,6 +847,46 @@
 
 <script>
 (function() {
+    // ===== PRE-FILL DESDE QUERY PARAMS (integracion comparador Mega) =====
+    // Si la URL trae query params con los nombres del form, los pre-rellenamos.
+    // Ejemplo: /mega?cups=ES00...&tarifa=2.0TD&oferta=MEGA+BASE+12M&...
+    // Se difiere con setTimeout(0) para que los listeners del IIFE
+    // (tipo_suministro auto, cambio_titular toggle, etc) ya esten registrados
+    // cuando disparemos los eventos 'change'.
+    setTimeout(function prefillFromQuery() {
+        const params = new URLSearchParams(window.location.search);
+        if (params.toString().length === 0) return;
+        const fieldNames = [
+            'quien_eres','email_comercial',
+            'cups','oferta','tarifa',
+            'p1','p2','p3','p4','p5','p6',
+            'titular','cif_nif','nombre_firmante','dni_firmante','cuenta_bancaria',
+            'dir_suministro','codigo_postal','poblacion','provincia',
+            'movil','email_cliente',
+            'cambio_titular','observaciones'
+        ];
+        for (const name of fieldNames) {
+            const value = params.get(name);
+            if (value === null) continue;
+            const el = document.querySelector('[name="' + name + '"]');
+            if (!el) continue;
+            el.value = value;
+            // Disparar change para que el listener de tipo_suministro reaccione
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }, 0);
+
+    // ===== VALIDACION IBAN (algoritmo mod 97 estandar ISO 13616) =====
+    function validIBAN(iban) {
+        const c = iban.replace(/\s/g, '').toUpperCase();
+        if (!/^ES\d{22}$/.test(c)) return false;
+        const r = c.slice(4) + c.slice(0, 4);
+        const n = r.replace(/[A-Z]/g, ch => String(ch.charCodeAt(0) - 55));
+        let mod = 0;
+        for (const d of n) mod = (mod * 10 + parseInt(d, 10)) % 97;
+        return mod === 1;
+    }
+
     // ===== TIPO SUMINISTRO AUTOMATICO =====
     const tarifaSelect = document.querySelector('[name="tarifa"]');
     const tipoSuministro = document.getElementById('tipoSuministro');
@@ -1008,6 +1048,16 @@
 
     form.addEventListener('submit', async function(e) {
         e.preventDefault();
+
+        // Validar IBAN antes de cualquier cambio de estado
+        const ibanInput = form.cuenta_bancaria;
+        const ibanValue = ibanInput.value.trim();
+        if (ibanValue && !validIBAN(ibanValue)) {
+            alert('El IBAN introducido no es valido.\n\nVerifica que:\n· Tenga 24 caracteres\n· Empiece por ES\n· Los digitos de control sean correctos');
+            ibanInput.focus();
+            ibanInput.select();
+            return;
+        }
 
         const btn = document.getElementById('submitBtn');
         btn.classList.add('loading');
