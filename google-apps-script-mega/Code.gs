@@ -14,7 +14,7 @@
  * 10. Copia la URL generada y pegala en mega.html (variable SCRIPT_URL)
  */
 
-const EMAIL_TO = 'administracion@megaenergia.es,victormarron@megaenergia.es';
+const EMAIL_TO = 'administracion@megaenergia.es';
 const FOLDER_ID = '1cfxHV8Oz_N9wsG6E9MRM_74dMSiioXUx';
 
 function doPost(e) {
