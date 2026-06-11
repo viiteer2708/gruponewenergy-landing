@@ -18,7 +18,10 @@
  */
 
 const EMAIL_TO = 'escaneos@gruponew.energy';
-const FOLDER_ID = '1UF1OLd9E0GOpnA721GOq4bLyFPC5S4Jc';
+// Carpeta "Contratos Grupo New Energy" en la cuenta de MEGA (re-montaje 2026-06,
+// el proyecto antiguo quedó en una cuenta inaccesible). El Sheet de registro se
+// auto-crea aquí dentro.
+const FOLDER_ID = '1bTZhjmR9kPggL40ABS2JoHe3URuLlPim';
 const FORM_TOKEN = 'GNE-2026-w7k4q9x2'; // debe coincidir con gnew.html
 const ALLOWED_EXTENSIONS = ['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'];
 const MAX_FILES = 15; // debe coincidir con MAX_FILES de gnew.html
