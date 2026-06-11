@@ -65,14 +65,21 @@ claude.md
 ## Archivos clave — MEGA
 | Archivo | Qué contiene |
 |---------|-------------|
-| `mega.html` | Formulario con branding turquesa Mega, tarifa desplegable, tipo suministro auto |
-| `google-apps-script-mega/Code.gs` | doPost → Drive + email a `administracion@megaenergia.es` + `victormarron@megaenergia.es` |
+| `mega.html` | Formulario branding turquesa Mega, tarifa desplegable, tipo suministro auto, validadores españoles, honeypot, envío con confirmación y reintentos idempotentes |
+| `google-apps-script-mega/Code.gs` | doPost → valida token/honeypot/límites/dedup → Drive + email a `administracion@megaenergia.es` + registro en Sheet |
 | `gracias-mega.html` | Confirmación con branding Mega |
 
 ### MEGA — Config backend
-- **Drive folder ID**: `1cfxHV8Oz_N9wsG6E9MRM_74dMSiioXUx`
-- **Ref IDs**: `MEGA-YYYYMMDD-XXXX`
-- **Apps Script deployment**: acceso DEBE ser "Cualquier persona" (no "Solo yo")
+(mismo hardening que GNEW, aplicado 11/06/2026; ver sección GNEW para el detalle de cada pieza)
+- **Drive folder ID**: `1cfxHV8Oz_N9wsG6E9MRM_74dMSiioXUx` ("Contratos Mega Energia")
+- **Ref IDs**: `MEGA-YYYYMMDD-XXXXXX` (sufijo de 6 chars; los genera el cliente con crypto.getRandomValues; el backend deduplica con CacheService 6h + LockService)
+- **Token anti-spam**: `FORM_TOKEN = 'MEGA-2026-h3p8k5z1q6'` debe coincidir en mega.html y Code.gs (distinto del de GNEW)
+- **Honeypot**: campo oculto `mega_hp` (se envía como `hp`); si llega relleno el backend responde éxito falso y deja rastro en la Sheet
+- **Límites**: máx 15 archivos (`MAX_FILES`) y 45M chars base64 (`MAX_TOTAL_BASE64_CHARS`), validados en front y back
+- **Registro**: Sheet "Registro Tramitaciones MEGA" auto-creado en la carpeta de Drive (ID en ScriptProperties `LOG_SHEET_ID`), con `sheetSafe` (anti-inyección de fórmulas) e IBAN enmascarado
+- **Email**: único destinatario `administracion@megaenergia.es` (victormarron@ se quitó a propósito, commit bcc907c)
+- **Apps Script deployment**: acceso DEBE ser "Cualquier persona" (el front lee la respuesta JSON para confirmar el envío)
+- **⚠️ Orden de despliegue** si cambian front y back: primero Vercel (mega.html), DESPUÉS la nueva versión del Apps Script (el back nuevo rechaza envíos sin token; el viejo ignora los campos nuevos)
 
 ## Flujo de trabajo
 1. Editar `gnew.html` / `mega.html` (CSS en `<style>`, JS en `<script>` al final)
