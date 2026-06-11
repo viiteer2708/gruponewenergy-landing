@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <link rel="icon" type="image/png" href="/favicon-gnew.png">
+    <title>Clave Permanente</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --primary: #0B6E4F;
+            --primary-light: #0D8A63;
+            --text: #1A1A2E;
+            --text-muted: #6B7280;
+            --border: #E2E8F0;
+            --success: #16A34A;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background: linear-gradient(135deg, #f0faf6 0%, #f5f7fa 100%);
+            color: var(--text);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1.5rem;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .card {
+            background: #fff;
+            border-radius: 16px;
+            box-shadow: 0 10px 25px -5px rgba(0,0,0,.1), 0 8px 10px -6px rgba(0,0,0,.07);
+            padding: 2.5rem 2rem;
+            max-width: 440px;
+            width: 100%;
+            text-align: center;
+        }
+
+        .label {
+            font-size: .8rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .12em;
+            color: var(--primary);
+            margin-bottom: 1.25rem;
+        }
+
+        .key-box {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: .75rem;
+            border: 1.5px dashed var(--border);
+            border-radius: 12px;
+            padding: 1.1rem 1.25rem;
+            background: #FAFBFC;
+            cursor: pointer;
+            transition: border-color .2s, background .2s;
+            user-select: all;
+        }
+
+        .key-box:hover {
+            border-color: var(--primary);
+            background: #f0faf6;
+        }
+
+        .key {
+            font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--text);
+            word-break: break-all;
+            line-height: 1.4;
+        }
+
+        .copy-icon {
+            flex-shrink: 0;
+            width: 22px;
+            height: 22px;
+            color: var(--text-muted);
+        }
+
+        .btn-copy {
+            margin-top: 1.25rem;
+            width: 100%;
+            padding: .85rem 1rem;
+            font-size: .95rem;
+            font-weight: 700;
+            font-family: inherit;
+            color: #fff;
+            background: linear-gradient(135deg, var(--primary), var(--primary-light));
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            transition: transform .15s, box-shadow .2s, background .3s;
+        }
+
+        .btn-copy:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(11,110,79,.3);
+        }
+
+        .btn-copy:active { transform: translateY(0); }
+
+        .btn-copy.copied {
+            background: var(--success);
+        }
+
+        .hint {
+            margin-top: 1rem;
+            font-size: .8rem;
+            color: var(--text-muted);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <div class="label">Clave Permanente</div>
+
+        <div class="key-box" id="keyBox" title="Haz clic para copiar">
+            <span class="key" id="keyValue"></span>
+            <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+        </div>
+
+        <button type="button" class="btn-copy" id="btnCopy">Copiar clave</button>
+
+        <p class="hint" id="hint">Haz clic en la clave o en el botón para copiarla.</p>
+    </div>
+
+    <script>
+        (function () {
+            // Valor exacto de la clave; se inyecta por JS para evitar problemas
+            // de escape HTML con los caracteres & y #, y para que lo mostrado y
+            // lo copiado sean siempre idénticos.
+            var CLAVE = '&F#y6FcvTcVBuAin';
+
+            var keyValue = document.getElementById('keyValue');
+            var keyBox = document.getElementById('keyBox');
+            var btn = document.getElementById('btnCopy');
+            var hint = document.getElementById('hint');
+
+            keyValue.textContent = CLAVE;
+
+            var resetTimer = null;
+
+            function feedback(ok) {
+                if (ok) {
+                    btn.textContent = '¡Copiado!';
+                    btn.classList.add('copied');
+                    hint.textContent = 'Clave copiada al portapapeles.';
+                } else {
+                    btn.textContent = 'No se pudo copiar';
+                    hint.textContent = 'Selecciónala manualmente y cópiala con Ctrl+C.';
+                }
+                clearTimeout(resetTimer);
+                resetTimer = setTimeout(function () {
+                    btn.textContent = 'Copiar clave';
+                    btn.classList.remove('copied');
+                    hint.textContent = 'Haz clic en la clave o en el botón para copiarla.';
+                }, 2500);
+            }
+
+            function copyClave() {
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(CLAVE).then(function () {
+                        feedback(true);
+                    }, function () {
+                        legacyCopy();
+                    });
+                } else {
+                    legacyCopy();
+                }
+            }
+
+            // Fallback para navegadores antiguos o contextos sin Clipboard API
+            function legacyCopy() {
+                try {
+                    var ta = document.createElement('textarea');
+                    ta.value = CLAVE;
+                    ta.style.position = 'fixed';
+                    ta.style.opacity = '0';
+                    document.body.appendChild(ta);
+                    ta.focus();
+                    ta.select();
+                    var ok = document.execCommand('copy');
+                    document.body.removeChild(ta);
+                    feedback(ok);
+                } catch (e) {
+                    feedback(false);
+                }
+            }
+
+            btn.addEventListener('click', copyClave);
+            keyBox.addEventListener('click', copyClave);
+        })();
+    </script>
+
+</body>
+</html>
