@@ -106,6 +106,7 @@ function doPost(e) {
     try {
       // 1. GOOGLE DRIVE - Guardar archivos
       let fileLinks = [];
+      let attachments = [];
       let folder = null;
       try {
         const parentFolder = DriveApp.getFolderById(FOLDER_ID);
@@ -114,37 +115,54 @@ function doPost(e) {
         folder = parentFolder.createFolder(folderName);
         folderUrl = folder.getUrl();
 
+        // Compartir la carpeta SOLO con el buzón receptor (no público): así los
+        // enlaces del email y los archivos que no quepan como adjunto se pueden
+        // abrir, sin exponer DNI/IBAN a "cualquiera con el enlace" (RGPD).
+        // addViewer (vía Apps Script) no manda email de notificación.
+        try { folder.addViewer(EMAIL_TO); } catch (shareErr) {}
+
+        // Los documentos se ADJUNTAN al email para que se abran directamente desde
+        // el correo. Gmail mide su tope de ~25MB sobre el MENSAJE MIME ya CODIFICADO
+        // (base64 +33% + plegado de línea ~1,4%), no sobre los bytes crudos; por eso
+        // presupuestamos contra el tamaño codificado y dejamos holgura para el cuerpo
+        // HTML y las cabeceras. Lo que no quepa queda en Drive, accesible vía el
+        // enlace compartido con el receptor (todos los archivos se suben igualmente).
+        const ATTACH_ENCODED_BUDGET = 23 * 1024 * 1024; // ~23MB codificado < 25MB
+        const encodedSize = function (rawLen) { return Math.ceil(rawLen / 3) * 4 * 1.014; };
+        let attachEncoded = 0;
+
         archivos.forEach(function(archivo) {
           const a = archivo || {};
           const safeName = sanitizeFileName(a.name);
-          const blob = Utilities.newBlob(
-            Utilities.base64Decode(String(a.data || '')),
-            String(a.type || 'application/octet-stream'),
-            safeName
-          );
+          const decoded = Utilities.base64Decode(String(a.data || ''));
+          const blob = Utilities.newBlob(decoded, String(a.type || 'application/octet-stream'), safeName);
           const file = folder.createFile(blob);
-          // Sin setSharing: la documentación lleva DNI/IBAN/facturas y NO debe
-          // quedar accesible a "cualquiera con el enlace" (RGPD). Quien gestiona
-          // el buzón accede a la carpeta con su propia cuenta.
           fileLinks.push({
             name: safeName,
             size: cleanLine(String(a.size || '')).slice(0, 20),
             url: file.getUrl()
           });
+          const enc = encodedSize(decoded.length);
+          if (attachEncoded + enc <= ATTACH_ENCODED_BUDGET) {
+            attachments.push(blob);
+            attachEncoded += enc;
+          }
         });
 
         // La firma es opcional y secundaria: si viene malformada o desmesurada se
-        // ignora, nunca debe invalidar un contrato cuyos documentos ya se subieron
+        // ignora, nunca debe invalidar un contrato cuyos documentos ya se subieron.
+        // Se adjunta solo si cabe en el presupuesto (siempre queda en Drive).
         const firma = String(data.firma || '');
         if (firma && firma.indexOf(',') > -1 && firma.length <= MAX_FIRMA_CHARS) {
           try {
-            const sigBlob = Utilities.newBlob(
-              Utilities.base64Decode(firma.split(',')[1]),
-              'image/png',
-              'firma.png'
-            );
+            const sigDecoded = Utilities.base64Decode(firma.split(',')[1]);
+            const sigBlob = Utilities.newBlob(sigDecoded, 'image/png', 'firma.png');
             const sigFile = folder.createFile(sigBlob);
             fileLinks.push({ name: 'firma.png', size: '—', url: sigFile.getUrl() });
+            if (attachEncoded + encodedSize(sigDecoded.length) <= ATTACH_ENCODED_BUDGET) {
+              attachments.push(sigBlob);
+              attachEncoded += encodedSize(sigDecoded.length);
+            }
           } catch (sigErr) {
             errorMsg += 'Firma ignorada: ' + sigErr.toString() + '; ';
           }
@@ -160,12 +178,14 @@ function doPost(e) {
         } catch (trashErr) {}
         folderUrl = '';
         fileLinks = [];
+        attachments = [];
       }
 
-      // 2. EMAIL - Enviar notificación (intenta 2 veces)
+      // 2. EMAIL - Enviar notificación con los documentos ADJUNTOS (intenta 2 veces)
       const mailOptions = {
         htmlBody: '',
-        name: 'Grupo New Energy - Tramitaciones'
+        name: 'Grupo New Energy - Tramitaciones',
+        attachments: attachments
       };
       // replyTo malformado tumbaría sendEmail: solo si parece un email
       const replyTo = cleanLine(data.email_comercial || '').trim();
@@ -186,6 +206,23 @@ function doPost(e) {
         } catch (emailErr) {
           errorMsg += 'Email intento ' + attempt + ': ' + emailErr.toString() + '; ';
           if (attempt < 2) Utilities.sleep(2000);
+        }
+      }
+
+      // Si el email con adjuntos no salió (p.ej. por tamaño), enviar al menos un
+      // aviso de TEXTO con el enlace a la carpeta (ya compartida con el receptor),
+      // para que el buzón nunca se quede sin notificación cuando Drive sí guardó.
+      if (!emailSent && driveOk) {
+        try {
+          GmailApp.sendEmail(EMAIL_TO, subject,
+            'No se pudo enviar el correo con los documentos adjuntos (posible tamaño).\n\n' +
+            'Ref: ' + refId + '\n' +
+            'Carpeta en Drive: ' + folderUrl + '\n' +
+            'Archivos: ' + fileLinks.map(function (f) { return f.name; }).join(', '),
+            { name: 'Grupo New Energy - Tramitaciones' });
+          emailSent = true;
+        } catch (fallbackErr) {
+          errorMsg += 'Aviso texto: ' + fallbackErr.toString() + '; ';
         }
       }
 
