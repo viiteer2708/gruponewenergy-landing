@@ -102,18 +102,14 @@ function doPost(e) {
         folder = parentFolder.createFolder(folderName);
         folderUrl = folder.getUrl();
 
-        // Compartir la carpeta SOLO con el buzón receptor (no público): así los
-        // enlaces del email y los archivos que no quepan como adjunto se pueden
-        // abrir, sin exponer DNI/IBAN a "cualquiera con el enlace" (RGPD).
-        // addViewer (vía Apps Script) no manda email de notificación.
-        try { folder.addViewer(EMAIL_TO); } catch (shareErr) {}
-
-        // Los documentos se ADJUNTAN al email para que se abran directamente desde
-        // el correo. Gmail mide su tope de ~25MB sobre el MENSAJE MIME ya CODIFICADO
+        // Los documentos se ADJUNTAN al email para que el buzón receptor los abra
+        // directamente desde el correo, SIN compartir carpetas ni pedir permisos
+        // (compartir cada carpeta generaba un aviso "Carpeta compartida contigo" en
+        // cada envío). Gmail mide su tope de ~25MB sobre el MENSAJE MIME ya CODIFICADO
         // (base64 +33% + plegado de línea ~1,4%), no sobre los bytes crudos; por eso
         // presupuestamos contra el tamaño codificado y dejamos holgura para el cuerpo
-        // HTML y las cabeceras. Lo que no quepa queda en Drive, accesible vía el
-        // enlace compartido con el receptor (todos los archivos se suben igualmente).
+        // HTML y las cabeceras. Todo se guarda además en Drive; lo que no quepa como
+        // adjunto queda solo ahí (en la cuenta que ejecuta el script).
         const ATTACH_ENCODED_BUDGET = 23 * 1024 * 1024; // ~23MB codificado < 25MB
         const encodedSize = function (rawLen) { return Math.ceil(rawLen / 3) * 4 * 1.014; };
         let attachEncoded = 0;
