@@ -630,20 +630,7 @@
                 <div class="form-grid">
                     <div class="field">
                         <label>Compañía <span class="required">*</span></label>
-                        <select name="compania" required>
-                            <option value="">Selecciona compañía</option>
-                            <option>MEGA</option>
-                            <option>KLEEN ENERGY</option>
-                            <option>ACCIONA</option>
-                            <option>NET</option>
-                            <option>ADX</option>
-                            <option>PLENITUDE</option>
-                            <option>ELEIA</option>
-                            <option>GANA</option>
-                            <option>TOTAL</option>
-                            <option>PASION ENERGIA</option>
-                            <option>NATURGY</option>
-                        </select>
+                        <input type="text" name="compania" placeholder="Ej: MEGA, KLEEN ENERGY, ODF..." required>
                     </div>
                     <div class="field">
                         <label>CUPS <span class="required">*</span></label>
@@ -846,8 +833,7 @@
     // Ejemplo: /gnew?compania=KLEEN+ENERGY&cups=ES00...&tarifa=2.0TD&oferta=...
     // Mismo mecanismo que mega.html. Se difiere con setTimeout(0) para que los
     // listeners del IIFE (cambio_titular toggle, etc) ya esten registrados
-    // cuando disparemos los eventos 'change'. Para selects (compania), el valor
-    // debe coincidir EXACTAMENTE con el texto de una opcion o se ignora.
+    // cuando disparemos los eventos 'change'.
     setTimeout(function prefillFromQuery() {
         const params = new URLSearchParams(window.location.search);
         if (params.toString().length === 0) return;
