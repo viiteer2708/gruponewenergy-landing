@@ -841,6 +841,36 @@
 
 <script>
 (function() {
+    // ===== PRE-FILL DESDE QUERY PARAMS (integracion comparador DPC) =====
+    // Si la URL trae query params con los nombres del form, los pre-rellenamos.
+    // Ejemplo: /gnew?compania=KLEEN+ENERGY&cups=ES00...&tarifa=2.0TD&oferta=...
+    // Mismo mecanismo que mega.html. Se difiere con setTimeout(0) para que los
+    // listeners del IIFE (cambio_titular toggle, etc) ya esten registrados
+    // cuando disparemos los eventos 'change'. Para selects (compania), el valor
+    // debe coincidir EXACTAMENTE con el texto de una opcion o se ignora.
+    setTimeout(function prefillFromQuery() {
+        const params = new URLSearchParams(window.location.search);
+        if (params.toString().length === 0) return;
+        const fieldNames = [
+            'quien_eres','email_comercial',
+            'compania','cups','oferta','tarifa',
+            'p1','p2','p3','p4','p5','p6',
+            'titular','cif_nif','nombre_firmante','dni_firmante','cuenta_bancaria',
+            'dir_suministro','codigo_postal','poblacion','provincia',
+            'movil','email_cliente',
+            'cambio_titular','observaciones'
+        ];
+        for (const name of fieldNames) {
+            const value = params.get(name);
+            if (value === null) continue;
+            const el = document.querySelector('[name="' + name + '"]');
+            if (!el) continue;
+            el.value = value;
+            // Disparar change para que los listeners dependientes reaccionen
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }, 0);
+
     // ===== CAMBIO TITULAR TOGGLE =====
     const cambioSelect = document.getElementById('cambioTitular');
     const nuevoField = document.getElementById('nuevoTitularField');
