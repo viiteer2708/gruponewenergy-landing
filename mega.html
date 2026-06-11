@@ -1157,7 +1157,9 @@
             btn.disabled = false;
             setStatus('');
 
-            const resumen = [
+            // encodeURIComponent del cuerpo completo: un '&' o '#' en los datos
+            // truncaria el mailto a mitad de resumen
+            const resumenLines = [
                 'Comercial: ' + form.quien_eres.value,
                 'Compania: MEGA',
                 'CUPS: ' + form.cups.value,
@@ -1166,7 +1168,10 @@
                 'Tarifa: ' + form.tarifa.value,
                 'Direccion: ' + form.dir_suministro.value,
                 'Movil: ' + form.movil.value
-            ].join('%0A');
+            ];
+            const mailtoHref = 'mailto:administracion@megaenergia.es'
+                + '?subject=' + encodeURIComponent('Contrato MEGA para tramitar - ' + form.titular.value)
+                + '&body=' + encodeURIComponent(resumenLines.join('\n') + '\n\nAdjunto la documentacion escaneada.');
 
             const overlay = document.createElement('div');
             overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:1rem';
@@ -1176,12 +1181,15 @@
                 + '<p style="color:#64748B;font-size:.95rem;line-height:1.6;margin-bottom:1.5rem">'
                 + 'No se ha podido enviar el contrato automaticamente. Por favor, <strong>envia los datos y documentacion por email</strong> para que podamos tramitarlo.'
                 + '</p>'
-                + '<a href="mailto:administracion@megaenergia.es?subject=Contrato%20MEGA%20para%20tramitar%20-%20' + encodeURIComponent(form.titular.value) + '&body=' + resumen + '%0A%0AAdjunto%20la%20documentacion%20escaneada." '
+                + '<a href="' + mailtoHref + '" '
                 + 'style="display:inline-block;padding:.75rem 2rem;background:#14B8A6;color:#fff;text-decoration:none;border-radius:10px;font-weight:600;font-size:.95rem;margin-bottom:.75rem">'
                 + 'Enviar por email a administracion@megaenergia.es</a>'
                 + '<p style="color:#9CA3AF;font-size:.8rem;margin-bottom:1rem">Recuerda adjuntar los contratos escaneados al email</p>'
-                + '<button onclick="this.closest(\'div[style]\').remove()" style="padding:.5rem 1.5rem;border:1px solid #E2E8F0;border-radius:8px;background:#fff;cursor:pointer;font-family:inherit;color:#64748B;font-size:.85rem">Cerrar e intentar de nuevo</button>'
+                + '<button type="button" style="padding:.5rem 1.5rem;border:1px solid #E2E8F0;border-radius:8px;background:#fff;cursor:pointer;font-family:inherit;color:#64748B;font-size:.85rem">Cerrar e intentar de nuevo</button>'
                 + '</div>';
+            // Cerrar SIEMPRE el overlay completo (closest('div[style]') desde el
+            // boton devolvia la tarjeta blanca y dejaba el fondo bloqueando la pagina)
+            overlay.querySelector('button').addEventListener('click', function() { overlay.remove(); });
             document.body.appendChild(overlay);
         }
     });

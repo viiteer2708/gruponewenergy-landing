@@ -1,18 +1,21 @@
 # CLAUDE.md - Grupo New Energy Landing
 
 **Landing pages de tramitación de contratos de luz y gas. Contiene dos formularios independientes:**
-- **GNEW** (index.html) — Grupo New Energy, asesoría/brokerage energético, múltiples compañías
-- **MEGA** (mega.html) — Mega Energía, comercializadora directa, solo contratos Mega
+- **GNEW** (gnew.html, ruta `/gnew`) — Grupo New Energy, asesoría/brokerage energético, múltiples compañías
+- **MEGA** (mega.html, ruta `/mega`) — Mega Energía, comercializadora directa, solo contratos Mega
+
+Además, `index.html` es una **landing de captación** independiente (formulario de email → webhook Make) para vender la plataforma; NO es el formulario de tramitación. La raíz `/` redirige a `/gnew` (ver vercel.json).
 
 ## Reglas de Oro
 | Regla | Por qué |
 |-------|---------|
 | Mobile-first siempre | 70%+ usuarios son comerciales desde móvil |
-| No duplicar estilos inline | Todo el CSS está en `<style>` dentro de index.html |
-| Validación client-side antes de envío | Evitar envíos incompletos a Google Apps Script |
-| Mantener triple seguridad: Drive + Email + reintentos | Decisión de arquitectura tras incidentes de pérdida de datos |
+| No duplicar estilos inline | Todo el CSS está en `<style>` dentro de cada html |
+| Validación client-side antes de envío | Formatos españoles (CUPS, NIF/NIE/CIF, IBAN mod-97, móvil) validados en gnew.html antes de enviar |
+| Mantener triple seguridad: Drive + Email + Sheet de registro | Decisión de arquitectura tras incidentes de pérdida de datos |
+| Solo confirmar "enviado" si el backend responde `success:true` | Un fallo de red NO es un envío; el `ref_id` idempotente permite reintentar sin duplicar |
 | No romper el flujo de firma digital | Canvas de firma es crítico para la tramitación |
-| Archivos max 50MB por archivo | Límite de Google Apps Script / Drive API |
+| Archivos GNEW: máx 15 archivos y 30MB EN TOTAL (validado en front y back) | Apps Script corta el POST en ~50MB y base64 infla +33%; Code.gs además rechaza >15 archivos y >45M chars base64 (`MAX_FILES`/`MAX_TOTAL_BASE64_CHARS`) |
 
 ## Stack
 - **Frontend:** HTML/CSS/JS vanilla (single-page, sin framework)
@@ -23,25 +26,41 @@
 
 ## Estructura
 ```
-index.html                      # GNEW: formulario multi-compañía
+gnew.html                       # GNEW: formulario multi-compañía (ruta /gnew)
 gracias.html                    # GNEW: confirmación post-envío
+logo-gnew.png                   # GNEW: logo (local, ya no depende de Dropbox)
+favicon-gnew.png                # GNEW: favicon (64x64)
 google-apps-script/
-  Code.gs                       # GNEW backend: Drive + Email (doPost)
-mega.html                       # MEGA: formulario exclusivo Mega Energía
+  Code.gs                       # GNEW backend: Drive + Email + Sheet (doPost)
+mega.html                       # MEGA: formulario exclusivo Mega Energía (ruta /mega)
 gracias-mega.html               # MEGA: confirmación post-envío
 logo-mega-energia.png           # MEGA: logo
+favicon-mega.png                # MEGA: favicon
 google-apps-script-mega/
   Code.gs                       # MEGA backend: Drive + Email (doPost)
-vercel.json                     # Rewrites: /mega → mega.html
-CLAUDE.md
+index.html                      # Landing de captación (email → webhook Make)
+aviso-legal.html                # Páginas legales (enlazadas desde términos y footer)
+privacidad.html
+cookies.html
+vercel.json                     # Redirect / → /gnew · rewrites /gnew, /mega, /gracias-mega
+claude.md
 ```
 
 ## Archivos clave — GNEW
 | Archivo | Qué contiene |
 |---------|-------------|
-| `index.html` | Hero + formulario multi-sección + firma digital canvas + JS de envío |
-| `google-apps-script/Code.gs` | doPost → Drive + email a `escaneos@gruponew.energy` |
+| `gnew.html` | Hero + formulario multi-sección + validadores españoles + firma canvas + honeypot + JS de envío con confirmación y reintentos idempotentes |
+| `google-apps-script/Code.gs` | doPost → valida token/honeypot/límites → Drive + email a `escaneos@gruponew.energy` + registro en Sheet |
 | `gracias.html` | Confirmación con animación de check verde |
+
+### GNEW — Config backend
+- **Drive folder ID**: `1UF1OLd9E0GOpnA721GOq4bLyFPC5S4Jc`
+- **Ref IDs**: `GNE-YYYYMMDD-XXXXXX` (los genera el cliente; el backend deduplica con CacheService 6h)
+- **Token anti-spam**: `FORM_TOKEN` debe coincidir en gnew.html y Code.gs (no es un secreto, solo frena bots)
+- **Registro**: Sheet "Registro Tramitaciones GNEW" auto-creado en la carpeta de Drive (ID en ScriptProperties `LOG_SHEET_ID`)
+- **Apps Script deployment**: acceso DEBE ser "Cualquier persona" (el front lee la respuesta JSON para confirmar el envío)
+- **⚠️ Orden de despliegue** si cambian front y back: primero Vercel (gnew.html), DESPUÉS la nueva versión del Apps Script (el back nuevo rechaza envíos sin token; el back viejo ignora los campos nuevos)
+- **Prefill DPC**: el comparador DPC abre `/gnew?quien_eres=...&cups=...` con los `name` de los inputs (`dpc-comparador/src/lib/contracting/build-contract-url.ts`). El prefill NUNCA acepta `cuenta_bancaria` ni `dni_firmante` por URL (PII en historiales/logs)
 
 ## Archivos clave — MEGA
 | Archivo | Qué contiene |
@@ -56,9 +75,9 @@ CLAUDE.md
 - **Apps Script deployment**: acceso DEBE ser "Cualquier persona" (no "Solo yo")
 
 ## Flujo de trabajo
-1. Editar `index.html` (CSS en `<style>`, JS en `<script>` al final)
-2. Para backend, editar `Code.gs` (luego desplegar manualmente en Google Apps Script)
-3. Testear abriendo `index.html` en navegador (no hay build step)
+1. Editar `gnew.html` / `mega.html` (CSS en `<style>`, JS en `<script>` al final)
+2. Para backend, editar el `Code.gs` correspondiente (luego desplegar manualmente en Google Apps Script — ver orden de despliegue arriba)
+3. Testear abriendo el html en navegador (no hay build step)
 4. Victor hace `git push` manualmente
 
 ## Design system

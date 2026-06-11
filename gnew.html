@@ -443,6 +443,15 @@
             to { opacity: 1; transform: translateY(0); }
         }
 
+        /* ===== HONEYPOT (anti-bots) ===== */
+        .hp-field {
+            position: absolute;
+            left: -9999px;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+        }
+
         /* ===== SUBMIT BUTTON ===== */
         .submit-wrapper {
             margin-top: 1.5rem;
@@ -525,6 +534,20 @@
             font-weight: 500;
         }
 
+        footer .legal-links {
+            margin-top: .35rem;
+        }
+
+        footer .legal-links a {
+            margin: 0 .4rem;
+            color: var(--text-muted);
+            font-weight: 400;
+        }
+
+        footer .legal-links a:hover {
+            color: var(--primary);
+        }
+
         /* ===== RESPONSIVE ===== */
         @media (max-width: 768px) {
             .hero {
@@ -591,7 +614,7 @@
 <!-- HERO -->
 <section class="hero">
     <div class="hero-content">
-        <img src="https://dl.dropboxusercontent.com/scl/fi/8fgtbv4s3uyfwwyh7ie93/Redes-sociales-01.png?rlkey=wzp55afahi4ks8z9u1c4v8i65"
+        <img src="/logo-gnew.png"
              alt="Grupo New Energy"
              class="hero-logo">
         <h1>Tramita tu Contrato</h1>
@@ -634,7 +657,7 @@
                     </div>
                     <div class="field">
                         <label>CUPS <span class="required">*</span></label>
-                        <input type="text" name="cups" placeholder="ES00XXXXXXXXXXXX" required>
+                        <input type="text" name="cups" placeholder="ES0012345678901234WV" required>
                     </div>
                     <div class="field">
                         <label>Oferta <span class="required">*</span> <span class="hint">(fijo o indexado)</span></label>
@@ -651,27 +674,27 @@
                         <div class="potencias-grid">
                             <div class="potencia-item">
                                 <label>P1</label>
-                                <input type="text" name="p1" placeholder="kW">
+                                <input type="text" name="p1" inputmode="decimal" placeholder="kW">
                             </div>
                             <div class="potencia-item">
                                 <label>P2</label>
-                                <input type="text" name="p2" placeholder="kW">
+                                <input type="text" name="p2" inputmode="decimal" placeholder="kW">
                             </div>
                             <div class="potencia-item">
                                 <label>P3</label>
-                                <input type="text" name="p3" placeholder="kW">
+                                <input type="text" name="p3" inputmode="decimal" placeholder="kW">
                             </div>
                             <div class="potencia-item">
                                 <label>P4</label>
-                                <input type="text" name="p4" placeholder="kW">
+                                <input type="text" name="p4" inputmode="decimal" placeholder="kW">
                             </div>
                             <div class="potencia-item">
                                 <label>P5</label>
-                                <input type="text" name="p5" placeholder="kW">
+                                <input type="text" name="p5" inputmode="decimal" placeholder="kW">
                             </div>
                             <div class="potencia-item">
                                 <label>P6</label>
-                                <input type="text" name="p6" placeholder="kW">
+                                <input type="text" name="p6" inputmode="decimal" placeholder="kW">
                             </div>
                         </div>
                     </div>
@@ -688,7 +711,7 @@
                     </div>
                     <div class="field">
                         <label>CIF / NIF <span class="required">*</span></label>
-                        <input type="text" name="cif_nif" placeholder="B12345678 / 12345678A" required>
+                        <input type="text" name="cif_nif" placeholder="B12345674 / 12345678Z" required>
                     </div>
                     <div class="field">
                         <label>Nombre Firmante</label>
@@ -700,7 +723,7 @@
                     </div>
                     <div class="field">
                         <label>Cuenta Bancaria (IBAN) <span class="required">*</span></label>
-                        <input type="text" name="cuenta_bancaria" placeholder="ES00 0000 0000 0000 0000 0000" required>
+                        <input type="text" name="cuenta_bancaria" placeholder="ES91 2100 0418 4502 0005 1332" required>
                     </div>
                 </div>
             </div>
@@ -778,8 +801,8 @@
                         <div class="icon">📎</div>
                         <div class="text-main">Arrastra tus archivos aquí</div>
                         <div class="text-sub">o <span class="browse-link">selecciona archivos</span> desde tu dispositivo</div>
-                        <div class="text-sub" style="margin-top:.5rem;font-size:.7rem">PDF, JPG, PNG, DOC — Máx. 50MB por archivo</div>
-                        <input type="file" id="fileInput" name="documentacion" multiple accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" style="display:none" required>
+                        <div class="text-sub" style="margin-top:.5rem;font-size:.7rem">PDF, JPG, PNG, DOC — Máx. 15 archivos y 30MB en total</div>
+                        <input type="file" id="fileInput" name="documentacion" multiple accept=".pdf,.jpg,.jpeg,.png,.doc,.docx" style="display:none">
                     </div>
                     <div class="file-list" id="fileList"></div>
                 </div>
@@ -800,11 +823,20 @@
                 </div>
             </div>
 
+            <!-- HONEYPOT: invisible para humanos; si llega relleno, el backend lo trata como bot
+                 (y lo deja registrado en el Sheet). El name es deliberadamente sin significado:
+                 un name tipo "empresa"/"web" podría rellenarlo el autofill del navegador y
+                 haría descartar un contrato real. -->
+            <div class="hp-field" aria-hidden="true">
+                <label for="gnewHp">No rellenes este campo</label>
+                <input type="text" id="gnewHp" name="gnew_hp" tabindex="-1" autocomplete="off">
+            </div>
+
             <!-- TÉRMINOS -->
             <div class="terms-wrapper">
                 <input type="checkbox" id="terminos" name="terminos" required>
                 <label for="terminos">
-                    Acepto los <a href="#" onclick="return false">términos y condiciones</a> y autorizo el tratamiento de los datos proporcionados para la tramitación del contrato de energía.
+                    Acepto el <a href="/aviso-legal.html" target="_blank" rel="noopener">aviso legal</a> y la <a href="/privacidad.html" target="_blank" rel="noopener">política de privacidad</a>, y autorizo el tratamiento de los datos proporcionados para la tramitación del contrato de energía.
                 </label>
             </div>
 
@@ -823,7 +855,12 @@
 
 <!-- FOOTER -->
 <footer>
-    &copy; 2026 <a href="#">Grupo New Energy</a> — Plataforma de Tramitación de Contratos
+    &copy; 2026 Grupo New Energy — Plataforma de Tramitación de Contratos
+    <div class="legal-links">
+        <a href="/aviso-legal.html">Aviso legal</a> ·
+        <a href="/privacidad.html">Privacidad</a> ·
+        <a href="/cookies.html">Cookies</a>
+    </div>
 </footer>
 
 <script>
@@ -837,11 +874,13 @@
     setTimeout(function prefillFromQuery() {
         const params = new URLSearchParams(window.location.search);
         if (params.toString().length === 0) return;
+        // Sin IBAN ni DNI del firmante en la URL: las query strings quedan en
+        // historiales y logs, así que esos dos datos se teclean siempre en el form.
         const fieldNames = [
             'quien_eres','email_comercial',
             'compania','cups','oferta','tarifa',
             'p1','p2','p3','p4','p5','p6',
-            'titular','cif_nif','nombre_firmante','dni_firmante','cuenta_bancaria',
+            'titular','cif_nif','nombre_firmante',
             'dir_suministro','codigo_postal','poblacion','provincia',
             'movil','email_cliente',
             'cambio_titular','observaciones'
@@ -892,15 +931,39 @@
         addFiles(fileInput.files);
     });
 
+    // Apps Script corta el POST en ~50MB y base64 infla un +33%: el total real
+    // de archivos no puede pasar de ~30MB o el envío fallaría siempre.
+    const ALLOWED_EXTENSIONS = ['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'];
+    const MAX_TOTAL_BYTES = 30 * 1024 * 1024;
+    const MAX_FILES = 15; // debe coincidir con MAX_FILES de Code.gs
+
     function addFiles(files) {
+        let totalBytes = 0;
+        for (const f of selectedFiles.files) totalBytes += f.size;
         for (const file of files) {
-            if (file.size > 50 * 1024 * 1024) {
-                alert(`El archivo "${file.name}" supera los 50MB.`);
+            if (selectedFiles.files.length >= MAX_FILES) {
+                alert('Máximo ' + MAX_FILES + ' archivos. Combina varias páginas en un solo PDF si necesitas adjuntar más.');
+                break;
+            }
+            const ext = (file.name.split('.').pop() || '').toLowerCase();
+            if (!ALLOWED_EXTENSIONS.includes(ext)) {
+                alert('Tipo de archivo no permitido: "' + file.name + '".\nSolo PDF, JPG, PNG, DOC o DOCX.');
                 continue;
             }
+            if (totalBytes + file.size > MAX_TOTAL_BYTES) {
+                alert('No se puede añadir "' + file.name + '": el total adjunto superaría los 30MB.\nComprime los archivos o envía los más pesados por email.');
+                continue;
+            }
+            totalBytes += file.size;
             selectedFiles.items.add(file);
         }
         fileInput.files = selectedFiles.files;
+        // Retirar el error inline de documentación al añadir adjuntos: el listener
+        // de 'input' del form no se dispara con drag&drop
+        if (selectedFiles.files.length > 0) {
+            const fileField = fileInput.closest('.field');
+            if (fileField) fileField.classList.remove('has-error');
+        }
         renderFileList();
     }
 
@@ -931,6 +994,10 @@
                 renderFileList();
             });
         });
+
+        // Asignar fileInput.files por código no dispara input/change: actualizar
+        // la barra de progreso aquí cubre drag&drop y el botón de quitar archivo
+        updateProgress();
     }
 
     // ===== SIGNATURE PAD =====
@@ -938,14 +1005,30 @@
     const ctx = canvas.getContext('2d');
     let isDrawing = false;
 
+    let signatureReady = false;
+
     function resizeCanvas() {
         const rect = canvas.parentElement.getBoundingClientRect();
-        canvas.width = rect.width;
+        const newWidth = Math.round(rect.width);
+        // En móvil, ocultar/mostrar la barra de URL dispara 'resize' sin cambiar
+        // el ancho: no recrear el lienzo o se perdería la firma ya dibujada.
+        if (signatureReady && newWidth === canvas.width) return;
+        const prev = document.createElement('canvas');
+        prev.width = canvas.width;
+        prev.height = canvas.height;
+        if (signatureReady && prev.width > 0 && prev.height > 0) {
+            prev.getContext('2d').drawImage(canvas, 0, 0);
+        }
+        canvas.width = newWidth;
         canvas.height = 150;
         ctx.strokeStyle = '#1A1A2E';
         ctx.lineWidth = 2;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
+        if (signatureReady && prev.width > 0 && prev.height > 0) {
+            ctx.drawImage(prev, 0, 0, prev.width, prev.height, 0, 0, canvas.width, canvas.height);
+        }
+        signatureReady = true;
     }
 
     resizeCanvas();
@@ -981,20 +1064,154 @@
     function updateProgress() {
         let filled = 0;
         requiredFields.forEach(f => {
-            if (f.type === 'checkbox' && f.checked) filled++;
-            else if (f.type === 'file' && selectedFiles.files.length > 0) filled++;
-            else if (f.value && f.value.trim()) filled++;
+            if (f.type === 'checkbox') {
+                if (f.checked) filled++;
+            } else if (f.value && f.value.trim()) {
+                filled++;
+            }
         });
-        const pct = Math.round((filled / requiredFields.length) * 100);
+        // La documentación ya no lleva `required` (se valida manualmente en el
+        // submit), pero sigue contando para la barra de progreso.
+        if (selectedFiles.files.length > 0) filled++;
+        const pct = Math.round((filled / (requiredFields.length + 1)) * 100);
         progressBar.style.width = pct + '%';
     }
 
     form.addEventListener('input', updateProgress);
     form.addEventListener('change', updateProgress);
 
+    // ===== VALIDADORES (formatos españoles; basados en lib/validations del CRM GNEW
+    // y mega.html, con mejoras: letra de control J del CIF correcta, checksum real
+    // de CUPS y limpieza de prefijo +34/paréntesis en el teléfono) =====
+    const DNI_LETTERS = 'TRWAGMYFPDXBNJZSQVHLCKE';
+
+    function validDNI(v) {
+        const m = String(v || '').toUpperCase().replace(/[\s.-]/g, '').match(/^(\d{8})([A-Z])$/);
+        return !!m && DNI_LETTERS[parseInt(m[1], 10) % 23] === m[2];
+    }
+
+    function validNIE(v) {
+        const m = String(v || '').toUpperCase().replace(/[\s.-]/g, '').match(/^([XYZ])(\d{7})([A-Z])$/);
+        if (!m) return false;
+        const num = parseInt({ X: '0', Y: '1', Z: '2' }[m[1]] + m[2], 10);
+        return DNI_LETTERS[num % 23] === m[3];
+    }
+
+    function validCIF(v) {
+        const m = String(v || '').toUpperCase().replace(/[\s.-]/g, '').match(/^([ABCDEFGHJKLMNPQRSUVW])(\d{7})([A-J0-9])$/);
+        if (!m) return false;
+        const nums = m[2].split('').map(Number);
+        let sum = 0;
+        for (let i = 0; i < nums.length; i++) {
+            if (i % 2 === 0) {
+                const doubled = nums[i] * 2;
+                sum += doubled >= 10 ? doubled - 9 : doubled;
+            } else {
+                sum += nums[i];
+            }
+        }
+        const digitControl = (10 - (sum % 10)) % 10;
+        const letterControl = 'JABCDEFGHI'[digitControl];
+        if ('KLMNPQRSW'.includes(m[1])) return m[3] === letterControl;
+        if ('ABEH'.includes(m[1])) return m[3] === String(digitControl);
+        return m[3] === String(digitControl) || m[3] === letterControl;
+    }
+
+    function validIdFiscal(v) {
+        return validDNI(v) || validNIE(v) || validCIF(v);
+    }
+
+    function validCUPS(v) {
+        const c = String(v || '').toUpperCase().replace(/\s/g, '');
+        if (!/^ES\d{16}[A-Z]{2}([A-Z0-9]{2})?$/.test(c)) return false;
+        // Checksum oficial: los 16 dígitos mod 529 → dos letras de la tabla del DNI
+        let mod = 0;
+        for (const d of c.slice(2, 18)) mod = (mod * 10 + parseInt(d, 10)) % 529;
+        return c.slice(18, 20) === DNI_LETTERS[Math.floor(mod / 23)] + DNI_LETTERS[mod % 23];
+    }
+
+    // Algoritmo mod 97 estándar ISO 13616 (mismo que mega.html)
+    function validIBAN(iban) {
+        const c = String(iban || '').replace(/\s/g, '').toUpperCase();
+        if (!/^ES\d{22}$/.test(c)) return false;
+        const r = c.slice(4) + c.slice(0, 4);
+        const n = r.replace(/[A-Z]/g, ch => String(ch.charCodeAt(0) - 55));
+        let mod = 0;
+        for (const d of n) mod = (mod * 10 + parseInt(d, 10)) % 97;
+        return mod === 1;
+    }
+
+    function validPhone(v) {
+        let c = String(v || '').replace(/[\s.()-]/g, '');
+        c = c.replace(/^(\+34|0034|34)(?=[6789]\d{8}$)/, '');
+        return /^[6789]\d{8}$/.test(c);
+    }
+
+    // ===== ERRORES INLINE =====
+    function setFieldError(input, msg) {
+        const field = input.closest('.field');
+        if (!field) return;
+        field.classList.add('has-error');
+        input.classList.add('error');
+        let em = field.querySelector('.error-msg');
+        if (!em) {
+            em = document.createElement('div');
+            em.className = 'error-msg';
+            field.appendChild(em);
+        }
+        em.textContent = msg;
+    }
+
+    function clearFieldErrors() {
+        form.querySelectorAll('.field.has-error').forEach(f => f.classList.remove('has-error'));
+        form.querySelectorAll('.error').forEach(el => el.classList.remove('error'));
+    }
+
+    // Al corregir un campo marcado en rojo, quitar su error
+    form.addEventListener('input', function(e) {
+        const field = e.target.closest && e.target.closest('.field');
+        if (field && field.classList.contains('has-error')) {
+            field.classList.remove('has-error');
+            e.target.classList.remove('error');
+        }
+    });
+
     // ===== GOOGLE APPS SCRIPT URL =====
     // IMPORTANTE: Pega aquí la URL de tu Google Apps Script desplegado
     const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbywi3BAzyrEgGQDVMVKN89k1JxifrbU5n3J5QLpEgWGQMrj7gqZzw6d6DpdSKcyLbhX/exec';
+
+    // Token compartido con el backend (FORM_TOKEN en Code.gs): deben coincidir.
+    // No es un secreto (va en el HTML); solo frena el spam automatizado.
+    const FORM_TOKEN = 'GNE-2026-w7k4q9x2';
+
+    // Referencia única POR TRAMITACIÓN, generada en el cliente: los reintentos del
+    // mismo envío la reutilizan y el backend deduplica, así un reenvío nunca crea
+    // el contrato dos veces. Se renueva tras cada éxito y al volver con Atrás
+    // (bfcache), para que un SEGUNDO contrato del mismo comercial no se descarte
+    // como duplicado.
+    let currentRefId = null;
+
+    window.addEventListener('pageshow', function(e) {
+        if (!e.persisted) return;
+        // Página restaurada desde bfcache (Atrás desde gracias.html): nueva
+        // referencia y botón utilizable de nuevo
+        currentRefId = null;
+        const btn = document.getElementById('submitBtn');
+        btn.classList.remove('loading');
+        btn.disabled = false;
+        setStatus('Preparando...');
+    });
+
+    function generateRefId() {
+        const now = new Date();
+        const pad = n => String(n).padStart(2, '0');
+        const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+        let rand = '';
+        const buf = new Uint32Array(6);
+        crypto.getRandomValues(buf);
+        for (const b of buf) rand += chars[b % chars.length];
+        return 'GNE-' + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) + '-' + rand;
+    }
 
     // ===== FORM SUBMIT =====
     const statusText = document.getElementById('statusText');
@@ -1006,14 +1223,51 @@
     form.addEventListener('submit', async function(e) {
         e.preventDefault();
 
+        // ===== VALIDACIÓN DE FORMATOS =====
+        // (los `required` vacíos ya los frena la validación nativa del navegador)
+        clearFieldErrors();
+        const fieldErrors = [];
+        if (!validCUPS(form.cups.value)) {
+            fieldErrors.push([form.cups, 'CUPS no válido: ES + 16 dígitos (+ terminación opcional, ej. 0F)']);
+        }
+        if (!validIdFiscal(form.cif_nif.value)) {
+            fieldErrors.push([form.cif_nif, 'NIF/NIE/CIF no válido: revisa los dígitos y la letra de control']);
+        }
+        if (form.dni_firmante.value.trim() && !validDNI(form.dni_firmante.value) && !validNIE(form.dni_firmante.value)) {
+            fieldErrors.push([form.dni_firmante, 'DNI/NIE del firmante no válido']);
+        }
+        if (!validIBAN(form.cuenta_bancaria.value)) {
+            fieldErrors.push([form.cuenta_bancaria, 'IBAN no válido: ES + 22 dígitos con dígitos de control correctos']);
+        }
+        if (!validPhone(form.movil.value)) {
+            fieldErrors.push([form.movil, 'Móvil no válido: 9 dígitos empezando por 6, 7, 8 o 9']);
+        }
+        if (selectedFiles.files.length === 0) {
+            fieldErrors.push([fileInput, 'Adjunta al menos un documento (contrato escaneado, DNI, factura...)']);
+        }
+        if (fieldErrors.length > 0) {
+            fieldErrors.forEach(function(fe) { setFieldError(fe[0], fe[1]); });
+            const firstField = fieldErrors[0][0].closest('.field');
+            if (firstField) firstField.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return;
+        }
+
         const btn = document.getElementById('submitBtn');
         btn.classList.add('loading');
         btn.disabled = true;
         setStatus('Preparando datos...');
 
+        // Si esta tramitación ya se intentó (reintento manual tras un fallo),
+        // reutilizar su referencia para que el backend pueda deduplicar
+        if (!currentRefId) currentRefId = generateRefId();
+        const refId = currentRefId;
+
         try {
             // Recoger datos del formulario
             const formData = {
+                token: FORM_TOKEN,
+                ref_id: refId,
+                hp: form.gnew_hp.value,
                 quien_eres: form.quien_eres.value,
                 email_comercial: form.email_comercial.value,
                 compania: form.compania.value,
@@ -1060,41 +1314,52 @@
                 formData.archivos = await Promise.all(filePromises);
             }
 
-            // Enviar a Google Apps Script con reintentos
+            // Enviar a Google Apps Script. El contrato SOLO se da por enviado si el
+            // backend responde success:true — un fallo de red no es un envío. El
+            // ref_id hace los reintentos idempotentes: el backend nunca duplica.
+            // (El body viaja como string sin Content-Type → request "simple" sin
+            // preflight; Apps Script con acceso "Cualquier persona" devuelve CORS
+            // y la respuesta es legible.)
             const body = JSON.stringify(formData);
             const maxRetries = 3;
-            let sent = false;
+            let result = null;
+            let lastError = null;
 
             for (let attempt = 1; attempt <= maxRetries; attempt++) {
                 setStatus(attempt === 1
                     ? 'Enviando contrato... No cierres esta página'
                     : 'Reintentando envío (' + attempt + '/' + maxRetries + ')...');
                 try {
-                    await fetch(SCRIPT_URL, {
+                    const res = await fetch(SCRIPT_URL, {
                         method: 'POST',
                         body: body,
                         redirect: 'follow'
                     });
-                    sent = true;
-                    break;
-                } catch (fetchErr) {
-                    // TypeError = CORS, el request se envió pero no podemos leer respuesta
-                    if (fetchErr instanceof TypeError) {
-                        sent = true;
+                    const json = JSON.parse(await res.text());
+                    if (json && json.success === true) {
+                        result = json;
                         break;
                     }
-                    // Error de red real: reintentar
-                    if (attempt < maxRetries) {
-                        await new Promise(r => setTimeout(r, 2000));
+                    lastError = new Error(json && json.error ? json.error : 'El servidor no confirmó el envío');
+                    if (json && json.success === false) {
+                        // Rechazo explícito del backend: es determinista, reintentar
+                        // solo volvería a subir todo el payload para el mismo error
+                        break;
                     }
+                } catch (fetchErr) {
+                    lastError = fetchErr;
+                }
+                if (attempt < maxRetries) {
+                    await new Promise(r => setTimeout(r, 2500 * attempt));
                 }
             }
 
-            if (sent) {
+            if (result) {
+                currentRefId = null; // el siguiente contrato usará una referencia nueva
                 setStatus('Contrato enviado correctamente');
                 window.location.href = 'gracias.html';
             } else {
-                throw new Error('No se pudo conectar con el servidor después de ' + maxRetries + ' intentos');
+                throw lastError || new Error('No se pudo confirmar el envío tras ' + maxRetries + ' intentos');
             }
 
         } catch (err) {
@@ -1103,8 +1368,10 @@
             btn.disabled = false;
             setStatus('');
 
-            // Construir resumen de datos para el email manual
-            const resumen = [
+            // Email manual de respaldo. encodeURIComponent del cuerpo completo:
+            // un '&' o '#' en los datos truncaría el mailto a mitad de resumen.
+            const resumenLines = [
+                'Ref: ' + refId,
                 'Comercial: ' + form.quien_eres.value,
                 'Compañía: ' + form.compania.value,
                 'CUPS: ' + form.cups.value,
@@ -1113,7 +1380,10 @@
                 'Tarifa: ' + form.tarifa.value,
                 'Dirección: ' + form.dir_suministro.value,
                 'Móvil: ' + form.movil.value
-            ].join('%0A');
+            ];
+            const mailtoHref = 'mailto:escaneos@gruponew.energy'
+                + '?subject=' + encodeURIComponent('Contrato para tramitar - ' + form.titular.value + ' (' + refId + ')')
+                + '&body=' + encodeURIComponent(resumenLines.join('\n') + '\n\nAdjunto la documentación escaneada.');
 
             // Mostrar overlay de error con instrucciones
             const overlay = document.createElement('div');
@@ -1124,12 +1394,23 @@
                 + '<p style="color:#6B7280;font-size:.95rem;line-height:1.6;margin-bottom:1.5rem">'
                 + 'No se ha podido enviar el contrato automáticamente. Por favor, <strong>envía los datos y documentación por email</strong> para que podamos tramitarlo.'
                 + '</p>'
-                + '<a href="mailto:escaneos@gruponew.energy?subject=Contrato%20para%20tramitar%20-%20' + encodeURIComponent(form.titular.value) + '&body=' + resumen + '%0A%0AAdjunto%20la%20documentación%20escaneada." '
+                + '<a href="' + mailtoHref + '" '
                 + 'style="display:inline-block;padding:.75rem 2rem;background:#0B6E4F;color:#fff;text-decoration:none;border-radius:10px;font-weight:600;font-size:.95rem;margin-bottom:.75rem">'
                 + 'Enviar por email a escaneos@gruponew.energy</a>'
                 + '<p style="color:#9CA3AF;font-size:.8rem;margin-bottom:1rem">Recuerda adjuntar los contratos escaneados al email</p>'
-                + '<button onclick="this.closest(\'div[style]\').remove()" style="padding:.5rem 1.5rem;border:1px solid #E2E8F0;border-radius:8px;background:#fff;cursor:pointer;font-family:inherit;color:#6B7280;font-size:.85rem">Cerrar e intentar de nuevo</button>'
+                + '<button type="button" style="padding:.5rem 1.5rem;border:1px solid #E2E8F0;border-radius:8px;background:#fff;cursor:pointer;font-family:inherit;color:#6B7280;font-size:.85rem">Cerrar e intentar de nuevo</button>'
                 + '</div>';
+
+            // Motivo real del fallo (textContent: puede venir del servidor, nunca como HTML)
+            const detail = document.createElement('p');
+            detail.style.cssText = 'color:#9CA3AF;font-size:.8rem;margin-bottom:1rem;word-break:break-word';
+            detail.textContent = 'Detalle: ' + (err && err.message ? err.message : 'error desconocido');
+            const card = overlay.firstElementChild;
+            card.insertBefore(detail, card.querySelector('a'));
+
+            // Cerrar SIEMPRE el overlay completo (closest('div[style]') desde el
+            // botón devolvía la tarjeta blanca y dejaba el fondo bloqueando la página)
+            overlay.querySelector('button').addEventListener('click', function() { overlay.remove(); });
             document.body.appendChild(overlay);
         }
     });
