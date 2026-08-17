@@ -54,7 +54,8 @@ claude.md
 | `gracias.html` | Confirmación con animación de check verde |
 
 ### GNEW — Config backend
-- **Drive folder ID**: `1UF1OLd9E0GOpnA721GOq4bLyFPC5S4Jc`
+- **Drive folder ID**: `1bTZhjmR9kPggL40ABS2JoHe3URuLlPim` ("Contratos Grupo New Energy", cuenta victor.molins.10@gmail.com — re-montaje 11/06/2026; la carpeta es PRIVADA, nadie más tiene acceso)
+- **Correos (17/08/2026)**: remitente `MAIL_FROM = tramitaciones@gruponewenergy.es` (buzón Hostinger que reenvía a escaneos@; debe estar como "Enviar como" en el Gmail que ejecuta el script — si no, `senderOptions()` cae a la cuenta por defecto y lo anota en la columna "Errores / notas" del Sheet). Aviso a escaneos@ con los documentos ADJUNTOS y **sin enlaces de Drive** (eran privados y solo generaban "solicitudes de acceso"), `Reply-To` = comercial. **Acuse de recibo al comercial** (`buildAcuseHtml`, sin IBAN/DNI) con `Reply-To` = escaneos@ y el aviso de dónde enviar la factura. Solo si algún archivo no cabe como adjunto (~23MB codificados) o falla el correo con adjuntos, la carpeta se comparte con escaneos@ (`shareFolderWithReceiver`) y el correo lleva el enlace.
 - **Ref IDs**: `GNE-YYYYMMDD-XXXXXX` (los genera el cliente; el backend deduplica con CacheService 6h)
 - **Token anti-spam**: `FORM_TOKEN` debe coincidir en gnew.html y Code.gs (no es un secreto, solo frena bots)
 - **Registro**: Sheet "Registro Tramitaciones GNEW" auto-creado en la carpeta de Drive (ID en ScriptProperties `LOG_SHEET_ID`)
@@ -78,6 +79,7 @@ claude.md
 - **Límites**: máx 15 archivos (`MAX_FILES`) y 45M chars base64 (`MAX_TOTAL_BASE64_CHARS`), validados en front y back
 - **Registro**: Sheet "Registro Tramitaciones MEGA" auto-creado en la carpeta de Drive (ID en ScriptProperties `LOG_SHEET_ID`), con `sheetSafe` (anti-inyección de fórmulas) e IBAN enmascarado
 - **Email**: único destinatario `administracion@megaenergia.es` (victormarron@ se quitó a propósito, commit bcc907c)
+- **Correos (17/08/2026)**: misma mecánica que GNEW — `MAIL_FROM = tramitaciones@megaenergia.es` (pendiente de crear el buzón + "Enviar como"; hasta entonces sale de la cuenta por defecto con nota en el Sheet), sin enlaces de Drive, acuse de recibo al comercial con `Reply-To` = administracion@
 - **Apps Script deployment**: acceso DEBE ser "Cualquier persona" (el front lee la respuesta JSON para confirmar el envío)
 - **⚠️ Orden de despliegue** si cambian front y back: primero Vercel (mega.html), DESPUÉS la nueva versión del Apps Script (el back nuevo rechaza envíos sin token; el viejo ignora los campos nuevos)
 

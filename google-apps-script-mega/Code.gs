@@ -9,6 +9,11 @@
  *    (editar mantiene la MISMA URL; crear una nueva la cambiaría)
  * 5. Ejecutar como: "Yo" · Acceso: "Cualquier persona" (imprescindible: el
  *    navegador lee la respuesta JSON para confirmar el envío)
+ * 6. REMITENTE: los correos salen desde MAIL_FROM. Ese buzón tiene que estar dado
+ *    de alta en el Gmail que ejecuta el script como "Enviar como" (Configuración >
+ *    Cuentas e importación > Enviar como > Añadir otra dirección, con el SMTP de
+ *    Hostinger). Mientras no lo esté, se envía desde la cuenta que ejecuta y queda
+ *    anotado en la columna "Errores / notas" del Sheet.
  *
  * ORDEN DE DESPLIEGUE cuando cambian front y back: primero Vercel (mega.html),
  * después esta nueva versión (el back nuevo exige token; el viejo ignora los
@@ -16,6 +21,13 @@
  */
 
 const EMAIL_TO = 'administracion@megaenergia.es';
+// Remitente de TODOS los correos del formulario (aviso a administración, acuse al
+// comercial, avisos de error). Debe estar dado de alta como "Enviar como" en el
+// Gmail que ejecuta este script; si no lo está (o se deja vacío), se envía desde
+// la cuenta que ejecuta y se anota en el Sheet. El buzón tramitaciones@ reenvía a
+// EMAIL_TO, así que lo que alguien escriba "al remitente" acaba en administración.
+const MAIL_FROM = 'tramitaciones@megaenergia.es';
+const MAIL_FROM_NAME = 'Mega Energia - Tramitaciones';
 const FOLDER_ID = '1cfxHV8Oz_N9wsG6E9MRM_74dMSiioXUx'; // "Contratos Mega Energia"
 const FORM_TOKEN = 'MEGA-2026-h3p8k5z1q6'; // debe coincidir con mega.html
 const ALLOWED_EXTENSIONS = ['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx'];
@@ -108,8 +120,12 @@ function doPost(e) {
         // cada envío). Gmail mide su tope de ~25MB sobre el MENSAJE MIME ya CODIFICADO
         // (base64 +33% + plegado de línea ~1,4%), no sobre los bytes crudos; por eso
         // presupuestamos contra el tamaño codificado y dejamos holgura para el cuerpo
-        // HTML y las cabeceras. Todo se guarda además en Drive; lo que no quepa como
-        // adjunto queda solo ahí (en la cuenta que ejecuta el script).
+        // HTML y las cabeceras. Todo se guarda además en Drive (cuenta que ejecuta el
+        // script); lo que no quepa como adjunto se marca attached=false y, SOLO en ese
+        // caso, la carpeta se comparte con el buzón receptor y el correo lleva enlace.
+        // El correo NO lleva enlaces de Drive en el caso normal: la carpeta es privada
+        // y quien pinchaba (administración, comerciales) solo generaba "solicitudes de
+        // acceso" al propietario.
         const ATTACH_ENCODED_BUDGET = 23 * 1024 * 1024; // ~23MB codificado < 25MB
         const encodedSize = function (rawLen) { return Math.ceil(rawLen / 3) * 4 * 1.014; };
         let attachEncoded = 0;
@@ -120,16 +136,18 @@ function doPost(e) {
           const decoded = Utilities.base64Decode(String(a.data || ''));
           const blob = Utilities.newBlob(decoded, String(a.type || 'application/octet-stream'), safeName);
           const file = folder.createFile(blob);
-          fileLinks.push({
-            name: safeName,
-            size: cleanLine(String(a.size || '')).slice(0, 20),
-            url: file.getUrl()
-          });
           const enc = encodedSize(decoded.length);
-          if (attachEncoded + enc <= ATTACH_ENCODED_BUDGET) {
+          const cabe = attachEncoded + enc <= ATTACH_ENCODED_BUDGET;
+          if (cabe) {
             attachments.push(blob);
             attachEncoded += enc;
           }
+          fileLinks.push({
+            name: safeName,
+            size: cleanLine(String(a.size || '')).slice(0, 20),
+            url: file.getUrl(),
+            attached: cabe
+          });
         });
 
         const firma = String(data.firma || '');
@@ -138,11 +156,12 @@ function doPost(e) {
             const sigDecoded = Utilities.base64Decode(firma.split(',')[1]);
             const sigBlob = Utilities.newBlob(sigDecoded, 'image/png', 'firma.png');
             const sigFile = folder.createFile(sigBlob);
-            fileLinks.push({ name: 'firma.png', size: '—', url: sigFile.getUrl() });
-            if (attachEncoded + encodedSize(sigDecoded.length) <= ATTACH_ENCODED_BUDGET) {
+            const sigCabe = attachEncoded + encodedSize(sigDecoded.length) <= ATTACH_ENCODED_BUDGET;
+            if (sigCabe) {
               attachments.push(sigBlob);
               attachEncoded += encodedSize(sigDecoded.length);
             }
+            fileLinks.push({ name: 'firma.png', size: '—', url: sigFile.getUrl(), attached: sigCabe });
           } catch (sigErr) {
             errorMsg += 'Firma ignorada: ' + sigErr.toString() + '; ';
           }
@@ -159,14 +178,30 @@ function doPost(e) {
         attachments = [];
       }
 
-      // 2. EMAIL - Enviar notificación con los documentos ADJUNTOS (intenta 2 veces)
+      // Si algún documento no cabe como adjunto, y SOLO entonces, la carpeta se
+      // comparte (lectura) con el buzón receptor para que pueda abrir lo que falta.
+      let folderShared = false;
+      const pendientesDrive = fileLinks.filter(function (f) { return !f.attached; });
+      if (folder && pendientesDrive.length > 0) {
+        folderShared = shareFolderWithReceiver(folder);
+        if (!folderShared) errorMsg += 'No se pudo compartir la carpeta con ' + EMAIL_TO + '; ';
+      }
+
+      // 2. EMAIL - Notificación a administración con los documentos ADJUNTOS (intenta 2 veces).
+      //    Remitente: alias MAIL_FROM (o la cuenta que ejecuta si no está dado de alta).
+      //    Reply-To: el comercial, para que "Responder" desde administración le llegue a él.
+      const sender = senderOptions();
+      if (sender.note) errorMsg += sender.note + '; ';
       const mailOptions = {
         htmlBody: '',
-        name: 'Mega Energia - Tramitaciones',
+        name: MAIL_FROM_NAME,
         attachments: attachments
       };
+      if (sender.from) mailOptions.from = sender.from;
+      // replyTo malformado tumbaría sendEmail: solo si parece un email
       const replyTo = cleanLine(data.email_comercial || '').trim();
-      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(replyTo)) {
+      const replyToOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(replyTo);
+      if (replyToOk) {
         mailOptions.replyTo = replyTo;
       }
       const subject = ('Nuevo Contrato MEGA - ' + cleanLine(data.quien_eres || '').slice(0, 60)
@@ -175,7 +210,7 @@ function doPost(e) {
 
       for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          mailOptions.htmlBody = buildEmailHtml(data, fileLinks, folderUrl, refId);
+          mailOptions.htmlBody = buildEmailHtml(data, fileLinks, folderUrl, refId, folderShared);
           GmailApp.sendEmail(EMAIL_TO, subject, '', mailOptions);
           emailSent = true;
           break;
@@ -185,20 +220,43 @@ function doPost(e) {
         }
       }
 
-      // Si el email con adjuntos no salió (p.ej. por tamaño), enviar al menos un
-      // aviso de TEXTO con el enlace a la carpeta (ya compartida con el receptor),
-      // para que el buzón nunca se quede sin notificación cuando Drive sí guardó.
+      // Si el email con adjuntos no salió (p.ej. por tamaño), compartir la carpeta
+      // con el receptor y enviar al menos un aviso de TEXTO con el enlace, para que
+      // el buzón nunca se quede sin notificación cuando Drive sí guardó.
       if (!emailSent && driveOk) {
         try {
+          if (folder && !folderShared) folderShared = shareFolderWithReceiver(folder);
+          const textOpts = { name: MAIL_FROM_NAME };
+          if (sender.from) textOpts.from = sender.from;
+          if (replyToOk) textOpts.replyTo = replyTo;
           GmailApp.sendEmail(EMAIL_TO, subject,
             'No se pudo enviar el correo con los documentos adjuntos (posible tamaño).\n\n' +
             'Ref: ' + refId + '\n' +
-            'Carpeta en Drive: ' + folderUrl + '\n' +
+            'Comercial: ' + cleanLine(data.quien_eres || '') + ' <' + replyTo + '>\n' +
+            'Carpeta en Drive' + (folderShared ? ' (compartida con ' + EMAIL_TO + ')' : '') + ': ' + folderUrl + '\n' +
             'Archivos: ' + fileLinks.map(function (f) { return f.name; }).join(', '),
-            { name: 'Mega Energia - Tramitaciones' });
+            textOpts);
           emailSent = true;
         } catch (fallbackErr) {
           errorMsg += 'Aviso texto: ' + fallbackErr.toString() + '; ';
+        }
+      }
+
+      // 2b. ACUSE DE RECIBO al comercial: le confirma la referencia y le dice a
+      //     dónde enviar cualquier documento adicional (p. ej. la factura), con
+      //     Reply-To al buzón de administración. Sin adjuntos ni datos bancarios.
+      //     Nunca invalida el envío si falla.
+      if (emailSent && replyToOk) {
+        try {
+          const acuseOpts = {
+            name: MAIL_FROM_NAME,
+            replyTo: EMAIL_TO,
+            htmlBody: buildAcuseHtml(data, refId, fileLinks)
+          };
+          if (sender.from) acuseOpts.from = sender.from;
+          GmailApp.sendEmail(replyTo, ('Recibido: ' + subject).slice(0, 200), '', acuseOpts);
+        } catch (acuseErr) {
+          errorMsg += 'Acuse al comercial: ' + acuseErr.toString() + '; ';
         }
       }
 
@@ -215,11 +273,15 @@ function doPost(e) {
     } catch (error) {
       // Último recurso: email de error con todos los datos de texto (sin base64)
       try {
+        const errOpts = { name: MAIL_FROM_NAME };
+        const errSender = senderOptions();
+        if (errSender.from) errOpts.from = errSender.from;
         GmailApp.sendEmail(EMAIL_TO,
           'ERROR en formulario MEGA - ' + refId,
           'Error: ' + error.toString() +
           '\n\nDatos del envío (sin adjuntos):\n' + JSON.stringify(textOnlyData(data), null, 2).slice(0, 50000) +
-          '\n\nArchivos que venían adjuntos: ' + (archivos.length > 0 ? archivos.map(function(a) { return sanitizeFileName((a || {}).name); }).join(', ') : 'ninguno')
+          '\n\nArchivos que venían adjuntos: ' + (archivos.length > 0 ? archivos.map(function(a) { return sanitizeFileName((a || {}).name); }).join(', ') : 'ninguno'),
+          errOpts
         );
       } catch (lastErr) {}
 
@@ -297,7 +359,7 @@ function logToSheet(refId, data, numArchivos, driveOk, emailSent, folderUrl, err
       ss.getSheets()[0].appendRow([
         'Fecha', 'Ref', 'Comercial', 'Email comercial', 'CUPS', 'Tarifa', 'Tipo suministro',
         'Titular', 'CIF/NIF', 'Móvil', 'Email cliente', 'IBAN (enmascarado)', 'Nº archivos',
-        'Drive OK', 'Email OK', 'Carpeta', 'Errores'
+        'Drive OK', 'Email OK', 'Carpeta', 'Errores / notas'
       ]);
       props.setProperty('LOG_SHEET_ID', ss.getId());
     }
@@ -325,7 +387,7 @@ function logToSheet(refId, data, numArchivos, driveOk, emailSent, folderUrl, err
   }
 }
 
-function buildEmailHtml(data, fileLinks, folderUrl, refId) {
+function buildEmailHtml(data, fileLinks, folderUrl, refId, folderShared) {
   const fields = [
     ['Referencia', refId],
     ['Comercial', data.quien_eres],
@@ -361,18 +423,39 @@ function buildEmailHtml(data, fileLinks, folderUrl, refId) {
     }
   });
 
+  // Documentos: van ADJUNTOS al correo, sin enlaces (la carpeta de Drive es
+  // privada; los enlaces solo generaban solicitudes de acceso). Si alguno no
+  // cupo por tamaño, se avisa y se enlaza la carpeta, que en ese caso ya está
+  // compartida con el buzón receptor.
   let filesHtml = '';
   if (fileLinks.length > 0) {
-    filesHtml = '<h3 style="color:#0D9488;margin:24px 0 12px;font-size:15px">Documentación adjunta</h3><ul style="list-style:none;padding:0">';
-    fileLinks.forEach(function(f) {
+    const adjuntos = fileLinks.filter(function (f) { return f.attached; });
+    const soloDrive = fileLinks.filter(function (f) { return !f.attached; });
+    filesHtml = '<h3 style="color:#0D9488;margin:24px 0 12px;font-size:15px">Documentación adjunta a este correo (' + adjuntos.length + ')</h3><ul style="list-style:none;padding:0">';
+    adjuntos.forEach(function(f) {
       filesHtml += '<li style="margin:8px 0;padding:10px 14px;background:#f0fdfa;border:1px solid #e2e8f0;border-radius:8px;font-size:13px">' +
-        '<a href="' + escapeHtml(f.url) + '" style="color:#14B8A6;font-weight:600;text-decoration:none">' + escapeHtml(f.name) + '</a>' +
+        '<span style="color:#0D9488;font-weight:600">' + escapeHtml(f.name) + '</span>' +
         '<span style="color:#64748B;margin-left:8px">' + escapeHtml(f.size) + '</span>' +
       '</li>';
     });
     filesHtml += '</ul>';
-    filesHtml += '<p style="margin-top:12px"><a href="' + escapeHtml(folderUrl) + '" style="color:#14B8A6;font-weight:600">Abrir carpeta en Google Drive</a></p>';
+    if (soloDrive.length > 0) {
+      filesHtml += '<div style="margin-top:12px;padding:12px 14px;background:#FFF7ED;border:1px solid #FDBA74;border-radius:8px;font-size:13px;color:#7C2D12">' +
+        '<strong>' + soloDrive.length + ' archivo(s) superan el tamaño del correo y quedan solo en Drive:</strong> ' +
+        escapeHtml(soloDrive.map(function (f) { return f.name; }).join(', ')) + '. ' +
+        (folderShared
+          ? '<a href="' + escapeHtml(folderUrl) + '" style="color:#0D9488;font-weight:600">Abrir carpeta en Google Drive</a> (compartida con ' + escapeHtml(EMAIL_TO) + ').'
+          : 'No se pudo compartir la carpeta automáticamente: pídesela al propietario del formulario.') +
+      '</div>';
+    }
   }
+
+  const pie = '<div style="margin-top:20px;padding-top:14px;border-top:1px solid #e2e8f0;font-size:12px;color:#64748B;line-height:1.5">' +
+    'Al <strong>responder</strong> a este correo, la respuesta le llega directamente al comercial' +
+    (data.email_comercial ? ' (' + escapeHtml(cleanLine(data.email_comercial)) + ')' : '') + '. ' +
+    'El comercial recibe un acuse de recibo con la indicación de enviar cualquier documento adicional a ' + escapeHtml(EMAIL_TO) + ' citando la referencia.<br>' +
+    'Aviso automático de tramitatucontrato.energy/mega' + (senderOptions().from ? ' — remitente ' + escapeHtml(senderOptions().from) : '') + '.' +
+  '</div>';
 
   return '<div style="font-family:Arial,sans-serif;max-width:650px;margin:0 auto">' +
     '<div style="background:#0D9488;color:#fff;padding:20px 24px;border-radius:10px 10px 0 0">' +
@@ -382,8 +465,93 @@ function buildEmailHtml(data, fileLinks, folderUrl, refId) {
     '<div style="background:#fff;padding:24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px">' +
       '<table style="width:100%;border-collapse:collapse">' + rows + '</table>' +
       filesHtml +
+      pie +
     '</div>' +
   '</div>';
+}
+
+// Acuse de recibo para el comercial: referencia, resumen (sin IBAN ni DNI) y,
+// sobre todo, A DÓNDE enviar la documentación que falte. Se manda con
+// Reply-To = EMAIL_TO, así "responder" ya llega a administración.
+function buildAcuseHtml(data, refId, fileLinks) {
+  const fields = [
+    ['Referencia', refId],
+    ['Fecha', Utilities.formatDate(new Date(), 'Europe/Madrid', "dd/MM/yyyy 'a las' HH:mm")],
+    ['CUPS', data.cups],
+    ['Tipo Suministro', data.tipo_suministro],
+    ['Titular / Razón Social', data.titular],
+    ['Oferta', data.oferta],
+    ['Tarifa', data.tarifa]
+  ];
+  let rows = '';
+  fields.forEach(function(f) {
+    if (f[1]) {
+      rows += '<tr>' +
+        '<td style="padding:10px 14px;font-weight:600;color:#0D9488;background:#f0fdfa;border:1px solid #e2e8f0;width:200px;font-size:13px">' + f[0] + '</td>' +
+        '<td style="padding:10px 14px;border:1px solid #e2e8f0;font-size:13px">' + escapeHtml(f[1]) + '</td>' +
+      '</tr>';
+    }
+  });
+  let docsHtml = '';
+  if (fileLinks.length > 0) {
+    docsHtml = '<h3 style="color:#0D9488;margin:24px 0 12px;font-size:15px">Documentación recibida (' + fileLinks.length + ')</h3><ul style="margin:0;padding-left:20px;font-size:13px;color:#374151">' +
+      fileLinks.map(function (f) { return '<li style="margin:4px 0">' + escapeHtml(f.name) + '</li>'; }).join('') +
+      '</ul>';
+  }
+  const nombre = cleanLine(data.quien_eres || '').trim();
+  return '<div style="font-family:Arial,sans-serif;max-width:650px;margin:0 auto">' +
+    '<div style="background:#0D9488;color:#fff;padding:20px 24px;border-radius:10px 10px 0 0">' +
+      '<h2 style="margin:0;font-size:18px">Contrato recibido</h2>' +
+      '<p style="margin:6px 0 0;opacity:.8;font-size:13px">Ref: ' + refId + '</p>' +
+    '</div>' +
+    '<div style="background:#fff;padding:24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px;font-size:14px;color:#111827;line-height:1.5">' +
+      '<p style="margin:0 0 16px">Hola' + (nombre ? ' ' + escapeHtml(nombre) : '') + ', hemos recibido tu contrato y la documentación adjunta. Ya está en manos del equipo de tramitación de Mega Energia.</p>' +
+      '<table style="width:100%;border-collapse:collapse">' + rows + '</table>' +
+      docsHtml +
+      '<div style="margin-top:20px;padding:14px 16px;background:#f0fdfa;border:1px solid #99f6e4;border-radius:8px;font-size:13px">' +
+        '<strong>¿Falta algo o quieres añadir documentación?</strong><br>' +
+        'Si el equipo de tramitación necesita algún documento más (por ejemplo, la <strong>factura</strong>), te escribirá desde <strong>' + escapeHtml(EMAIL_TO) + '</strong>. ' +
+        'Para enviar documentación adicional o preguntar por el estado, <strong>responde a este correo</strong> o escribe a ' +
+        '<a href="mailto:' + escapeHtml(EMAIL_TO) + '" style="color:#0D9488;font-weight:600">' + escapeHtml(EMAIL_TO) + '</a> ' +
+        'indicando siempre la referencia <strong>' + refId + '</strong>.' +
+      '</div>' +
+      '<p style="margin:16px 0 0;font-size:12px;color:#64748B">Correo automático de tramitatucontrato.energy/mega (Mega Energia). Guarda la referencia para cualquier consulta.</p>' +
+    '</div>' +
+  '</div>';
+}
+
+// Remitente de los correos: el alias MAIL_FROM solo si el Gmail que ejecuta lo
+// tiene dado de alta como "Enviar como" (con un from desconocido GmailApp lanza
+// error y no saldría ningún correo). Se consulta una vez por ejecución.
+var senderCache = null;
+function senderOptions() {
+  if (senderCache) return senderCache;
+  const out = { from: '', note: '' };
+  if (MAIL_FROM) {
+    try {
+      const aliases = GmailApp.getAliases().map(function (a) { return String(a).toLowerCase(); });
+      if (aliases.indexOf(MAIL_FROM.toLowerCase()) > -1) {
+        out.from = MAIL_FROM;
+      } else {
+        out.note = 'Remitente: cuenta por defecto (el alias ' + MAIL_FROM + ' no está dado de alta como "Enviar como" en este Gmail)';
+      }
+    } catch (aliasErr) {
+      out.note = 'Remitente: cuenta por defecto (no se pudieron leer los alias: ' + aliasErr.toString() + ')';
+    }
+  }
+  senderCache = out;
+  return out;
+}
+
+// Comparte la carpeta del contrato (solo lectura) con el buzón receptor. Solo se
+// usa cuando algún documento no ha podido ir adjunto al correo.
+function shareFolderWithReceiver(folder) {
+  try {
+    folder.addViewer(EMAIL_TO);
+    return true;
+  } catch (shareErr) {
+    return false;
+  }
 }
 
 function formatPotencias(data) {
