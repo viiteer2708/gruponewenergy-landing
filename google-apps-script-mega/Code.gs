@@ -527,12 +527,36 @@ function sendMail(msg) {
   return { ok: false, via: '', error: (brevoErr ? 'Brevo: ' + brevoErr + ' | ' : '') + 'Gmail: ' + g.error, note: '' };
 }
 
+// Clave de Brevo, por este orden: 1) Propiedades del script `BREVO_API_KEY`;
+// 2) fichero privado CONFIG_FILE_NAME dentro de FOLDER_ID (solo lo ve la cuenta
+// propietaria; NO compartirlo) con {"BREVO_API_KEY": "..."}, cacheado 1h.
+// Sin clave por ninguna vía → respaldo Gmail.
+const CONFIG_FILE_NAME = 'config-formulario.json';
+var brevoKeyCache = null;
 function getBrevoKey() {
+  if (brevoKeyCache !== null) return brevoKeyCache;
+  let key = '';
   try {
-    return String(PropertiesService.getScriptProperties().getProperty('BREVO_API_KEY') || '').trim();
-  } catch (e) {
-    return '';
+    key = String(PropertiesService.getScriptProperties().getProperty('BREVO_API_KEY') || '').trim();
+  } catch (e) {}
+  if (!key) {
+    try {
+      const cache = CacheService.getScriptCache();
+      const cached = cache.get('brevo_key');
+      if (cached) {
+        key = cached;
+      } else {
+        const files = DriveApp.getFolderById(FOLDER_ID).getFilesByName(CONFIG_FILE_NAME);
+        if (files.hasNext()) {
+          const cfg = JSON.parse(files.next().getBlob().getDataAsString('UTF-8') || '{}');
+          key = String(cfg.BREVO_API_KEY || '').trim();
+          if (key) cache.put('brevo_key', key, 3600);
+        }
+      }
+    } catch (e) {}
   }
+  brevoKeyCache = key;
+  return key;
 }
 
 // Brevo API v3 (transaccional). Los adjuntos van en base64 dentro del JSON.
