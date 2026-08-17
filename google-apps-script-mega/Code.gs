@@ -641,3 +641,19 @@ function formatPotencias(data) {
 function doGet() {
   return ContentService.createTextOutput('Formulario Mega Energia activo');
 }
+
+// Diagnóstico manual (ejecutar desde el editor cuando el aviso salga "vía Gmail
+// (respaldo)"): comprueba si el script encuentra la clave de Brevo y si tiene
+// permiso para llamar a servicios externos. Si sale "no autorizado", revocar el
+// acceso del proyecto en myaccount.google.com/permissions y volver a ejecutar
+// para que Google vuelva a pedir TODOS los permisos.
+function diagnosticoBrevo() {
+  const key = getBrevoKey();
+  Logger.log('Clave Brevo: ' + (key ? 'ENCONTRADA (' + key.slice(0, 10) + '…)' : 'NO ENCONTRADA'));
+  try {
+    const r = UrlFetchApp.fetch('https://api.brevo.com/v3/account', { headers: { 'api-key': key }, muteHttpExceptions: true });
+    Logger.log('UrlFetch OK, HTTP ' + r.getResponseCode() + ' ' + String(r.getContentText()).slice(0, 80));
+  } catch (e) {
+    Logger.log('UrlFetch ERROR: ' + e);
+  }
+}
