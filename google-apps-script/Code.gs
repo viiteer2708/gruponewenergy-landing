@@ -10,11 +10,13 @@
  * 6. Ejecutar como: "Yo" (tu cuenta)
  * 7. Acceso: "Cualquier persona" — imprescindible: el navegador necesita poder
  *    leer la respuesta JSON para confirmar el envío antes de dar el OK al usuario
- * 8. REMITENTE: los correos salen desde MAIL_FROM. Ese buzón tiene que estar dado
- *    de alta en el Gmail que ejecuta el script como "Enviar como" (Configuración >
- *    Cuentas e importación > Enviar como > Añadir otra dirección, con el SMTP de
- *    Hostinger). Mientras no lo esté, se envía desde la cuenta que ejecuta y queda
- *    anotado en la columna "Errores / notas" del Sheet.
+ * 8. REMITENTE (dos vías, en este orden):
+ *    A) Brevo API — clave en Propiedades del script (⚙️ Configuración del proyecto >
+ *       Propiedades del script > BREVO_API_KEY). El remitente BREVO_SENDER tiene que
+ *       existir en Brevo (Remitentes) con su dominio autenticado. Sin adjuntos >20MB.
+ *    B) Si no hay clave o Brevo falla: GmailApp desde la cuenta que ejecuta el
+ *       script, usando GMAIL_ALIAS si está dado de alta como "Enviar como"; si no,
+ *       la cuenta por defecto. Lo que pase queda anotado en "Errores / notas" del Sheet.
  *
  * ORDEN DE DESPLIEGUE cuando cambian front y back a la vez: primero Vercel
  * (gnew.html), después esta nueva versión. El backend antiguo ignora los campos
@@ -23,13 +25,16 @@
  */
 
 const EMAIL_TO = 'escaneos@gruponew.energy';
-// Remitente de TODOS los correos del formulario (aviso a tramitación, acuse al
-// comercial, avisos de error). Debe estar dado de alta como "Enviar como" en el
-// Gmail que ejecuta este script; si no lo está (o se deja vacío), se envía desde
-// la cuenta que ejecuta y se anota en el Sheet. El buzón tramitaciones@ reenvía a
-// EMAIL_TO, así que lo que alguien escriba "al remitente" acaba en tramitación.
-const MAIL_FROM = 'tramitaciones@gruponewenergy.es';
+// REMITENTE. Vía A (preferida): Brevo, con la clave BREVO_API_KEY en Propiedades del
+// script y BREVO_SENDER dado de alta en Brevo (dominio autenticado). Vía B (respaldo):
+// GmailApp desde la cuenta que ejecuta, con GMAIL_ALIAS si está como "Enviar como".
+// Todo lo que alguien escriba "al remitente" acaba en el buzón de tramitación.
+const BREVO_SENDER = { name: 'Grupo New Energy - Tramitaciones', email: 'escaneos@gruponew.energy' };
+const GMAIL_ALIAS = 'tramitaciones@gruponewenergy.es'; // opcional; vacío = cuenta por defecto
 const MAIL_FROM_NAME = 'Grupo New Energy - Tramitaciones';
+// Presupuesto de adjuntos en bytes REALES. Brevo admite 20MB por correo contando el
+// base64 (+33%) y el cuerpo; Gmail 25MB de MIME. 12MB reales caben en ambos.
+const ATTACH_BUDGET_RAW = 12 * 1024 * 1024;
 // Carpeta "Contratos Grupo New Energy" en la cuenta de MEGA (re-montaje 2026-06,
 // el proyecto antiguo quedó en una cuenta inaccesible). El Sheet de registro se
 // auto-crea aquí dentro.
@@ -130,18 +135,15 @@ function doPost(e) {
         // Los documentos se ADJUNTAN al email para que el buzón receptor los abra
         // directamente desde el correo, SIN compartir carpetas ni pedir permisos
         // (compartir cada carpeta generaba un aviso "Carpeta compartida contigo" en
-        // cada envío). Gmail mide su tope de ~25MB sobre el MENSAJE MIME ya CODIFICADO
-        // (base64 +33% + plegado de línea ~1,4%), no sobre los bytes crudos; por eso
-        // presupuestamos contra el tamaño codificado y dejamos holgura para el cuerpo
-        // HTML y las cabeceras. Todo se guarda además en Drive (cuenta que ejecuta el
+        // cada envío). El presupuesto ATTACH_BUDGET_RAW (bytes reales) cabe tanto en
+        // Brevo (20MB por correo con base64) como en Gmail (25MB de MIME); se deja
+        // holgura para el cuerpo HTML y las cabeceras. Todo se guarda además en Drive (cuenta que ejecuta el
         // script); lo que no quepa como adjunto se marca attached=false y, SOLO en ese
         // caso, la carpeta se comparte con el buzón receptor y el correo lleva enlace.
         // El correo NO lleva enlaces de Drive en el caso normal: la carpeta es privada
         // y quien pinchaba (tramitación, comerciales) solo generaba "solicitudes de
         // acceso" al propietario.
-        const ATTACH_ENCODED_BUDGET = 23 * 1024 * 1024; // ~23MB codificado < 25MB
-        const encodedSize = function (rawLen) { return Math.ceil(rawLen / 3) * 4 * 1.014; };
-        let attachEncoded = 0;
+        let attachRaw = 0;
 
         archivos.forEach(function(archivo) {
           const a = archivo || {};
@@ -149,11 +151,10 @@ function doPost(e) {
           const decoded = Utilities.base64Decode(String(a.data || ''));
           const blob = Utilities.newBlob(decoded, String(a.type || 'application/octet-stream'), safeName);
           const file = folder.createFile(blob);
-          const enc = encodedSize(decoded.length);
-          const cabe = attachEncoded + enc <= ATTACH_ENCODED_BUDGET;
+          const cabe = attachRaw + decoded.length <= ATTACH_BUDGET_RAW;
           if (cabe) {
             attachments.push(blob);
-            attachEncoded += enc;
+            attachRaw += decoded.length;
           }
           fileLinks.push({
             name: safeName,
@@ -172,10 +173,10 @@ function doPost(e) {
             const sigDecoded = Utilities.base64Decode(firma.split(',')[1]);
             const sigBlob = Utilities.newBlob(sigDecoded, 'image/png', 'firma.png');
             const sigFile = folder.createFile(sigBlob);
-            const sigCabe = attachEncoded + encodedSize(sigDecoded.length) <= ATTACH_ENCODED_BUDGET;
+            const sigCabe = attachRaw + sigDecoded.length <= ATTACH_BUDGET_RAW;
             if (sigCabe) {
               attachments.push(sigBlob);
-              attachEncoded += encodedSize(sigDecoded.length);
+              attachRaw += sigDecoded.length;
             }
             fileLinks.push({ name: 'firma.png', size: '—', url: sigFile.getUrl(), attached: sigCabe });
           } catch (sigErr) {
@@ -206,59 +207,49 @@ function doPost(e) {
       }
 
       // 2. EMAIL - Notificación a tramitación con los documentos ADJUNTOS (intenta 2 veces).
-      //    Remitente: alias MAIL_FROM (o la cuenta que ejecuta si no está dado de alta).
+      //    Remitente: Brevo (BREVO_SENDER) y, si no hay clave o falla, GmailApp (respaldo).
       //    Reply-To: el comercial, para que "Responder" desde tramitación le llegue a él.
-      const sender = senderOptions();
-      if (sender.note) errorMsg += sender.note + '; ';
-      const mailOptions = {
-        htmlBody: '',
-        name: MAIL_FROM_NAME,
-        attachments: attachments
-      };
-      if (sender.from) mailOptions.from = sender.from;
-      // replyTo malformado tumbaría sendEmail: solo si parece un email
+      // replyTo malformado tumbaría el envío: solo si parece un email
       const replyTo = cleanLine(data.email_comercial || '').trim();
       const replyToOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(replyTo);
-      if (replyToOk) {
-        mailOptions.replyTo = replyTo;
-      }
       const subject = ('Nuevo Contrato - ' + cleanLine(data.compania || '').slice(0, 40)
         + ' - ' + cleanLine(data.quien_eres || '').slice(0, 60)
         + ' - ' + cleanLine(data.cups || '').slice(0, 25)
         + ' - ' + refId).slice(0, 200);
 
+      let avisoRes = null;
       for (let attempt = 1; attempt <= 2; attempt++) {
-        try {
-          mailOptions.htmlBody = buildEmailHtml(data, fileLinks, folderUrl, refId, folderShared);
-          GmailApp.sendEmail(EMAIL_TO, subject, '', mailOptions);
-          emailSent = true;
-          break;
-        } catch (emailErr) {
-          errorMsg += 'Email intento ' + attempt + ': ' + emailErr.toString() + '; ';
-          if (attempt < 2) Utilities.sleep(2000);
-        }
+        avisoRes = sendMail({
+          to: EMAIL_TO,
+          subject: subject,
+          htmlBody: buildEmailHtml(data, fileLinks, folderUrl, refId, folderShared),
+          replyTo: replyToOk ? replyTo : '',
+          attachments: attachments
+        });
+        if (avisoRes.ok) { emailSent = true; break; }
+        errorMsg += 'Email intento ' + attempt + ': ' + avisoRes.error + '; ';
+        if (attempt < 2) Utilities.sleep(2000);
       }
+      if (avisoRes && avisoRes.note) errorMsg += 'Aviso: ' + avisoRes.note + '; ';
 
       // Si el email con adjuntos no salió (p.ej. por tamaño), compartir la carpeta
       // con el receptor y enviar al menos un aviso de TEXTO con el enlace, para que
       // el buzón nunca se quede sin notificación cuando Drive sí guardó.
       if (!emailSent && driveOk) {
-        try {
-          if (folder && !folderShared) folderShared = shareFolderWithReceiver(folder);
-          const textOpts = { name: MAIL_FROM_NAME };
-          if (sender.from) textOpts.from = sender.from;
-          if (replyToOk) textOpts.replyTo = replyTo;
-          GmailApp.sendEmail(EMAIL_TO, subject,
-            'No se pudo enviar el correo con los documentos adjuntos (posible tamaño).\n\n' +
+        if (folder && !folderShared) folderShared = shareFolderWithReceiver(folder);
+        const textoRes = sendMail({
+          to: EMAIL_TO,
+          subject: subject,
+          textBody: 'No se pudo enviar el correo con los documentos adjuntos (posible tamaño).\n\n' +
             'Ref: ' + refId + '\n' +
             'Comercial: ' + cleanLine(data.quien_eres || '') + ' <' + replyTo + '>\n' +
             'Carpeta en Drive' + (folderShared ? ' (compartida con ' + EMAIL_TO + ')' : '') + ': ' + folderUrl + '\n' +
             'Archivos: ' + fileLinks.map(function (f) { return f.name; }).join(', '),
-            textOpts);
-          emailSent = true;
-        } catch (fallbackErr) {
-          errorMsg += 'Aviso texto: ' + fallbackErr.toString() + '; ';
-        }
+          replyTo: replyToOk ? replyTo : '',
+          attachments: []
+        });
+        if (textoRes.ok) emailSent = true;
+        else errorMsg += 'Aviso texto: ' + textoRes.error + '; ';
       }
 
       // 2b. ACUSE DE RECIBO al comercial: le confirma la referencia y le dice a
@@ -266,17 +257,14 @@ function doPost(e) {
       //     Reply-To al buzón de tramitación. Sin adjuntos ni datos bancarios.
       //     Nunca invalida el envío si falla.
       if (emailSent && replyToOk) {
-        try {
-          const acuseOpts = {
-            name: MAIL_FROM_NAME,
-            replyTo: EMAIL_TO,
-            htmlBody: buildAcuseHtml(data, refId, fileLinks)
-          };
-          if (sender.from) acuseOpts.from = sender.from;
-          GmailApp.sendEmail(replyTo, ('Recibido: ' + subject).slice(0, 200), '', acuseOpts);
-        } catch (acuseErr) {
-          errorMsg += 'Acuse al comercial: ' + acuseErr.toString() + '; ';
-        }
+        const acuseRes = sendMail({
+          to: replyTo,
+          subject: ('Recibido: ' + subject).slice(0, 200),
+          htmlBody: buildAcuseHtml(data, refId, fileLinks),
+          replyTo: EMAIL_TO,
+          attachments: []
+        });
+        if (!acuseRes.ok) errorMsg += 'Acuse al comercial: ' + acuseRes.error + '; ';
       }
 
       // 3. REGISTRO en Google Sheet — tercera pata de la "triple seguridad":
@@ -301,16 +289,14 @@ function doPost(e) {
       // Último recurso: email de error con TODOS los datos de texto (sin base64),
       // para que el contrato se pueda tramitar a mano aunque Drive haya fallado
       try {
-        const errOpts = { name: MAIL_FROM_NAME };
-        const errSender = senderOptions();
-        if (errSender.from) errOpts.from = errSender.from;
-        GmailApp.sendEmail(EMAIL_TO,
-          'ERROR en formulario GNEW - ' + refId,
-          'Error: ' + error.toString() +
-          '\n\nDatos del envío (sin adjuntos):\n' + JSON.stringify(textOnlyData(data), null, 2).slice(0, 50000) +
-          '\n\nArchivos que venían adjuntos: ' + (archivos.length > 0 ? archivos.map(function(a) { return sanitizeFileName((a || {}).name); }).join(', ') : 'ninguno'),
-          errOpts
-        );
+        sendMail({
+          to: EMAIL_TO,
+          subject: 'ERROR en formulario GNEW - ' + refId,
+          textBody: 'Error: ' + error.toString() +
+            '\n\nDatos del envío (sin adjuntos):\n' + JSON.stringify(textOnlyData(data), null, 2).slice(0, 50000) +
+            '\n\nArchivos que venían adjuntos: ' + (archivos.length > 0 ? archivos.map(function(a) { return sanitizeFileName((a || {}).name); }).join(', ') : 'ninguno'),
+          attachments: []
+        });
       } catch (lastErr) {}
 
       // Al cliente, mensaje genérico: el detalle (stacktrace, ids internos) ya
@@ -485,7 +471,7 @@ function buildEmailHtml(data, fileLinks, folderUrl, refId, folderShared) {
     'Al <strong>responder</strong> a este correo, la respuesta le llega directamente al comercial' +
     (data.email_comercial ? ' (' + escapeHtml(cleanLine(data.email_comercial)) + ')' : '') + '. ' +
     'El comercial recibe un acuse de recibo con la indicación de enviar cualquier documento adicional a ' + escapeHtml(EMAIL_TO) + ' citando la referencia.<br>' +
-    'Aviso automático de tramitatucontrato.energy' + (senderOptions().from ? ' — remitente ' + escapeHtml(senderOptions().from) : '') + '.' +
+    'Aviso automático de tramitatucontrato.energy.' +
   '</div>';
 
   return '<div style="font-family:Arial,sans-serif;max-width:650px;margin:0 auto">' +
@@ -551,27 +537,93 @@ function buildAcuseHtml(data, refId, fileLinks) {
   '</div>';
 }
 
-// Remitente de los correos: el alias MAIL_FROM solo si el Gmail que ejecuta lo
-// tiene dado de alta como "Enviar como" (con un from desconocido GmailApp lanza
-// error y no saldría ningún correo). Se consulta una vez por ejecución.
-var senderCache = null;
-function senderOptions() {
-  if (senderCache) return senderCache;
-  const out = { from: '', note: '' };
-  if (MAIL_FROM) {
+// ---------------------------------------------------------------------------
+// CAPA DE ENVÍO. sendMail({to, subject, htmlBody|textBody, replyTo, attachments})
+// devuelve {ok, via, error, note}. Vía A: Brevo (si hay BREVO_API_KEY). Vía B: Gmail.
+// Nunca lanza: los fallos se devuelven en 'error' para que doPost decida.
+// ---------------------------------------------------------------------------
+function sendMail(msg) {
+  const key = getBrevoKey();
+  let brevoErr = '';
+  if (key) {
+    const r = sendViaBrevo(msg, key);
+    if (r.ok) return { ok: true, via: 'brevo', error: '', note: '' };
+    brevoErr = r.error;
+  }
+  const g = sendViaGmail(msg);
+  const note = key
+    ? 'vía Gmail (respaldo) porque Brevo falló: ' + brevoErr
+    : 'vía Gmail (falta BREVO_API_KEY en Propiedades del script)';
+  if (g.ok) return { ok: true, via: 'gmail', error: '', note: note };
+  return { ok: false, via: '', error: (brevoErr ? 'Brevo: ' + brevoErr + ' | ' : '') + 'Gmail: ' + g.error, note: '' };
+}
+
+function getBrevoKey() {
+  try {
+    return String(PropertiesService.getScriptProperties().getProperty('BREVO_API_KEY') || '').trim();
+  } catch (e) {
+    return '';
+  }
+}
+
+// Brevo API v3 (transaccional). Los adjuntos van en base64 dentro del JSON.
+function sendViaBrevo(msg, key) {
+  try {
+    const body = {
+      sender: { name: BREVO_SENDER.name, email: BREVO_SENDER.email },
+      to: [{ email: msg.to }],
+      subject: msg.subject
+    };
+    if (msg.htmlBody) body.htmlContent = msg.htmlBody;
+    else body.textContent = msg.textBody || '';
+    if (msg.replyTo) body.replyTo = { email: msg.replyTo };
+    if (msg.attachments && msg.attachments.length > 0) {
+      body.attachment = msg.attachments.map(function (b) {
+        return { name: b.getName(), content: Utilities.base64Encode(b.getBytes()) };
+      });
+    }
+    const res = UrlFetchApp.fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'api-key': key, 'accept': 'application/json' },
+      payload: JSON.stringify(body),
+      muteHttpExceptions: true
+    });
+    const code = res.getResponseCode();
+    if (code >= 200 && code < 300) return { ok: true, error: '' };
+    return { ok: false, error: 'HTTP ' + code + ' ' + String(res.getContentText() || '').slice(0, 200) };
+  } catch (e) {
+    return { ok: false, error: e.toString().slice(0, 200) };
+  }
+}
+
+// GmailApp desde la cuenta que ejecuta el script. Usa GMAIL_ALIAS solo si está
+// dado de alta como "Enviar como" (con un from desconocido GmailApp lanza error).
+var gmailAliasCache = null;
+function gmailFromAlias() {
+  if (gmailAliasCache !== null) return gmailAliasCache;
+  gmailAliasCache = '';
+  if (GMAIL_ALIAS) {
     try {
       const aliases = GmailApp.getAliases().map(function (a) { return String(a).toLowerCase(); });
-      if (aliases.indexOf(MAIL_FROM.toLowerCase()) > -1) {
-        out.from = MAIL_FROM;
-      } else {
-        out.note = 'Remitente: cuenta por defecto (el alias ' + MAIL_FROM + ' no está dado de alta como "Enviar como" en este Gmail)';
-      }
-    } catch (aliasErr) {
-      out.note = 'Remitente: cuenta por defecto (no se pudieron leer los alias: ' + aliasErr.toString() + ')';
-    }
+      if (aliases.indexOf(GMAIL_ALIAS.toLowerCase()) > -1) gmailAliasCache = GMAIL_ALIAS;
+    } catch (aliasErr) {}
   }
-  senderCache = out;
-  return out;
+  return gmailAliasCache;
+}
+function sendViaGmail(msg) {
+  try {
+    const opts = { name: MAIL_FROM_NAME };
+    if (msg.htmlBody) opts.htmlBody = msg.htmlBody;
+    if (msg.replyTo) opts.replyTo = msg.replyTo;
+    if (msg.attachments && msg.attachments.length > 0) opts.attachments = msg.attachments;
+    const alias = gmailFromAlias();
+    if (alias) opts.from = alias;
+    GmailApp.sendEmail(msg.to, msg.subject, msg.textBody || '', opts);
+    return { ok: true, error: '' };
+  } catch (e) {
+    return { ok: false, error: e.toString().slice(0, 200) };
+  }
 }
 
 // Comparte la carpeta del contrato (solo lectura) con el buzón receptor. Solo se
