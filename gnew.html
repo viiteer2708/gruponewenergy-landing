@@ -1321,20 +1321,39 @@
             // (El body viaja como string sin Content-Type → request "simple" sin
             // preflight; Apps Script con acceso "Cualquier persona" devuelve CORS
             // y la respuesta es legible.)
+            //
+            // Cada intento tiene un tiempo máximo (60 s + 4 s por MB subido). El
+            // 10-sep-2026 el backend se quedó colgado escribiendo la hoja de
+            // registro (3 min y más de 6 min) y el navegador esperaba sin límite.
+            // Si vence, se reintenta con el MISMO ref_id y el backend responde
+            // "ya tramitado" sin duplicar nada. "Servidor ocupado" / "procesando"
+            // (retryable) también se reintentan; los rechazos deterministas
+            // (token, tamaño, tipo de archivo) no.
             const body = JSON.stringify(formData);
-            const maxRetries = 3;
+            const attemptTimeoutMs = Math.round((60 + 4 * body.length / 1048576) * 1000);
+            const maxRetries = 4;
             let result = null;
             let lastError = null;
 
             for (let attempt = 1; attempt <= maxRetries; attempt++) {
-                setStatus(attempt === 1
+                const baseMsg = attempt === 1
                     ? 'Enviando contrato... No cierres esta página'
-                    : 'Reintentando envío (' + attempt + '/' + maxRetries + ')...');
+                    : 'Reintentando envío (' + attempt + '/' + maxRetries + ')... No cierres esta página';
+                setStatus(baseMsg);
+                const ctrl = new AbortController();
+                const startedAt = Date.now();
+                const timer = setTimeout(function() { ctrl.abort(); }, attemptTimeoutMs);
+                // A partir de 20 s, contador visible para que se vea que sigue vivo
+                const ticker = setInterval(function() {
+                    const s = Math.round((Date.now() - startedAt) / 1000);
+                    if (s >= 20) setStatus(baseMsg + ' (' + s + ' s, sigue en marcha)');
+                }, 5000);
                 try {
                     const res = await fetch(SCRIPT_URL, {
                         method: 'POST',
                         body: body,
-                        redirect: 'follow'
+                        redirect: 'follow',
+                        signal: ctrl.signal
                     });
                     const json = JSON.parse(await res.text());
                     if (json && json.success === true) {
@@ -1342,13 +1361,20 @@
                         break;
                     }
                     lastError = new Error(json && json.error ? json.error : 'El servidor no confirmó el envío');
-                    if (json && json.success === false) {
-                        // Rechazo explícito del backend: es determinista, reintentar
+                    const retryable = !!(json && (json.retryable === true
+                        || /servidor ocupado|procesando/i.test(String(json.error || ''))));
+                    if (json && json.success === false && !retryable) {
+                        // Rechazo explícito y determinista del backend: reintentar
                         // solo volvería a subir todo el payload para el mismo error
                         break;
                     }
                 } catch (fetchErr) {
-                    lastError = fetchErr;
+                    lastError = (fetchErr && fetchErr.name === 'AbortError')
+                        ? new Error('El servidor ha tardado más de ' + Math.round(attemptTimeoutMs / 1000) + ' s en responder')
+                        : fetchErr;
+                } finally {
+                    clearTimeout(timer);
+                    clearInterval(ticker);
                 }
                 if (attempt < maxRetries) {
                     await new Promise(r => setTimeout(r, 2500 * attempt));

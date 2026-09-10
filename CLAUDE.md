@@ -15,7 +15,19 @@ Además, `index.html` es una **landing de captación** independiente (formulario
 | Mantener triple seguridad: Drive + Email + Sheet de registro | Decisión de arquitectura tras incidentes de pérdida de datos |
 | Solo confirmar "enviado" si el backend responde `success:true` | Un fallo de red NO es un envío; el `ref_id` idempotente permite reintentar sin duplicar |
 | No romper el flujo de firma digital | Canvas de firma es crítico para la tramitación |
+| El candado global del backend solo dura milisegundos; el trabajo pesado (Drive, correos, hoja) va SIN candado | 10-sep-2026: con el candado abarcando todo el proceso, un envío al que se le atascó la hoja de registro (3 min y >6 min) puso en cola a todos los demás comerciales hasta 2 min y acabó en «Servidor ocupado» |
+| El front nunca espera sin límite: 60 s + 4 s/MB por intento, 4 intentos, mismo `ref_id` | Un backend colgado dejaba al comercial minutos mirando «Enviando contrato...»; ahora vence, reintenta y el backend responde «ya tramitado» sin duplicar |
 | Archivos GNEW: máx 15 archivos y 30MB EN TOTAL (validado en front y back) | Apps Script corta el POST en ~50MB y base64 infla +33%; Code.gs además rechaza >15 archivos y >45M chars base64 (`MAX_FILES`/`MAX_TOTAL_BASE64_CHARS`) |
+
+## Rendimiento y reintentos (10-sep-2026)
+**Incidente:** el 10-sep a las 12:26 un envío de GNEW (ref `GNE-20260910-NECDV3`, 3 PDF de ~300 KB) guardó en Drive y envió el aviso en 9 s, pero la escritura en la hoja de registro (`SpreadsheetApp.appendRow`) se quedó colgada hasta que Apps Script mató la ejecución a los 6 min. Como la marca de dedup se ponía al FINAL, el navegador reintentó y el contrato entró dos veces (dos carpetas, dos correos). El segundo intento tardó 3 min en la hoja. Mientras, el candado global (`LockService`) retuvo el envío de Victor ~2 min en «Enviando contrato...». Diagnóstico con: `createdTime` de carpetas/archivos en Drive (paso Drive), eventos `requests` de Brevo (paso correo) y la columna Fecha del Sheet (paso registro).
+
+**Arreglo (en ambos backends y ambos formularios):**
+- `doPost`: `claimRef()` toma el candado solo para comprobar el duplicado y dejar la marca `inflight` (TTL 7 min) → libera → Drive → aviso → **`cache.put('ref:…','done')` YA** → acuse → registro. Un reintento que llega con la primera ejecución en curso espera (`waitForRef`, máx. 45 s) y devuelve `duplicated:true`; si la primera murió (marca caducada/ausente) la retoma.
+- Respuestas transitorias llevan `retryable:true` («Servidor ocupado», «todavía se está procesando», fallo de Drive); los rechazos deterministas (token, tamaño, tipo) no. Si algo falla DESPUÉS de marcar `done`, la respuesta sigue siendo `success:true`.
+- `logToSheet`: fila por **API REST de Sheets** (`appendRowRest`, `UrlFetchApp` + `ScriptApp.getOAuthToken()`, `valueInputOption=USER_ENTERED`), sin `SpreadsheetApp` salvo para crear la hoja la primera vez. Si falla, la fila se guarda en `ScriptProperties` (`PENDING_LOG_<ts>_<ref>`) y `flushPendingLogRows()` vuelca hasta 5 en el siguiente envío. `diagnosticoRegistro()` (editor) comprueba acceso a la hoja y filas pendientes. Mismos `oauthScopes`: no pide permisos nuevos.
+- Front (`gnew.html`/`mega.html`): `AbortController` con `attemptTimeoutMs = 60 s + 4 s por MB`, `maxRetries = 4`, backoff 2,5 s × intento, contador visible «(N s, sigue en marcha)» a partir de 20 s, y reintento también cuando `json.retryable === true` o el error dice «Servidor ocupado»/«procesando» (compatible con el backend antiguo).
+- Probado con Playwright en local (`127.0.0.1:8765` + `page.route` sobre `script.google.com`, sin tocar producción): timeout→reintento mismo ref→gracias; «Servidor ocupado»→reintento→gracias; `retryable:true`→reintento; «No autorizado»→overlay sin reintentos; red caída×4→overlay.
 
 ## Stack
 - **Frontend:** HTML/CSS/JS vanilla (single-page, sin framework)
@@ -50,13 +62,13 @@ claude.md
 | Archivo | Qué contiene |
 |---------|-------------|
 | `gnew.html` | Hero + formulario multi-sección + validadores españoles + firma canvas + honeypot + JS de envío con confirmación y reintentos idempotentes |
-| `google-apps-script/Code.gs` | doPost → valida token/honeypot/límites → Drive + email a `escaneos@gruponew.energy` + registro en Sheet |
+| `google-apps-script/Code.gs` | doPost → valida token/honeypot/límites → `claimRef` (candado breve) → Drive + email a `escaneos@gruponew.energy` → marca `done` → acuse → registro en Sheet por API REST (cola si falla) |
 | `gracias.html` | Confirmación con animación de check verde |
 
 ### GNEW — Config backend
 - **Drive folder ID**: `1bTZhjmR9kPggL40ABS2JoHe3URuLlPim` ("Contratos Grupo New Energy", cuenta victor.molins.10@gmail.com — re-montaje 11/06/2026; la carpeta es PRIVADA, nadie más tiene acceso)
 - **Correos (17/08/2026)** — capa `sendMail()` con dos vías: **A) Brevo API** (`sendViaBrevo`; clave `BREVO_API_KEY` en Propiedades del script **o** en el fichero privado `config-formulario.json` dentro de la carpeta de Drive — creado el 17/08/2026, solo lo ve la cuenta propietaria, NO compartir; misma clave que dpc-comparador —; remitente `BREVO_SENDER = escaneos@gruponew.energy`, dado de alta y ACTIVO en Brevo con el dominio `gruponew.energy` autenticado el 17/08/2026: TXT `brevo-code`, `mail._domainkey`, `_dmarc`); **B) respaldo GmailApp** desde la cuenta que ejecuta (con `GMAIL_ALIAS = tramitaciones@gruponewenergy.es` si está como "Enviar como"; si no, la cuenta por defecto). Sin clave o si Brevo falla → Gmail, y queda anotado en la columna "Errores / notas" del Sheet. Aviso a escaneos@ con los documentos ADJUNTOS y **sin enlaces de Drive** (eran privados y solo generaban "solicitudes de acceso"), `Reply-To` = comercial. **Acuse de recibo al comercial** (`buildAcuseHtml`, sin IBAN/DNI) con `Reply-To` = escaneos@ y el aviso de dónde enviar la factura. Presupuesto de adjuntos `ATTACH_BUDGET_RAW` = 12MB reales (Brevo admite 20MB con base64; Gmail 25MB MIME); solo si algún archivo no cabe o falla el correo con adjuntos, la carpeta se comparte con escaneos@ (`shareFolderWithReceiver`) y el correo lleva el enlace. ⚠️ `UrlFetchApp` necesita el scope `script.external_request`. El 17/08/2026 el script fallaba con «You do not have permission to call UrlFetchApp.fetch» aunque el editor NO pedía autorización (ni con Nueva versión, ni con implementación nueva, ni con `oauthScopes` explícitos): la cuenta tenía un permiso ANTIGUO guardado para el proyecto y Google no volvía a mostrar la pantalla de consentimiento. **Fix que funcionó:** myaccount.google.com/connections → «Grupo New Energy - Formulario» / «Mega Energia - Formulario» → Eliminar acceso → en el editor ejecutar cualquier función (`diagnosticoBrevo` o `doGet`) → aparece el consentimiento con TODAS las casillas → Permitir. No hizo falta nueva versión: la implementación usa el permiso vivo de la cuenta. Los `appsscript.json` del repo declaran los `oauthScopes` explícitos (external_request, drive, mail.google.com, spreadsheets) para que la lista de permisos sea determinista. `diagnosticoBrevo()` (al final de cada Code.gs) comprueba clave + permiso desde el editor.
-- **Ref IDs**: `GNE-YYYYMMDD-XXXXXX` (los genera el cliente; el backend deduplica con CacheService 6h)
+- **Ref IDs**: `GNE-YYYYMMDD-XXXXXX` (los genera el cliente; el backend deduplica con CacheService 6h: `inflight` mientras se procesa, `done` en cuanto Drive + aviso están hechos)
 - **Token anti-spam**: `FORM_TOKEN` debe coincidir en gnew.html y Code.gs (no es un secreto, solo frena bots)
 - **Registro**: Sheet "Registro Tramitaciones GNEW" auto-creado en la carpeta de Drive (ID en ScriptProperties `LOG_SHEET_ID`)
 - **Apps Script deployment**: acceso DEBE ser "Cualquier persona" (el front lee la respuesta JSON para confirmar el envío)
@@ -67,7 +79,7 @@ claude.md
 | Archivo | Qué contiene |
 |---------|-------------|
 | `mega.html` | Formulario branding turquesa Mega, tarifa desplegable, tipo suministro auto, validadores españoles, honeypot, envío con confirmación y reintentos idempotentes |
-| `google-apps-script-mega/Code.gs` | doPost → valida token/honeypot/límites/dedup → Drive + email a `administracion@megaenergia.es` + registro en Sheet |
+| `google-apps-script-mega/Code.gs` | doPost → valida token/honeypot/límites → `claimRef` (candado breve) → Drive + email a `administracion@megaenergia.es` → marca `done` → acuse → registro en Sheet por API REST (cola si falla) |
 | `gracias-mega.html` | Confirmación con branding Mega |
 
 ### MEGA — Config backend
