@@ -19,10 +19,10 @@ Además, `index.html` es una **landing de captación** independiente (formulario
 | El front nunca espera sin límite: 60 s + 4 s/MB por intento, 4 intentos, mismo `ref_id` | Un backend colgado dejaba al comercial minutos mirando «Enviando contrato...»; ahora vence, reintenta y el backend responde «ya tramitado» sin duplicar |
 | Archivos GNEW: máx 15 archivos y 30MB EN TOTAL (validado en front y back) | Apps Script corta el POST en ~50MB y base64 infla +33%; Code.gs además rechaza >15 archivos y >45M chars base64 (`MAX_FILES`/`MAX_TOTAL_BASE64_CHARS`) |
 
-## Rendimiento y reintentos (10-sep-2026)
-**Incidente:** el 10-sep a las 12:26 un envío de GNEW (ref `GNE-20260910-NECDV3`, 3 PDF de ~300 KB) guardó en Drive y envió el aviso en 9 s, pero la escritura en la hoja de registro (`SpreadsheetApp.appendRow`) se quedó colgada hasta que Apps Script mató la ejecución a los 6 min. Como la marca de dedup se ponía al FINAL, el navegador reintentó y el contrato entró dos veces (dos carpetas, dos correos). El segundo intento tardó 3 min en la hoja. Mientras, el candado global (`LockService`) retuvo el envío de Victor ~2 min en «Enviando contrato...». Diagnóstico con: `createdTime` de carpetas/archivos en Drive (paso Drive), eventos `requests` de Brevo (paso correo) y la columna Fecha del Sheet (paso registro).
+## Rendimiento y reintentos
+Por qué está montado así: la escritura en la hoja de registro (`SpreadsheetApp.appendRow`) puede quedarse colgada minutos, hasta que Apps Script mata la ejecución a los 6 min; con la marca de dedup al FINAL, el reintento del navegador duplicaba el contrato (dos carpetas, dos correos), y con el candado global (`LockService`) abarcando todo el proceso los demás envíos esperaban en cola en «Enviando contrato...». Para diagnosticar un envío lento o duplicado: `createdTime` de carpetas/archivos en Drive (paso Drive), eventos `requests` de Brevo (paso correo) y la columna Fecha del Sheet (paso registro).
 
-**Arreglo (en ambos backends y ambos formularios):**
+**Cómo funciona (en ambos backends y ambos formularios):**
 - `doPost`: `claimRef()` toma el candado solo para comprobar el duplicado y dejar la marca `inflight` (TTL 7 min) → libera → Drive → aviso → **`cache.put('ref:…','done')` YA** → acuse → registro. Un reintento que llega con la primera ejecución en curso espera (`waitForRef`, máx. 45 s) y devuelve `duplicated:true`; si la primera murió (marca caducada/ausente) la retoma.
 - Respuestas transitorias llevan `retryable:true` («Servidor ocupado», «todavía se está procesando», fallo de Drive); los rechazos deterministas (token, tamaño, tipo) no. Si algo falla DESPUÉS de marcar `done`, la respuesta sigue siendo `success:true`.
 - `logToSheet`: fila por **API REST de Sheets** (`appendRowRest`, `UrlFetchApp` + `ScriptApp.getOAuthToken()`, `valueInputOption=USER_ENTERED`), sin `SpreadsheetApp` salvo para crear la hoja la primera vez. Si falla, la fila se guarda en `ScriptProperties` (`PENDING_LOG_<ts>_<ref>`) y `flushPendingLogRows()` vuelca hasta 5 en el siguiente envío. `diagnosticoRegistro()` (editor) comprueba acceso a la hoja y filas pendientes. Mismos `oauthScopes`: no pide permisos nuevos.
@@ -55,7 +55,7 @@ aviso-legal.html                # Páginas legales (enlazadas desde términos y 
 privacidad.html
 cookies.html
 vercel.json                     # Redirect / → /gnew · rewrites /gnew, /mega, /gracias-mega
-claude.md
+CLAUDE.md
 ```
 
 ## Archivos clave — GNEW
@@ -126,10 +126,10 @@ claude.md
 ---
 
 ## Vault de Obsidian (contexto transversal)
-Este proyecto está conectado con mi vault de Obsidian en `/mnt/c/Users/viite/Documents/OBSIDIAN/VIITEER`.
+Este proyecto está conectado con mi vault de Obsidian en `C:\Users\Victor\Documents\VITER VAULT`
+(en WSL: `/mnt/c/Users/Victor/Documents/VITER VAULT`).
 
-Si el vault no está cargado como directorio adicional, cárgalo:
-/add-dir /mnt/c/Users/viite/Documents/OBSIDIAN/VIITEER
+Si el vault no está cargado como directorio adicional, cárgalo con `/add-dir <ruta>`.
 
 ### Contexto de negocio
 Este repo contiene dos formularios: **GNEW** (brokerage, múltiples compañías) y **MEGA** (comercializadora directa, solo Mega Energía). Son negocios distintos con flujos separados. En el vault busca:
