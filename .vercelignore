@@ -1,0 +1,6 @@
+# Lo que NO se publica en tramitatucontrato.energy (8-oct-2026: se servían el
+# CLAUDE.md y los Code.gs con notas internas, IDs de Drive y buzones)
+CLAUDE.md
+google-apps-script/
+google-apps-script-mega/
+.gitignore

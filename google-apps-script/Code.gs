@@ -29,6 +29,14 @@
  * API REST de Sheets (acotada) con cola de respaldo; y los fallos transitorios
  * responden retryable:true para que el front reintente con el mismo ref_id.
  * No requiere permisos nuevos (mismos oauthScopes de appsscript.json).
+ *
+ * CAMBIO 8-oct-2026: (a) se reponen las funciones de correo (buildEmailHtml,
+ * buildAcuseHtml, sendMail, getBrevoKey, sendViaBrevo, gmailFromAlias,
+ * sendViaGmail), que se perdieron en este fichero con el cambio del 10-sep: la
+ * copia del repo NO podía mandar ningún correo (el script publicado seguía con
+ * la versión anterior); (b) si la cuenta de Brevo no tiene créditos, el correo
+ * sale por Gmail en vez de perderse en silencio; (c) cada carpeta de Drive
+ * guarda datos-formulario.txt con los datos del envío. Sin permisos nuevos.
  */
 
 const EMAIL_TO = 'escaneos@gruponew.energy';
@@ -198,6 +206,16 @@ function doPost(e) {
         } catch (sigErr) {
           errorMsg += 'Firma ignorada: ' + sigErr.toString() + '; ';
         }
+      }
+
+      // Copia de los datos del formulario (sin documentos, firma ni token) junto a
+      // los archivos. Hasta el 8-oct-2026 solo viajaban en el correo: cuando Brevo
+      // se quedó sin créditos y los avisos no salieron, no había forma de recuperar
+      // IBAN, dirección o potencias. La carpeta es privada. Nunca invalida el envío.
+      try {
+        folder.createFile(Utilities.newBlob(JSON.stringify(textOnlyData(data), null, 2), 'text/plain', 'datos-formulario.txt'));
+      } catch (datosErr) {
+        errorMsg += 'Copia de datos no guardada en Drive: ' + datosErr.toString().slice(0, 100) + '; ';
       }
 
       driveOk = true;
@@ -539,6 +557,293 @@ function diagnosticoRegistro() {
   Logger.log('Filas pendientes de volcar: ' + pend);
 }
 
+function buildEmailHtml(data, fileLinks, folderUrl, refId, folderShared) {
+  const fields = [
+    ['Referencia', refId],
+    ['Comercial', data.quien_eres],
+    ['Email Comercial', data.email_comercial],
+    ['Compañía', data.compania],
+    ['CUPS', data.cups],
+    ['Oferta', data.oferta],
+    ['Tarifa', data.tarifa],
+    ['Potencias', formatPotencias(data)],
+    ['Titular / Razón Social', data.titular],
+    ['CIF / NIF', data.cif_nif],
+    ['Nombre Firmante', data.nombre_firmante],
+    ['DNI Firmante', data.dni_firmante],
+    ['Dir. Suministro', data.dir_suministro],
+    ['Código Postal', data.codigo_postal],
+    ['Población', data.poblacion],
+    ['Provincia', data.provincia],
+    ['Móvil', data.movil],
+    ['Email Cliente', data.email_cliente],
+    ['Cuenta Bancaria', data.cuenta_bancaria],
+    ['Cambio Titular', data.cambio_titular],
+    ['Nuevo Titular', data.nuevo_titular],
+    ['Observaciones', data.observaciones]
+  ];
+
+  let rows = '';
+  fields.forEach(function(f) {
+    if (f[1]) {
+      rows += '<tr>' +
+        '<td style="padding:10px 14px;font-weight:600;color:#094D38;background:#f0faf6;border:1px solid #e2e8f0;width:200px;font-size:13px">' + f[0] + '</td>' +
+        '<td style="padding:10px 14px;border:1px solid #e2e8f0;font-size:13px">' + escapeHtml(f[1]) + '</td>' +
+      '</tr>';
+    }
+  });
+
+  // Documentos: van ADJUNTOS al correo, sin enlaces (la carpeta de Drive es
+  // privada; los enlaces solo generaban solicitudes de acceso). Si alguno no
+  // cupo por tamaño, se avisa y se enlaza la carpeta, que en ese caso ya está
+  // compartida con el buzón receptor.
+  let filesHtml = '';
+  if (fileLinks.length > 0) {
+    const adjuntos = fileLinks.filter(function (f) { return f.attached; });
+    const soloDrive = fileLinks.filter(function (f) { return !f.attached; });
+    filesHtml = '<h3 style="color:#094D38;margin:24px 0 12px;font-size:15px">Documentación adjunta a este correo (' + adjuntos.length + ')</h3><ul style="list-style:none;padding:0">';
+    adjuntos.forEach(function(f) {
+      filesHtml += '<li style="margin:8px 0;padding:10px 14px;background:#f8fffe;border:1px solid #e2e8f0;border-radius:8px;font-size:13px">' +
+        '<span style="color:#0B6E4F;font-weight:600">' + escapeHtml(f.name) + '</span>' +
+        '<span style="color:#6B7280;margin-left:8px">' + escapeHtml(f.size) + '</span>' +
+      '</li>';
+    });
+    filesHtml += '</ul>';
+    if (soloDrive.length > 0) {
+      filesHtml += '<div style="margin-top:12px;padding:12px 14px;background:#FFF7ED;border:1px solid #FDBA74;border-radius:8px;font-size:13px;color:#7C2D12">' +
+        '<strong>' + soloDrive.length + ' archivo(s) superan el tamaño del correo y quedan solo en Drive:</strong> ' +
+        escapeHtml(soloDrive.map(function (f) { return f.name; }).join(', ')) + '. ' +
+        (folderShared
+          ? '<a href="' + escapeHtml(folderUrl) + '" style="color:#0B6E4F;font-weight:600">Abrir carpeta en Google Drive</a> (compartida con ' + escapeHtml(EMAIL_TO) + ').'
+          : 'No se pudo compartir la carpeta automáticamente: pídesela al propietario del formulario.') +
+      '</div>';
+    }
+  }
+
+  const pie = '<div style="margin-top:20px;padding-top:14px;border-top:1px solid #e2e8f0;font-size:12px;color:#6B7280;line-height:1.5">' +
+    'Al <strong>responder</strong> a este correo, la respuesta le llega directamente al comercial' +
+    (data.email_comercial ? ' (' + escapeHtml(cleanLine(data.email_comercial)) + ')' : '') + '. ' +
+    'El comercial recibe un acuse de recibo con la indicación de enviar cualquier documento adicional a ' + escapeHtml(EMAIL_TO) + ' citando la referencia.<br>' +
+    'Aviso automático de tramitatucontrato.energy.' +
+  '</div>';
+
+  return '<div style="font-family:Arial,sans-serif;max-width:650px;margin:0 auto">' +
+    '<div style="background:#094D38;color:#fff;padding:20px 24px;border-radius:10px 10px 0 0">' +
+      '<h2 style="margin:0;font-size:18px">Nuevo Contrato para Tramitar</h2>' +
+      '<p style="margin:6px 0 0;opacity:.8;font-size:13px">' + Utilities.formatDate(new Date(), 'Europe/Madrid', "dd/MM/yyyy 'a las' HH:mm") + ' — Ref: ' + refId + '</p>' +
+    '</div>' +
+    '<div style="background:#fff;padding:24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px">' +
+      '<table style="width:100%;border-collapse:collapse">' + rows + '</table>' +
+      filesHtml +
+      pie +
+    '</div>' +
+  '</div>';
+}
+
+// Acuse de recibo para el comercial: referencia, resumen (sin IBAN ni DNI) y,
+// sobre todo, A DÓNDE enviar la documentación que falte. Se manda con
+// Reply-To = EMAIL_TO, así "responder" ya llega a tramitación.
+function buildAcuseHtml(data, refId, fileLinks) {
+  const fields = [
+    ['Referencia', refId],
+    ['Fecha', Utilities.formatDate(new Date(), 'Europe/Madrid', "dd/MM/yyyy 'a las' HH:mm")],
+    ['Compañía', data.compania],
+    ['CUPS', data.cups],
+    ['Titular / Razón Social', data.titular],
+    ['Oferta', data.oferta],
+    ['Tarifa', data.tarifa]
+  ];
+  let rows = '';
+  fields.forEach(function(f) {
+    if (f[1]) {
+      rows += '<tr>' +
+        '<td style="padding:10px 14px;font-weight:600;color:#094D38;background:#f0faf6;border:1px solid #e2e8f0;width:200px;font-size:13px">' + f[0] + '</td>' +
+        '<td style="padding:10px 14px;border:1px solid #e2e8f0;font-size:13px">' + escapeHtml(f[1]) + '</td>' +
+      '</tr>';
+    }
+  });
+  let docsHtml = '';
+  if (fileLinks.length > 0) {
+    docsHtml = '<h3 style="color:#094D38;margin:24px 0 12px;font-size:15px">Documentación recibida (' + fileLinks.length + ')</h3><ul style="margin:0;padding-left:20px;font-size:13px;color:#374151">' +
+      fileLinks.map(function (f) { return '<li style="margin:4px 0">' + escapeHtml(f.name) + '</li>'; }).join('') +
+      '</ul>';
+  }
+  const nombre = cleanLine(data.quien_eres || '').trim();
+  return '<div style="font-family:Arial,sans-serif;max-width:650px;margin:0 auto">' +
+    '<div style="background:#094D38;color:#fff;padding:20px 24px;border-radius:10px 10px 0 0">' +
+      '<h2 style="margin:0;font-size:18px">Contrato recibido</h2>' +
+      '<p style="margin:6px 0 0;opacity:.8;font-size:13px">Ref: ' + refId + '</p>' +
+    '</div>' +
+    '<div style="background:#fff;padding:24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px;font-size:14px;color:#111827;line-height:1.5">' +
+      '<p style="margin:0 0 16px">Hola' + (nombre ? ' ' + escapeHtml(nombre) : '') + ', hemos recibido tu contrato y la documentación adjunta. Ya está en manos del equipo de tramitación.</p>' +
+      '<table style="width:100%;border-collapse:collapse">' + rows + '</table>' +
+      docsHtml +
+      '<div style="margin-top:20px;padding:14px 16px;background:#f0faf6;border:1px solid #bbf7d0;border-radius:8px;font-size:13px">' +
+        '<strong>¿Falta algo o quieres añadir documentación?</strong><br>' +
+        'Si el equipo de tramitación necesita algún documento más (por ejemplo, la <strong>factura</strong>), te escribirá desde <strong>' + escapeHtml(EMAIL_TO) + '</strong>. ' +
+        'Para enviar documentación adicional o preguntar por el estado, <strong>responde a este correo</strong> o escribe a ' +
+        '<a href="mailto:' + escapeHtml(EMAIL_TO) + '" style="color:#0B6E4F;font-weight:600">' + escapeHtml(EMAIL_TO) + '</a> ' +
+        'indicando siempre la referencia <strong>' + refId + '</strong>.' +
+      '</div>' +
+      '<p style="margin:16px 0 0;font-size:12px;color:#6B7280">Correo automático de tramitatucontrato.energy (Grupo New Energy). Guarda la referencia para cualquier consulta.</p>' +
+    '</div>' +
+  '</div>';
+}
+
+// ---------------------------------------------------------------------------
+// CAPA DE ENVÍO. sendMail({to, subject, htmlBody|textBody, replyTo, attachments})
+// devuelve {ok, via, error, note}. Vía A: Brevo (si hay BREVO_API_KEY). Vía B: Gmail.
+// Nunca lanza: los fallos se devuelven en 'error' para que doPost decida.
+// ---------------------------------------------------------------------------
+function sendMail(msg) {
+  const key = getBrevoKey();
+  let brevoErr = '';
+  if (key && brevoSinCreditos(key)) {
+    brevoErr = 'la cuenta de Brevo no tiene créditos de envío (hay que renovar el plan)';
+  } else if (key) {
+    const r = sendViaBrevo(msg, key);
+    if (r.ok) return { ok: true, via: 'brevo', error: '', note: '' };
+    brevoErr = r.error;
+  }
+  const g = sendViaGmail(msg);
+  const note = key
+    ? 'vía Gmail (respaldo) porque Brevo falló: ' + brevoErr
+    : 'vía Gmail (falta BREVO_API_KEY en Propiedades del script)';
+  if (g.ok) return { ok: true, via: 'gmail', error: '', note: note };
+  return { ok: false, via: '', error: (brevoErr ? 'Brevo: ' + brevoErr + ' | ' : '') + 'Gmail: ' + g.error, note: '' };
+}
+
+// Brevo SIN CRÉDITOS (incidente 7/8-oct-2026): la API sigue respondiendo 201 pero
+// NO envía (evento «Email not sent: Your account has insufficient credits», que
+// Brevo registra una sola vez cada 24 h). El formulario anotaba «Email OK» y los
+// avisos no llegaban. Antes de usar Brevo se mira el saldo de la cuenta
+// (GET /v3/account, cacheado 10 min); si ningún plan de email tiene créditos, se
+// manda por el respaldo Gmail y queda anotado en el Sheet. Falla ABIERTO: si la
+// consulta falla o la respuesta no tiene la forma esperada, se sigue con Brevo.
+var brevoSinCreditosCache = null;
+function brevoSinCreditos(key) {
+  if (brevoSinCreditosCache !== null) return brevoSinCreditosCache;
+  brevoSinCreditosCache = false;
+  try {
+    const cache = CacheService.getScriptCache();
+    const cached = cache.get('brevo_sin_creditos');
+    if (cached) {
+      brevoSinCreditosCache = cached === '1';
+      return brevoSinCreditosCache;
+    }
+    const res = UrlFetchApp.fetch('https://api.brevo.com/v3/account', {
+      method: 'get',
+      headers: { 'api-key': key, 'accept': 'application/json' },
+      muteHttpExceptions: true
+    });
+    if (res.getResponseCode() !== 200) return brevoSinCreditosCache;
+    const plan = JSON.parse(res.getContentText() || '{}').plan;
+    if (!Array.isArray(plan)) return brevoSinCreditosCache;
+    const planesEmail = plan.filter(function (p) {
+      return p && p.type !== 'sms' && typeof p.credits === 'number';
+    });
+    if (planesEmail.length === 0) return brevoSinCreditosCache;
+    const sinCreditos = planesEmail.every(function (p) { return p.credits <= 0; });
+    cache.put('brevo_sin_creditos', sinCreditos ? '1' : '0', 600);
+    brevoSinCreditosCache = sinCreditos;
+  } catch (e) {}
+  return brevoSinCreditosCache;
+}
+
+// Clave de Brevo, por este orden: 1) Propiedades del script `BREVO_API_KEY`;
+// 2) fichero privado CONFIG_FILE_NAME dentro de FOLDER_ID (solo lo ve la cuenta
+// propietaria; NO compartirlo) con {"BREVO_API_KEY": "..."}, cacheado 1h.
+// Sin clave por ninguna vía → respaldo Gmail.
+const CONFIG_FILE_NAME = 'config-formulario.json';
+var brevoKeyCache = null;
+function getBrevoKey() {
+  if (brevoKeyCache !== null) return brevoKeyCache;
+  let key = '';
+  try {
+    key = String(PropertiesService.getScriptProperties().getProperty('BREVO_API_KEY') || '').trim();
+  } catch (e) {}
+  if (!key) {
+    try {
+      const cache = CacheService.getScriptCache();
+      const cached = cache.get('brevo_key');
+      if (cached) {
+        key = cached;
+      } else {
+        const files = DriveApp.getFolderById(FOLDER_ID).getFilesByName(CONFIG_FILE_NAME);
+        if (files.hasNext()) {
+          const cfg = JSON.parse(files.next().getBlob().getDataAsString('UTF-8') || '{}');
+          key = String(cfg.BREVO_API_KEY || '').trim();
+          if (key) cache.put('brevo_key', key, 3600);
+        }
+      }
+    } catch (e) {}
+  }
+  brevoKeyCache = key;
+  return key;
+}
+
+// Brevo API v3 (transaccional). Los adjuntos van en base64 dentro del JSON.
+function sendViaBrevo(msg, key) {
+  try {
+    const body = {
+      sender: { name: BREVO_SENDER.name, email: BREVO_SENDER.email },
+      to: [{ email: msg.to }],
+      subject: msg.subject
+    };
+    if (msg.htmlBody) body.htmlContent = msg.htmlBody;
+    else body.textContent = msg.textBody || '';
+    if (msg.replyTo) body.replyTo = { email: msg.replyTo };
+    if (msg.attachments && msg.attachments.length > 0) {
+      body.attachment = msg.attachments.map(function (b) {
+        return { name: b.getName(), content: Utilities.base64Encode(b.getBytes()) };
+      });
+    }
+    const res = UrlFetchApp.fetch('https://api.brevo.com/v3/smtp/email', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'api-key': key, 'accept': 'application/json' },
+      payload: JSON.stringify(body),
+      muteHttpExceptions: true
+    });
+    const code = res.getResponseCode();
+    if (code >= 200 && code < 300) return { ok: true, error: '' };
+    return { ok: false, error: 'HTTP ' + code + ' ' + String(res.getContentText() || '').slice(0, 200) };
+  } catch (e) {
+    return { ok: false, error: e.toString().slice(0, 200) };
+  }
+}
+
+// GmailApp desde la cuenta que ejecuta el script. Usa GMAIL_ALIAS solo si está
+// dado de alta como "Enviar como" (con un from desconocido GmailApp lanza error).
+var gmailAliasCache = null;
+function gmailFromAlias() {
+  if (gmailAliasCache !== null) return gmailAliasCache;
+  gmailAliasCache = '';
+  if (GMAIL_ALIAS) {
+    try {
+      const aliases = GmailApp.getAliases().map(function (a) { return String(a).toLowerCase(); });
+      if (aliases.indexOf(GMAIL_ALIAS.toLowerCase()) > -1) gmailAliasCache = GMAIL_ALIAS;
+    } catch (aliasErr) {}
+  }
+  return gmailAliasCache;
+}
+function sendViaGmail(msg) {
+  try {
+    const opts = { name: MAIL_FROM_NAME };
+    if (msg.htmlBody) opts.htmlBody = msg.htmlBody;
+    if (msg.replyTo) opts.replyTo = msg.replyTo;
+    if (msg.attachments && msg.attachments.length > 0) opts.attachments = msg.attachments;
+    const alias = gmailFromAlias();
+    if (alias) opts.from = alias;
+    GmailApp.sendEmail(msg.to, msg.subject, msg.textBody || '', opts);
+    return { ok: true, error: '' };
+  } catch (e) {
+    return { ok: false, error: e.toString().slice(0, 200) };
+  }
+}
+
+// Comparte la carpeta del contrato (solo lectura) con el buzón receptor. Solo se
+// usa cuando algún documento no ha podido ir adjunto al correo.
 function shareFolderWithReceiver(folder) {
   try {
     folder.addViewer(EMAIL_TO);
@@ -575,4 +880,149 @@ function diagnosticoBrevo() {
   } catch (e) {
     Logger.log('UrlFetch ERROR: ' + e);
   }
+}
+
+// ---------------------------------------------------------------------------
+// RECUPERACIÓN DE AVISOS PERDIDOS (incidente 7/8-oct-2026: Brevo sin créditos).
+// Desde RECUPERACION_DESDE los contratos se guardaron en Drive y en la hoja, pero
+// el aviso al buzón de tramitación NO salió (Brevo respondía OK sin enviar).
+// Uso, desde el editor de Apps Script y SOLO cuando el correo vuelva a funcionar
+// (Brevo renovado, o este Code.gs ya publicado, que usa Gmail si a Brevo no le
+// quedan créditos):
+//   1) Ejecutar revisarAvisosPerdidos(): solo LISTA en el registro de ejecución
+//      qué contratos se reenviarían. No envía nada.
+//   2) Ejecutar reenviarAvisosPerdidos(): reenvía cada uno al buzón de
+//      tramitación con sus documentos de Drive y los datos que guarda la hoja.
+// Se salta los que Brevo SÍ entregó (eventos «delivered» con la referencia en el
+// asunto), los que salieron por Gmail (nota «vía Gmail»), los ya reenviados
+// (marca REENVIADO_<ref> en Propiedades del script) y los de los últimos 15 min
+// (su entrega puede no constar aún). Se puede repetir sin duplicar. Si no puede
+// leer la hoja o consultar Brevo, no envía nada.
+// ---------------------------------------------------------------------------
+const RECUPERACION_DESDE = '07/10/2026 11:32:00'; // primer aviso perdido según Brevo
+
+function revisarAvisosPerdidos() { procesarAvisosPerdidos_(false); }
+function reenviarAvisosPerdidos() { procesarAvisosPerdidos_(true); }
+
+function procesarAvisosPerdidos_(enviar) {
+  const props = PropertiesService.getScriptProperties();
+  const ssId = props.getProperty('LOG_SHEET_ID');
+  if (!ssId) { Logger.log('No hay hoja de registro (LOG_SHEET_ID).'); return; }
+
+  // 1. Filas del registro entre RECUPERACION_DESDE y hace 15 minutos
+  const resHoja = UrlFetchApp.fetch('https://sheets.googleapis.com/v4/spreadsheets/' + encodeURIComponent(ssId)
+    + '/values/' + encodeURIComponent('A:Z'),
+    { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
+  if (resHoja.getResponseCode() !== 200) {
+    Logger.log('No se pudo leer la hoja: HTTP ' + resHoja.getResponseCode() + '. No envío nada.');
+    return;
+  }
+  const filas = JSON.parse(resHoja.getContentText()).values || [];
+  if (filas.length < 2) { Logger.log('La hoja no tiene filas.'); return; }
+  const cab = filas[0].map(function (c) { return String(c).trim(); });
+  const col = function (nombre) {
+    for (let i = 0; i < cab.length; i++) if (cab[i].indexOf(nombre) === 0) return i;
+    return -1;
+  };
+  const iFecha = col('Fecha'), iRef = col('Ref'), iEmailOk = col('Email OK'), iNotas = col('Errores');
+  if (iFecha < 0 || iRef < 0) { Logger.log('Cabecera inesperada: ' + cab.join(' | ')); return; }
+  const desde = claveFecha_(RECUPERACION_DESDE);
+  const hasta = claveFecha_(Utilities.formatDate(new Date(Date.now() - 15 * 60 * 1000), 'Europe/Madrid', 'dd/MM/yyyy HH:mm:ss'));
+  const candidatas = filas.slice(1).filter(function (f) {
+    const k = claveFecha_(f[iFecha]);
+    const notas = iNotas >= 0 ? String(f[iNotas] || '') : '';
+    return k >= desde && k <= hasta && /^(GNE|MEGA)-/.test(String(f[iRef] || ''))
+      && (iEmailOk < 0 || f[iEmailOk] === 'SÍ')
+      && notas.indexOf('vía Gmail') === -1 && notas.indexOf('HONEYPOT') === -1;
+  });
+
+  // 2. Avisos que Brevo SÍ entregó al buzón en ese tiempo: esos no se reenvían
+  const key = getBrevoKey();
+  if (!key) { Logger.log('Sin clave de Brevo: no puedo comprobar qué se entregó. No envío nada.'); return; }
+  const d = RECUPERACION_DESDE.split(' ')[0].split('/');
+  const resEv = UrlFetchApp.fetch('https://api.brevo.com/v3/smtp/statistics/events?event=delivered&limit=5000'
+    + '&email=' + encodeURIComponent(EMAIL_TO)
+    + '&startDate=' + d[2] + '-' + d[1] + '-' + d[0]
+    + '&endDate=' + Utilities.formatDate(new Date(), 'Europe/Madrid', 'yyyy-MM-dd'),
+    { headers: { 'api-key': key, accept: 'application/json' }, muteHttpExceptions: true });
+  if (resEv.getResponseCode() !== 200) {
+    Logger.log('No se pudo consultar Brevo: HTTP ' + resEv.getResponseCode() + '. No envío nada.');
+    return;
+  }
+  const entregados = (JSON.parse(resEv.getContentText() || '{}').events || [])
+    .map(function (e) { return String(e.subject || ''); }).join('\n');
+  const pendientes = candidatas.filter(function (f) {
+    const ref = String(f[iRef]);
+    return entregados.indexOf(ref) === -1 && !props.getProperty('REENVIADO_' + ref);
+  });
+  Logger.log('Desde ' + RECUPERACION_DESDE + ': ' + candidatas.length + ' contrato(s) en el registro, '
+    + pendientes.length + ' sin aviso entregado ni reenviado.');
+
+  // 3. Reenvío (o solo listado)
+  const raiz = DriveApp.getFolderById(FOLDER_ID);
+  let enviados = 0;
+  pendientes.forEach(function (f) {
+    const ref = String(f[iRef]);
+    const valor = function (nombre) { const i = col(nombre); return i >= 0 ? String(f[i] || '') : ''; };
+    const carpetas = raiz.searchFolders('title contains "' + ref + '" and trashed = false');
+    const folder = carpetas.hasNext() ? carpetas.next() : null;
+    if (!folder) { Logger.log(ref + ': NO encuentro su carpeta en Drive; revisar a mano.'); return; }
+    const fileLinks = [];
+    const attachments = [];
+    let attachRaw = 0;
+    const it = folder.getFiles();
+    while (it.hasNext()) {
+      const file = it.next();
+      const tam = file.getSize();
+      const cabe = attachRaw + tam <= ATTACH_BUDGET_RAW;
+      if (cabe) { attachments.push(file.getBlob()); attachRaw += tam; }
+      fileLinks.push({ name: file.getName(), size: Math.max(1, Math.round(tam / 1024)) + ' KB', url: file.getUrl(), attached: cabe });
+    }
+    Logger.log(ref + ' · ' + valor('Fecha') + ' · ' + valor('Comercial') + ' · ' + fileLinks.length + ' archivo(s)'
+      + (enviar ? '' : ' → se reenviaría'));
+    if (!enviar) return;
+
+    let folderShared = false;
+    if (fileLinks.some(function (x) { return !x.attached; })) folderShared = shareFolderWithReceiver(folder);
+    const data = {
+      quien_eres: valor('Comercial'), email_comercial: valor('Email comercial'), compania: valor('Compañía'),
+      cups: valor('CUPS'), tarifa: valor('Tarifa'), tipo_suministro: valor('Tipo suministro'),
+      titular: valor('Titular'), cif_nif: valor('CIF/NIF'), movil: valor('Móvil'),
+      email_cliente: valor('Email cliente'), cuenta_bancaria: valor('IBAN')
+    };
+    const replyTo = cleanLine(data.email_comercial).trim();
+    const replyToOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(replyTo);
+    const avisoReenvio = '<div style="font-family:Arial,sans-serif;max-width:650px;margin:0 auto 12px;padding:14px 16px;'
+      + 'background:#FFF7ED;border:1px solid #FDBA74;border-radius:8px;font-size:13px;color:#7C2D12;line-height:1.5">'
+      + '<strong>REENVÍO de un aviso que no llegó.</strong> Este contrato entró por el formulario el '
+      + escapeHtml(valor('Fecha')) + ', pero el correo no llegó a salir (la cuenta de envío se quedó sin créditos '
+      + 'el 7-oct-2026). Los documentos van adjuntos. Del formulario solo se conservan los datos de la tabla: '
+      + 'el IBAN aparece enmascarado y faltan, entre otros, la dirección, las potencias y las observaciones. '
+      + 'Para pedírselos al comercial, responde a este correo.</div>';
+    const subject = ('REENVÍO - Nuevo Contrato - ' + cleanLine(data.titular).slice(0, 60)
+      + ' - ' + cleanLine(data.cups).slice(0, 25) + ' - ' + ref).slice(0, 200);
+    const r = sendMail({
+      to: EMAIL_TO,
+      subject: subject,
+      htmlBody: avisoReenvio + buildEmailHtml(data, fileLinks, folder.getUrl(), ref, folderShared),
+      replyTo: replyToOk ? replyTo : '',
+      attachments: attachments
+    });
+    if (r.ok) {
+      props.setProperty('REENVIADO_' + ref, new Date().toISOString() + (r.note ? ' ' + r.note : ''));
+      enviados++;
+      Logger.log('   reenviado' + (r.note ? ' (' + r.note + ')' : ''));
+    } else {
+      Logger.log('   ERROR al reenviar: ' + r.error);
+    }
+  });
+  if (enviar) Logger.log('Reenviados: ' + enviados + ' de ' + pendientes.length + '.');
+}
+
+// "07/10/2026 9:06:38" → 20261007090638 (número comparable, hora de Madrid tal cual)
+function claveFecha_(txt) {
+  const m = String(txt || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return 0;
+  const p = function (n) { return ('0' + n).slice(-2); };
+  return Number(m[3] + p(m[2]) + p(m[1]) + p(m[4]) + m[5] + (m[6] || '00'));
 }
