@@ -4,3 +4,15 @@ CLAUDE.md
 google-apps-script/
 google-apps-script-mega/
 .gitignore
+# Tramitación v2 (8-oct-2026): lo que solo sirve para desarrollar, probar o
+# poner en marcha. package.json NO se excluye: Vercel lo necesita (type module,
+# Node 22.x). api/, bandeja*.html y bandeja-zip.js sí se publican.
+supabase/
+scripts/
+tests/
+docs/
+.env.local
+.env*
+.agents/
+.project-map/
+.claude/

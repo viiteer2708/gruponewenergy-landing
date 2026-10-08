@@ -1,3 +1,6 @@
 .vercel
 .claude/
 .project-map/
+.env.local
+node_modules/
+tests/e2e/salidas/

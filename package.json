@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "scripts": {
+    "test": "node --test \"tests/unit/*.test.mjs\"",
+    "test:api": "node --test \"tests/api/*.test.mjs\"",
+    "servidor": "node tests/servidor-local.mjs"
+  }
+}

@@ -1,4 +1,6 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["dub1"],
   "redirects": [
     { "source": "/", "destination": "/gnew", "statusCode": 302 }
   ],
@@ -6,6 +8,37 @@
     { "source": "/gnew", "destination": "/gnew.html" },
     { "source": "/mega", "destination": "/mega.html" },
     { "source": "/gracias-mega", "destination": "/gracias-mega.html" },
-    { "source": "/clave", "destination": "/clave.html" }
-  ]
+    { "source": "/clave", "destination": "/clave.html" },
+    { "source": "/bandeja", "destination": "/bandeja.html" },
+    { "source": "/bandeja/entrar", "destination": "/bandeja-entrar.html" },
+    { "source": "/bandeja/c/:ref", "destination": "/bandeja-ficha.html" }
+  ],
+  "headers": [
+    {
+      "source": "/bandeja",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" },
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow" },
+        { "key": "Referrer-Policy", "value": "no-referrer" }
+      ]
+    },
+    {
+      "source": "/bandeja/:path*",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" },
+        { "key": "X-Robots-Tag", "value": "noindex, nofollow" },
+        { "key": "Referrer-Policy", "value": "no-referrer" }
+      ]
+    },
+    {
+      "source": "/api/:path*",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store" }
+      ]
+    }
+  ],
+  "functions": {
+    "api/tramitacion/*.js": { "maxDuration": 60 },
+    "api/bandeja/*.js": { "maxDuration": 30 }
+  }
 }
