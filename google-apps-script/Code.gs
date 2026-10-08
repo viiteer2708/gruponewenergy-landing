@@ -924,7 +924,7 @@ function procesarAvisosPerdidos_(enviar) {
     for (let i = 0; i < cab.length; i++) if (cab[i].indexOf(nombre) === 0) return i;
     return -1;
   };
-  const iFecha = col('Fecha'), iRef = col('Ref'), iEmailOk = col('Email OK'), iNotas = col('Errores');
+  const iFecha = col('Fecha'), iRef = col('Ref'), iDriveOk = col('Drive OK'), iNotas = col('Errores');
   if (iFecha < 0 || iRef < 0) { Logger.log('Cabecera inesperada: ' + cab.join(' | ')); return; }
   const desde = claveFecha_(RECUPERACION_DESDE);
   const hasta = claveFecha_(Utilities.formatDate(new Date(Date.now() - 15 * 60 * 1000), 'Europe/Madrid', 'dd/MM/yyyy HH:mm:ss'));
@@ -932,7 +932,7 @@ function procesarAvisosPerdidos_(enviar) {
     const k = claveFecha_(f[iFecha]);
     const notas = iNotas >= 0 ? String(f[iNotas] || '') : '';
     return k >= desde && k <= hasta && /^(GNE|MEGA)-/.test(String(f[iRef] || ''))
-      && (iEmailOk < 0 || f[iEmailOk] === 'SÍ')
+      && (iDriveOk < 0 || f[iDriveOk] === 'SÍ') // también los de «Email OK = NO» (p. ej. cupo de Gmail agotado)
       && notas.indexOf('vía Gmail') === -1 && notas.indexOf('HONEYPOT') === -1;
   });
 
