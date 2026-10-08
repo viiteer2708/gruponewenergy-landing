@@ -37,6 +37,11 @@
  * la versión anterior); (b) si la cuenta de Brevo no tiene créditos, el correo
  * sale por Gmail en vez de perderse en silencio; (c) cada carpeta de Drive
  * guarda datos-formulario.txt con los datos del envío. Sin permisos nuevos.
+ * Brevo se da de baja (Victor, 8-oct-2026: el correo del grupo pasa a Altavoz).
+ * Desde el 8-oct la clave de Brevo está desactivada (config-formulario.json
+ * renombrado en Drive) y los avisos salen por el respaldo Gmail hasta migrar
+ * el formulario a Altavoz. Los 31 avisos perdidos del 7/8-oct se reenviaron
+ * desde el VPS por Amazon SES (cuenta de Altavoz) el 8-oct.
  */
 
 const EMAIL_TO = 'escaneos@gruponew.energy';
@@ -699,7 +704,7 @@ function sendMail(msg) {
   const key = getBrevoKey();
   let brevoErr = '';
   if (key && brevoSinCreditos(key)) {
-    brevoErr = 'la cuenta de Brevo no tiene créditos de envío (hay que renovar el plan)';
+    brevoErr = 'la cuenta de Brevo no tiene créditos de envío';
   } else if (key) {
     const r = sendViaBrevo(msg, key);
     if (r.ok) return { ok: true, via: 'brevo', error: '', note: '' };
@@ -880,149 +885,4 @@ function diagnosticoBrevo() {
   } catch (e) {
     Logger.log('UrlFetch ERROR: ' + e);
   }
-}
-
-// ---------------------------------------------------------------------------
-// RECUPERACIÓN DE AVISOS PERDIDOS (incidente 7/8-oct-2026: Brevo sin créditos).
-// Desde RECUPERACION_DESDE los contratos se guardaron en Drive y en la hoja, pero
-// el aviso al buzón de tramitación NO salió (Brevo respondía OK sin enviar).
-// Uso, desde el editor de Apps Script y SOLO cuando el correo vuelva a funcionar
-// (Brevo renovado, o este Code.gs ya publicado, que usa Gmail si a Brevo no le
-// quedan créditos):
-//   1) Ejecutar revisarAvisosPerdidos(): solo LISTA en el registro de ejecución
-//      qué contratos se reenviarían. No envía nada.
-//   2) Ejecutar reenviarAvisosPerdidos(): reenvía cada uno al buzón de
-//      tramitación con sus documentos de Drive y los datos que guarda la hoja.
-// Se salta los que Brevo SÍ entregó (eventos «delivered» con la referencia en el
-// asunto), los que salieron por Gmail (nota «vía Gmail»), los ya reenviados
-// (marca REENVIADO_<ref> en Propiedades del script) y los de los últimos 15 min
-// (su entrega puede no constar aún). Se puede repetir sin duplicar. Si no puede
-// leer la hoja o consultar Brevo, no envía nada.
-// ---------------------------------------------------------------------------
-const RECUPERACION_DESDE = '07/10/2026 11:32:00'; // primer aviso perdido según Brevo
-
-function revisarAvisosPerdidos() { procesarAvisosPerdidos_(false); }
-function reenviarAvisosPerdidos() { procesarAvisosPerdidos_(true); }
-
-function procesarAvisosPerdidos_(enviar) {
-  const props = PropertiesService.getScriptProperties();
-  const ssId = props.getProperty('LOG_SHEET_ID');
-  if (!ssId) { Logger.log('No hay hoja de registro (LOG_SHEET_ID).'); return; }
-
-  // 1. Filas del registro entre RECUPERACION_DESDE y hace 15 minutos
-  const resHoja = UrlFetchApp.fetch('https://sheets.googleapis.com/v4/spreadsheets/' + encodeURIComponent(ssId)
-    + '/values/' + encodeURIComponent('A:Z'),
-    { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
-  if (resHoja.getResponseCode() !== 200) {
-    Logger.log('No se pudo leer la hoja: HTTP ' + resHoja.getResponseCode() + '. No envío nada.');
-    return;
-  }
-  const filas = JSON.parse(resHoja.getContentText()).values || [];
-  if (filas.length < 2) { Logger.log('La hoja no tiene filas.'); return; }
-  const cab = filas[0].map(function (c) { return String(c).trim(); });
-  const col = function (nombre) {
-    for (let i = 0; i < cab.length; i++) if (cab[i].indexOf(nombre) === 0) return i;
-    return -1;
-  };
-  const iFecha = col('Fecha'), iRef = col('Ref'), iDriveOk = col('Drive OK'), iNotas = col('Errores');
-  if (iFecha < 0 || iRef < 0) { Logger.log('Cabecera inesperada: ' + cab.join(' | ')); return; }
-  const desde = claveFecha_(RECUPERACION_DESDE);
-  const hasta = claveFecha_(Utilities.formatDate(new Date(Date.now() - 15 * 60 * 1000), 'Europe/Madrid', 'dd/MM/yyyy HH:mm:ss'));
-  const candidatas = filas.slice(1).filter(function (f) {
-    const k = claveFecha_(f[iFecha]);
-    const notas = iNotas >= 0 ? String(f[iNotas] || '') : '';
-    return k >= desde && k <= hasta && /^(GNE|MEGA)-/.test(String(f[iRef] || ''))
-      && (iDriveOk < 0 || f[iDriveOk] === 'SÍ') // también los de «Email OK = NO» (p. ej. cupo de Gmail agotado)
-      && notas.indexOf('vía Gmail') === -1 && notas.indexOf('HONEYPOT') === -1;
-  });
-
-  // 2. Avisos que Brevo SÍ entregó al buzón en ese tiempo: esos no se reenvían
-  const key = getBrevoKey();
-  if (!key) { Logger.log('Sin clave de Brevo: no puedo comprobar qué se entregó. No envío nada.'); return; }
-  const d = RECUPERACION_DESDE.split(' ')[0].split('/');
-  const resEv = UrlFetchApp.fetch('https://api.brevo.com/v3/smtp/statistics/events?event=delivered&limit=5000'
-    + '&email=' + encodeURIComponent(EMAIL_TO)
-    + '&startDate=' + d[2] + '-' + d[1] + '-' + d[0]
-    + '&endDate=' + Utilities.formatDate(new Date(), 'Europe/Madrid', 'yyyy-MM-dd'),
-    { headers: { 'api-key': key, accept: 'application/json' }, muteHttpExceptions: true });
-  if (resEv.getResponseCode() !== 200) {
-    Logger.log('No se pudo consultar Brevo: HTTP ' + resEv.getResponseCode() + '. No envío nada.');
-    return;
-  }
-  const entregados = (JSON.parse(resEv.getContentText() || '{}').events || [])
-    .map(function (e) { return String(e.subject || ''); }).join('\n');
-  const pendientes = candidatas.filter(function (f) {
-    const ref = String(f[iRef]);
-    return entregados.indexOf(ref) === -1 && !props.getProperty('REENVIADO_' + ref);
-  });
-  Logger.log('Desde ' + RECUPERACION_DESDE + ': ' + candidatas.length + ' contrato(s) en el registro, '
-    + pendientes.length + ' sin aviso entregado ni reenviado.');
-
-  // 3. Reenvío (o solo listado)
-  const raiz = DriveApp.getFolderById(FOLDER_ID);
-  let enviados = 0;
-  pendientes.forEach(function (f) {
-    const ref = String(f[iRef]);
-    const valor = function (nombre) { const i = col(nombre); return i >= 0 ? String(f[i] || '') : ''; };
-    const carpetas = raiz.searchFolders('title contains "' + ref + '" and trashed = false');
-    const folder = carpetas.hasNext() ? carpetas.next() : null;
-    if (!folder) { Logger.log(ref + ': NO encuentro su carpeta en Drive; revisar a mano.'); return; }
-    const fileLinks = [];
-    const attachments = [];
-    let attachRaw = 0;
-    const it = folder.getFiles();
-    while (it.hasNext()) {
-      const file = it.next();
-      const tam = file.getSize();
-      const cabe = attachRaw + tam <= ATTACH_BUDGET_RAW;
-      if (cabe) { attachments.push(file.getBlob()); attachRaw += tam; }
-      fileLinks.push({ name: file.getName(), size: Math.max(1, Math.round(tam / 1024)) + ' KB', url: file.getUrl(), attached: cabe });
-    }
-    Logger.log(ref + ' · ' + valor('Fecha') + ' · ' + valor('Comercial') + ' · ' + fileLinks.length + ' archivo(s)'
-      + (enviar ? '' : ' → se reenviaría'));
-    if (!enviar) return;
-
-    let folderShared = false;
-    if (fileLinks.some(function (x) { return !x.attached; })) folderShared = shareFolderWithReceiver(folder);
-    const data = {
-      quien_eres: valor('Comercial'), email_comercial: valor('Email comercial'), compania: valor('Compañía'),
-      cups: valor('CUPS'), tarifa: valor('Tarifa'), tipo_suministro: valor('Tipo suministro'),
-      titular: valor('Titular'), cif_nif: valor('CIF/NIF'), movil: valor('Móvil'),
-      email_cliente: valor('Email cliente'), cuenta_bancaria: valor('IBAN')
-    };
-    const replyTo = cleanLine(data.email_comercial).trim();
-    const replyToOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(replyTo);
-    const avisoReenvio = '<div style="font-family:Arial,sans-serif;max-width:650px;margin:0 auto 12px;padding:14px 16px;'
-      + 'background:#FFF7ED;border:1px solid #FDBA74;border-radius:8px;font-size:13px;color:#7C2D12;line-height:1.5">'
-      + '<strong>REENVÍO de un aviso que no llegó.</strong> Este contrato entró por el formulario el '
-      + escapeHtml(valor('Fecha')) + ', pero el correo no llegó a salir (la cuenta de envío se quedó sin créditos '
-      + 'el 7-oct-2026). Los documentos van adjuntos. Del formulario solo se conservan los datos de la tabla: '
-      + 'el IBAN aparece enmascarado y faltan, entre otros, la dirección, las potencias y las observaciones. '
-      + 'Para pedírselos al comercial, responde a este correo.</div>';
-    const subject = ('REENVÍO - Nuevo Contrato - ' + cleanLine(data.titular).slice(0, 60)
-      + ' - ' + cleanLine(data.cups).slice(0, 25) + ' - ' + ref).slice(0, 200);
-    const r = sendMail({
-      to: EMAIL_TO,
-      subject: subject,
-      htmlBody: avisoReenvio + buildEmailHtml(data, fileLinks, folder.getUrl(), ref, folderShared),
-      replyTo: replyToOk ? replyTo : '',
-      attachments: attachments
-    });
-    if (r.ok) {
-      props.setProperty('REENVIADO_' + ref, new Date().toISOString() + (r.note ? ' ' + r.note : ''));
-      enviados++;
-      Logger.log('   reenviado' + (r.note ? ' (' + r.note + ')' : ''));
-    } else {
-      Logger.log('   ERROR al reenviar: ' + r.error);
-    }
-  });
-  if (enviar) Logger.log('Reenviados: ' + enviados + ' de ' + pendientes.length + '.');
-}
-
-// "07/10/2026 9:06:38" → 20261007090638 (número comparable, hora de Madrid tal cual)
-function claveFecha_(txt) {
-  const m = String(txt || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-  if (!m) return 0;
-  const p = function (n) { return ('0' + n).slice(-2); };
-  return Number(m[3] + p(m[2]) + p(m[1]) + p(m[4]) + m[5] + (m[6] || '00'));
 }
