@@ -11,12 +11,13 @@
  * 7. Acceso: "Cualquier persona" — imprescindible: el navegador necesita poder
  *    leer la respuesta JSON para confirmar el envío antes de dar el OK al usuario
  * 8. REMITENTE (dos vías, en este orden):
- *    A) Brevo API — clave en Propiedades del script (⚙️ Configuración del proyecto >
- *       Propiedades del script > BREVO_API_KEY). El remitente BREVO_SENDER tiene que
- *       existir en Brevo (Remitentes) con su dominio autenticado. Sin adjuntos >20MB.
- *    B) Si no hay clave o Brevo falla: GmailApp desde la cuenta que ejecuta el
- *       script, usando GMAIL_ALIAS si está dado de alta como "Enviar como"; si no,
- *       la cuenta por defecto. Lo que pase queda anotado en "Errores / notas" del Sheet.
+ *    A) Altavoz (API de avisos) — clave en Propiedades del script (⚙️ Configuración
+ *       del proyecto > Propiedades del script > ALTAVOZ_API_KEY) o en el fichero
+ *       privado config-formulario.json de la carpeta de Drive. El remitente lo pone
+ *       Altavoz (el de la marca ALTAVOZ_MARCA). Adjuntos: 3 MB reales y 10 en total.
+ *    B) Si no hay clave o Altavoz no acepta el aviso: GmailApp desde la cuenta que
+ *       ejecuta el script, usando GMAIL_ALIAS si está dado de alta como "Enviar como";
+ *       si no, la cuenta por defecto. Lo que pase queda anotado en "Errores / notas" del Sheet.
  *
  * ORDEN DE DESPLIEGUE cuando cambian front y back a la vez: primero Vercel
  * (gnew.html), después esta nueva versión. El backend antiguo ignora los campos
@@ -30,31 +31,56 @@
  * responden retryable:true para que el front reintente con el mismo ref_id.
  * No requiere permisos nuevos (mismos oauthScopes de appsscript.json).
  *
- * CAMBIO 8-oct-2026: (a) se reponen las funciones de correo (buildEmailHtml,
- * buildAcuseHtml, sendMail, getBrevoKey, sendViaBrevo, gmailFromAlias,
- * sendViaGmail), que se perdieron en este fichero con el cambio del 10-sep: la
- * copia del repo NO podía mandar ningún correo (el script publicado seguía con
- * la versión anterior); (b) si la cuenta de Brevo no tiene créditos, el correo
- * sale por Gmail en vez de perderse en silencio; (c) cada carpeta de Drive
- * guarda datos-formulario.txt con los datos del envío. Sin permisos nuevos.
- * Brevo se da de baja (Victor, 8-oct-2026: el correo del grupo pasa a Altavoz).
- * Desde el 8-oct la clave de Brevo está desactivada (config-formulario.json
- * renombrado en Drive) y los avisos salen por el respaldo Gmail hasta migrar
- * el formulario a Altavoz. Los 31 avisos perdidos del 7/8-oct se reenviaron
- * desde el VPS por Amazon SES (cuenta de Altavoz) el 8-oct.
+ * CAMBIO 8-oct-2026 (mañana): (a) se reponen las funciones de correo (buildEmailHtml,
+ * buildAcuseHtml, sendMail, gmailFromAlias, sendViaGmail y las de la vía A de entonces),
+ * que se perdieron en este fichero con el cambio del 10-sep: la copia del repo NO podía
+ * mandar ningún correo (el script publicado seguía con la versión anterior); (b) cada
+ * carpeta de Drive guarda datos-formulario.txt con los datos del envío. Brevo se dio de
+ * baja el 8-oct-2026 (se quedó sin créditos y aceptaba sin enviar); los 31 avisos perdidos
+ * del 7/8-oct se reenviaron desde el VPS por Amazon SES (cuenta de Altavoz).
+ *
+ * CAMBIO 8-oct-2026 (tarde): el correo sale por ALTAVOZ (vía A) y Gmail queda solo de
+ * respaldo (vía B). Se quitó toda la vía Brevo.
+ *  - Vía A: POST ALTAVOZ_URL con ALTAVOZ_MARCA; el remitente lo pone Altavoz. Un 2xx =
+ *    Amazon lo aceptó; cualquier otro código = no salió y el aviso se manda por Gmail,
+ *    con el motivo en "Errores / notas" del Sheet. Con el «modo prueba» de Altavoz
+ *    encendido TODOS los avisos salen por Gmail (409 modo_prueba): es lo correcto.
+ *  - Adjuntos: topes de Altavoz: ATTACH_BUDGET_RAW = 3.000.000 bytes reales entre todos y
+ *    ATTACH_MAX_COUNT = 10 adjuntos en total, firma incluida; un documento o la firma solo
+ *    va adjunto si cabe en bytes Y quedan plazas (documentos primero, firma después). Lo
+ *    que no va adjunto queda solo en Drive: la carpeta se comparte con el buzón receptor
+ *    y el correo lleva el enlace (decisión de Victor).
+ *  - Acuse al comercial a una dirección BLOQUEADA en Altavoz (409 destinatario_suprimido):
+ *    NO se reintenta por Gmail (se saltaría el bloqueo); queda en "Errores / notas" como
+ *    «Acuse al comercial: Altavoz: dirección bloqueada (…)» y el contrato sigue siendo
+ *    success. El aviso al buzón, el aviso de texto y el correo de error SÍ caen a Gmail.
+ *  - Clave: Propiedades del script ALTAVOZ_API_KEY, o config-formulario.json en la
+ *    carpeta de Drive con {"ALTAVOZ_API_KEY": "av_…"} (cacheada 1 h). Sin clave → Gmail.
+ *  - Etiquetas: tramitacion-aviso, tramitacion-acuse, tramitacion-aviso-texto y
+ *    tramitacion-error.
+ *  - diagnosticoAltavoz() (desde el editor): comprueba la clave y el permiso y manda una
+ *    prueba con adjunto a victor.molins.10+formulario@gmail.com.
+ *  - Sin permisos nuevos: Altavoz usa el mismo scope script.external_request.
  */
 
 const EMAIL_TO = 'escaneos@gruponew.energy';
-// REMITENTE. Vía A (preferida): Brevo, con la clave BREVO_API_KEY en Propiedades del
-// script y BREVO_SENDER dado de alta en Brevo (dominio autenticado). Vía B (respaldo):
-// GmailApp desde la cuenta que ejecuta, con GMAIL_ALIAS si está como "Enviar como".
-// Todo lo que alguien escriba "al remitente" acaba en el buzón de tramitación.
-const BREVO_SENDER = { name: 'Grupo New Energy - Tramitaciones', email: 'escaneos@gruponew.energy' };
+// REMITENTE. Vía A (preferida): Altavoz (API de avisos); el remitente lo pone Altavoz
+// (el de la marca) y no se manda. Vía B (respaldo): GmailApp desde la cuenta que ejecuta,
+// con GMAIL_ALIAS si está como "Enviar como". Brevo se dio de baja el 8-oct-2026.
+const ALTAVOZ_URL = 'https://altavoz.gruponewenergy.es/api/v1/avisos';
+const ALTAVOZ_MARCA = 'GNEW';
 const GMAIL_ALIAS = 'tramitaciones@gruponewenergy.es'; // opcional; vacío = cuenta por defecto
 const MAIL_FROM_NAME = 'Grupo New Energy - Tramitaciones';
-// Presupuesto de adjuntos en bytes REALES. Brevo admite 20MB por correo contando el
-// base64 (+33%) y el cuerpo; Gmail 25MB de MIME. 12MB reales caben en ambos.
-const ATTACH_BUDGET_RAW = 12 * 1024 * 1024;
+// Topes de adjuntos de un aviso (los de Altavoz). ATTACH_BUDGET_RAW: bytes REALES sumados
+// todos, 3.000.000 (y una petición de más de ~4,5 MB la corta Vercel con 413: 3 MB reales
+// son ~4 MB en base64 + el HTML). ATTACH_MAX_COUNT: como mucho 10 adjuntos EN TOTAL, firma
+// incluida (con más, Altavoz responde 422). Un documento o la firma solo va adjunto si cabe
+// en bytes Y quedan plazas, por orden de llegada: documentos primero, firma después. Lo que
+// no va adjunto queda solo en Drive: la carpeta se comparte con el buzón receptor y el
+// correo lleva el enlace (decisión de Victor 8-oct-2026: «si es demasiado grande, el enlace
+// de Drive»). El respaldo Gmail lleva los mismos adjuntos.
+const ATTACH_BUDGET_RAW = 3000000;
+const ATTACH_MAX_COUNT = 10;
 // Carpeta "Contratos Grupo New Energy" en la cuenta de MEGA (re-montaje 2026-06,
 // el proyecto antiguo quedó en una cuenta inaccesible). El Sheet de registro se
 // auto-crea aquí dentro.
@@ -164,9 +190,9 @@ function doPost(e) {
       // Los documentos se ADJUNTAN al email para que el buzón receptor los abra
       // directamente desde el correo, SIN compartir carpetas ni pedir permisos
       // (compartir cada carpeta generaba un aviso "Carpeta compartida contigo" en
-      // cada envío). El presupuesto ATTACH_BUDGET_RAW (bytes reales) cabe tanto en
-      // Brevo (20MB por correo con base64) como en Gmail (25MB de MIME); se deja
-      // holgura para el cuerpo HTML y las cabeceras. Todo se guarda además en Drive (cuenta que ejecuta el
+      // cada envío). Los topes ATTACH_BUDGET_RAW (bytes reales, entre todos los adjuntos)
+      // y ATTACH_MAX_COUNT (nº de adjuntos, firma incluida) son los de Altavoz y también
+      // caben de sobra en Gmail. Todo se guarda además en Drive (cuenta que ejecuta el
       // script); lo que no quepa como adjunto se marca attached=false y, SOLO en ese
       // caso, la carpeta se comparte con el buzón receptor y el correo lleva enlace.
       // El correo NO lleva enlaces de Drive en el caso normal: la carpeta es privada
@@ -180,7 +206,7 @@ function doPost(e) {
         const decoded = Utilities.base64Decode(String(a.data || ''));
         const blob = Utilities.newBlob(decoded, String(a.type || 'application/octet-stream'), safeName);
         const file = folder.createFile(blob);
-        const cabe = attachRaw + decoded.length <= ATTACH_BUDGET_RAW;
+        const cabe = attachRaw + decoded.length <= ATTACH_BUDGET_RAW && attachments.length < ATTACH_MAX_COUNT;
         if (cabe) {
           attachments.push(blob);
           attachRaw += decoded.length;
@@ -195,14 +221,14 @@ function doPost(e) {
 
       // La firma es opcional y secundaria: si viene malformada o desmesurada se
       // ignora, nunca debe invalidar un contrato cuyos documentos ya se subieron.
-      // Se adjunta solo si cabe en el presupuesto (siempre queda en Drive).
+      // Se adjunta solo si cabe en bytes Y queda plaza (siempre queda en Drive).
       const firma = String(data.firma || '');
       if (firma && firma.indexOf(',') > -1 && firma.length <= MAX_FIRMA_CHARS) {
         try {
           const sigDecoded = Utilities.base64Decode(firma.split(',')[1]);
           const sigBlob = Utilities.newBlob(sigDecoded, 'image/png', 'firma.png');
           const sigFile = folder.createFile(sigBlob);
-          const sigCabe = attachRaw + sigDecoded.length <= ATTACH_BUDGET_RAW;
+          const sigCabe = attachRaw + sigDecoded.length <= ATTACH_BUDGET_RAW && attachments.length < ATTACH_MAX_COUNT;
           if (sigCabe) {
             attachments.push(sigBlob);
             attachRaw += sigDecoded.length;
@@ -246,7 +272,7 @@ function doPost(e) {
     }
 
     // 2. EMAIL - Notificación a tramitación con los documentos ADJUNTOS (intenta 2 veces).
-    //    Remitente: Brevo (BREVO_SENDER) y, si no hay clave o falla, GmailApp (respaldo).
+    //    Vía A: Altavoz (remitente de la marca) y, si no hay clave o falla, GmailApp (respaldo).
     //    Reply-To: el comercial, para que "Responder" desde tramitación le llegue a él.
     // replyTo malformado tumbaría el envío: solo si parece un email
     const replyTo = cleanLine(data.email_comercial || '').trim();
@@ -263,6 +289,7 @@ function doPost(e) {
         subject: subject,
         htmlBody: buildEmailHtml(data, fileLinks, folderUrl, refId, folderShared),
         replyTo: replyToOk ? replyTo : '',
+        etiqueta: 'tramitacion-aviso',
         attachments: attachments
       });
       if (avisoRes.ok) { emailSent = true; break; }
@@ -285,6 +312,7 @@ function doPost(e) {
           'Carpeta en Drive' + (folderShared ? ' (compartida con ' + EMAIL_TO + ')' : '') + ': ' + folderUrl + '\n' +
           'Archivos: ' + fileLinks.map(function (f) { return f.name; }).join(', '),
         replyTo: replyToOk ? replyTo : '',
+        etiqueta: 'tramitacion-aviso-texto',
         attachments: []
       });
       if (textoRes.ok) emailSent = true;
@@ -310,6 +338,7 @@ function doPost(e) {
         subject: ('Recibido: ' + subject).slice(0, 200),
         htmlBody: buildAcuseHtml(data, refId, fileLinks),
         replyTo: EMAIL_TO,
+        etiqueta: 'tramitacion-acuse',
         attachments: []
       });
       if (!acuseRes.ok) errorMsg += 'Acuse al comercial: ' + acuseRes.error + '; ';
@@ -348,6 +377,7 @@ function doPost(e) {
         textBody: 'Error: ' + error.toString() +
           '\n\nDatos del envío (sin adjuntos):\n' + JSON.stringify(textOnlyData(data), null, 2).slice(0, 50000) +
           '\n\nArchivos que venían adjuntos: ' + (archivos.length > 0 ? archivos.map(function(a) { return sanitizeFileName((a || {}).name); }).join(', ') : 'ninguno'),
+        etiqueta: 'tramitacion-error',
         attachments: []
       });
     } catch (lastErr) {}
@@ -616,7 +646,7 @@ function buildEmailHtml(data, fileLinks, folderUrl, refId, folderShared) {
     filesHtml += '</ul>';
     if (soloDrive.length > 0) {
       filesHtml += '<div style="margin-top:12px;padding:12px 14px;background:#FFF7ED;border:1px solid #FDBA74;border-radius:8px;font-size:13px;color:#7C2D12">' +
-        '<strong>' + soloDrive.length + ' archivo(s) superan el tamaño del correo y quedan solo en Drive:</strong> ' +
+        '<strong>' + soloDrive.length + ' archivo(s) no caben como adjunto (por tamaño o por número de adjuntos) y quedan solo en Drive:</strong> ' +
         escapeHtml(soloDrive.map(function (f) { return f.name; }).join(', ')) + '. ' +
         (folderShared
           ? '<a href="' + escapeHtml(folderUrl) + '" style="color:#0B6E4F;font-weight:600">Abrir carpeta en Google Drive</a> (compartida con ' + escapeHtml(EMAIL_TO) + ').'
@@ -696,126 +726,135 @@ function buildAcuseHtml(data, refId, fileLinks) {
 }
 
 // ---------------------------------------------------------------------------
-// CAPA DE ENVÍO. sendMail({to, subject, htmlBody|textBody, replyTo, attachments})
-// devuelve {ok, via, error, note}. Vía A: Brevo (si hay BREVO_API_KEY). Vía B: Gmail.
-// Nunca lanza: los fallos se devuelven en 'error' para que doPost decida.
+// CAPA DE ENVÍO. sendMail({to, subject, htmlBody|textBody, replyTo, etiqueta, attachments})
+// devuelve {ok, via, error, note}. Vía A: Altavoz (si hay ALTAVOZ_API_KEY). Vía B: Gmail
+// (respaldo; salvo el acuse a una dirección bloqueada en Altavoz). Nunca lanza: los fallos
+// se devuelven en 'error' para que doPost decida.
 // ---------------------------------------------------------------------------
 function sendMail(msg) {
-  const key = getBrevoKey();
-  let brevoErr = '';
-  if (key && brevoSinCreditos(key)) {
-    brevoErr = 'la cuenta de Brevo no tiene créditos de envío';
-  } else if (key) {
-    const r = sendViaBrevo(msg, key);
-    if (r.ok) return { ok: true, via: 'brevo', error: '', note: '' };
-    brevoErr = r.error;
+  const key = getAltavozKey();
+  let altavozErr = '';
+  if (key) {
+    const r = sendViaAltavoz(msg, key);
+    if (r.ok) return { ok: true, via: 'altavoz', error: '', note: '' };
+    altavozErr = r.error;
+    // ACUSE al comercial a una dirección BLOQUEADA en Altavoz (409 destinatario_suprimido:
+    // rebote, queja, veto…): NO se reintenta por Gmail, que se saltaría el bloqueo. doPost lo
+    // anota como «Acuse al comercial: …» y el contrato sigue siendo success. El aviso al
+    // buzón, el aviso de texto y el correo de error SÍ caen a Gmail: un buzón de tramitación
+    // nunca se queda sin aviso.
+    if (msg.etiqueta === 'tramitacion-acuse' && r.status === 409 && r.codigo === 'destinatario_suprimido') {
+      return { ok: false, via: '', error: 'Altavoz: dirección bloqueada (' + altavozErr + ')', note: '' };
+    }
   }
   const g = sendViaGmail(msg);
   const note = key
-    ? 'vía Gmail (respaldo) porque Brevo falló: ' + brevoErr
-    : 'vía Gmail (falta BREVO_API_KEY en Propiedades del script)';
+    ? 'vía Gmail (respaldo) porque Altavoz: ' + altavozErr
+    : 'vía Gmail (falta ALTAVOZ_API_KEY)';
   if (g.ok) return { ok: true, via: 'gmail', error: '', note: note };
-  return { ok: false, via: '', error: (brevoErr ? 'Brevo: ' + brevoErr + ' | ' : '') + 'Gmail: ' + g.error, note: '' };
+  return { ok: false, via: '', error: (altavozErr ? 'Altavoz: ' + altavozErr + ' | ' : '') + 'Gmail: ' + g.error, note: '' };
 }
 
-// Brevo SIN CRÉDITOS (incidente 7/8-oct-2026): la API sigue respondiendo 201 pero
-// NO envía (evento «Email not sent: Your account has insufficient credits», que
-// Brevo registra una sola vez cada 24 h). El formulario anotaba «Email OK» y los
-// avisos no llegaban. Antes de usar Brevo se mira el saldo de la cuenta
-// (GET /v3/account, cacheado 10 min); si ningún plan de email tiene créditos, se
-// manda por el respaldo Gmail y queda anotado en el Sheet. Falla ABIERTO: si la
-// consulta falla o la respuesta no tiene la forma esperada, se sigue con Brevo.
-var brevoSinCreditosCache = null;
-function brevoSinCreditos(key) {
-  if (brevoSinCreditosCache !== null) return brevoSinCreditosCache;
-  brevoSinCreditosCache = false;
-  try {
-    const cache = CacheService.getScriptCache();
-    const cached = cache.get('brevo_sin_creditos');
-    if (cached) {
-      brevoSinCreditosCache = cached === '1';
-      return brevoSinCreditosCache;
-    }
-    const res = UrlFetchApp.fetch('https://api.brevo.com/v3/account', {
-      method: 'get',
-      headers: { 'api-key': key, 'accept': 'application/json' },
-      muteHttpExceptions: true
-    });
-    if (res.getResponseCode() !== 200) return brevoSinCreditosCache;
-    const plan = JSON.parse(res.getContentText() || '{}').plan;
-    if (!Array.isArray(plan)) return brevoSinCreditosCache;
-    const planesEmail = plan.filter(function (p) {
-      return p && p.type !== 'sms' && typeof p.credits === 'number';
-    });
-    if (planesEmail.length === 0) return brevoSinCreditosCache;
-    const sinCreditos = planesEmail.every(function (p) { return p.credits <= 0; });
-    cache.put('brevo_sin_creditos', sinCreditos ? '1' : '0', 600);
-    brevoSinCreditosCache = sinCreditos;
-  } catch (e) {}
-  return brevoSinCreditosCache;
-}
-
-// Clave de Brevo, por este orden: 1) Propiedades del script `BREVO_API_KEY`;
+// Clave de Altavoz, por este orden: 1) Propiedades del script `ALTAVOZ_API_KEY`;
 // 2) fichero privado CONFIG_FILE_NAME dentro de FOLDER_ID (solo lo ve la cuenta
-// propietaria; NO compartirlo) con {"BREVO_API_KEY": "..."}, cacheado 1h.
+// propietaria; NO compartirlo) con {"ALTAVOZ_API_KEY": "av_…"}, cacheado 1h.
 // Sin clave por ninguna vía → respaldo Gmail.
 const CONFIG_FILE_NAME = 'config-formulario.json';
-var brevoKeyCache = null;
-function getBrevoKey() {
-  if (brevoKeyCache !== null) return brevoKeyCache;
+var altavozKeyCache = null;
+function getAltavozKey() {
+  if (altavozKeyCache !== null) return altavozKeyCache;
   let key = '';
   try {
-    key = String(PropertiesService.getScriptProperties().getProperty('BREVO_API_KEY') || '').trim();
+    key = String(PropertiesService.getScriptProperties().getProperty('ALTAVOZ_API_KEY') || '').trim();
   } catch (e) {}
   if (!key) {
     try {
       const cache = CacheService.getScriptCache();
-      const cached = cache.get('brevo_key');
+      const cached = cache.get('altavoz_key');
       if (cached) {
         key = cached;
       } else {
         const files = DriveApp.getFolderById(FOLDER_ID).getFilesByName(CONFIG_FILE_NAME);
         if (files.hasNext()) {
           const cfg = JSON.parse(files.next().getBlob().getDataAsString('UTF-8') || '{}');
-          key = String(cfg.BREVO_API_KEY || '').trim();
-          if (key) cache.put('brevo_key', key, 3600);
+          key = String(cfg.ALTAVOZ_API_KEY || '').trim();
+          if (key) cache.put('altavoz_key', key, 3600);
         }
       }
     } catch (e) {}
   }
-  brevoKeyCache = key;
+  altavozKeyCache = key;
   return key;
 }
 
-// Brevo API v3 (transaccional). Los adjuntos van en base64 dentro del JSON.
-function sendViaBrevo(msg, key) {
-  try {
-    const body = {
-      sender: { name: BREVO_SENDER.name, email: BREVO_SENDER.email },
-      to: [{ email: msg.to }],
-      subject: msg.subject
-    };
-    if (msg.htmlBody) body.htmlContent = msg.htmlBody;
-    else body.textContent = msg.textBody || '';
-    if (msg.replyTo) body.replyTo = { email: msg.replyTo };
-    if (msg.attachments && msg.attachments.length > 0) {
-      body.attachment = msg.attachments.map(function (b) {
-        return { name: b.getName(), content: Utilities.base64Encode(b.getBytes()) };
-      });
-    }
-    const res = UrlFetchApp.fetch('https://api.brevo.com/v3/smtp/email', {
-      method: 'post',
-      contentType: 'application/json',
-      headers: { 'api-key': key, 'accept': 'application/json' },
-      payload: JSON.stringify(body),
-      muteHttpExceptions: true
+// Cuerpo de la API de avisos de Altavoz (POST ALTAVOZ_URL, JSON). El remitente lo pone
+// Altavoz (el de la marca): no se manda. Campos: marca, para (UN email), asunto (1-200,
+// una línea) y html o texto; y SOLO si los hay: responder_a (UN email), etiqueta y adjuntos
+// [{nombre, contenido en base64 estricto}] (el contrato admite como mucho 10, extensiones
+// pdf/jpg/jpeg/png/doc/docx y 3.000.000 bytes reales entre todos: doPost ya lo respeta con
+// ATTACH_MAX_COUNT y ATTACH_BUDGET_RAW; si algo no cumpliera, Altavoz respondería 422 y el
+// aviso saldría por Gmail).
+function buildAltavozBody(msg) {
+  const body = { marca: ALTAVOZ_MARCA, para: msg.to, asunto: msg.subject };
+  if (msg.htmlBody) body.html = msg.htmlBody;
+  else body.texto = msg.textBody || '';
+  if (msg.replyTo) body.responder_a = msg.replyTo;
+  if (msg.etiqueta) body.etiqueta = msg.etiqueta;
+  if (msg.attachments && msg.attachments.length > 0) {
+    body.adjuntos = msg.attachments.map(function (b) {
+      return { nombre: b.getName(), contenido: Utilities.base64Encode(b.getBytes()) };
     });
-    const code = res.getResponseCode();
-    if (code >= 200 && code < 300) return { ok: true, error: '' };
-    return { ok: false, error: 'HTTP ' + code + ' ' + String(res.getContentText() || '').slice(0, 200) };
+  }
+  return body;
+}
+
+// Una llamada a Altavoz con la clave en Authorization: Bearer. Devuelve {code, text}.
+// LANZA si no hay red o falta el permiso de UrlFetchApp: sendViaAltavoz lo captura y
+// diagnosticoAltavoz lo enseña tal cual.
+function postAltavoz(msg, key) {
+  const res = UrlFetchApp.fetch(ALTAVOZ_URL, {
+    method: 'post',
+    contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + key },
+    payload: JSON.stringify(buildAltavozBody(msg)),
+    muteHttpExceptions: true
+  });
+  return { code: res.getResponseCode(), text: String(res.getContentText() || '') };
+}
+
+// Un 2xx = Amazon lo aceptó. Cualquier otro código = NO salió (409 modo_prueba o
+// destinatario_suprimido, 422 datos que no valen, 502/503 Amazon, 413 de Vercel si la
+// petición pasa de ~4,5 MB...): se devuelve el motivo para anotarlo ('error', más el
+// 'status' HTTP y el 'codigo' de Altavoz por si sendMail necesita decidir) y caer a Gmail.
+// Nunca lanza.
+function sendViaAltavoz(msg, key) {
+  try {
+    const r = postAltavoz(msg, key);
+    if (r.code >= 200 && r.code < 300) return { ok: true, error: '' };
+    const det = leerErrorAltavoz(r.text);
+    return { ok: false, error: altavozError(r.code, r.text), status: r.code, codigo: det ? det.codigo : '' };
   } catch (e) {
     return { ok: false, error: e.toString().slice(0, 200) };
   }
+}
+
+// El JSON de error de Altavoz ({error, codigo}) como {codigo, error}, o null si el cuerpo no
+// es ese JSON (p. ej. la página HTML de un 413 de Vercel).
+function leerErrorAltavoz(texto) {
+  try {
+    const j = JSON.parse(String(texto || ''));
+    if (j && typeof j === 'object') return { codigo: j.codigo ? String(j.codigo) : '', error: j.error ? String(j.error) : '' };
+  } catch (parseErr) {}
+  return null;
+}
+
+// 'HTTP <código> <codigo> <error>' con el JSON de error de Altavoz. Si el cuerpo no es JSON o
+// no trae esos campos: sus primeros 200 caracteres, sin etiquetas HTML y en una sola línea.
+function altavozError(code, texto) {
+  const j = leerErrorAltavoz(texto);
+  let detalle = j ? [j.codigo, j.error].filter(Boolean).join(' ') : '';
+  if (!detalle) detalle = String(texto || '').replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<[^>]*>/g, ' ');
+  return ('HTTP ' + code + ' ' + detalle.replace(/\s+/g, ' ').trim().slice(0, 200)).trim();
 }
 
 // GmailApp desde la cuenta que ejecuta el script. Usa GMAIL_ALIAS solo si está
@@ -871,18 +910,30 @@ function doGet() {
   return ContentService.createTextOutput('Formulario activo');
 }
 
-// Diagnóstico manual (ejecutar desde el editor cuando el aviso salga "vía Gmail
-// (respaldo)"): comprueba si el script encuentra la clave de Brevo y si tiene
-// permiso para llamar a servicios externos. Si sale "no autorizado", revocar el
-// acceso del proyecto en myaccount.google.com/permissions y volver a ejecutar
-// para que Google vuelva a pedir TODOS los permisos.
-function diagnosticoBrevo() {
-  const key = getBrevoKey();
-  Logger.log('Clave Brevo: ' + (key ? 'ENCONTRADA (' + key.slice(0, 10) + '…)' : 'NO ENCONTRADA'));
+// Diagnóstico manual (ejecutar desde el editor): dice si el script encuentra la clave de
+// Altavoz (solo sus 6 primeros caracteres) y manda por Altavoz un aviso de PRUEBA de solo
+// texto, con un PNG de 1×1 de adjunto y responder_a = el buzón receptor, a un alias de
+// Victor. Escribe en el registro el código HTTP y la respuesta de Altavoz. Sirve también
+// para que Google pida el permiso de UrlFetchApp la primera vez: si sale «You do not have
+// permission to call UrlFetchApp.fetch», revocar el acceso del proyecto en
+// myaccount.google.com/connections y volver a ejecutar para que Google pida TODOS los
+// permisos. Con el «modo prueba» de Altavoz encendido responde 409 modo_prueba: es lo
+// esperado (los avisos del formulario saldrían entonces por Gmail).
+const PNG_1X1_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGPgzvP/DwADGAHI26TGtQAAAABJRU5ErkJggg==';
+function diagnosticoAltavoz() {
+  const key = getAltavozKey();
+  Logger.log('Clave Altavoz: ' + (key ? 'ENCONTRADA (' + key.slice(0, 6) + '…)' : 'NO ENCONTRADA (pon ALTAVOZ_API_KEY en Propiedades del script o en config-formulario.json)'));
+  if (!key) return;
   try {
-    const r = UrlFetchApp.fetch('https://api.brevo.com/v3/account', { headers: { 'api-key': key }, muteHttpExceptions: true });
-    Logger.log('UrlFetch OK, HTTP ' + r.getResponseCode() + ' ' + String(r.getContentText()).slice(0, 80));
+    const r = postAltavoz({
+      to: 'victor.molins.10+formulario@gmail.com',
+      subject: 'Prueba del formulario ' + ALTAVOZ_MARCA + ' por Altavoz',
+      textBody: 'Prueba de diagnosticoAltavoz() del formulario ' + ALTAVOZ_MARCA + '. Si lees esto, el script llega a Altavoz, la clave vale y Altavoz acepta adjuntos (un PNG de 1x1) y responder_a (' + EMAIL_TO + ').',
+      replyTo: EMAIL_TO,
+      attachments: [Utilities.newBlob(Utilities.base64Decode(PNG_1X1_BASE64), 'image/png', 'prueba.png')]
+    }, key);
+    Logger.log('Altavoz HTTP ' + r.code + ' ' + r.text.slice(0, 300));
   } catch (e) {
-    Logger.log('UrlFetch ERROR: ' + e);
+    Logger.log('Altavoz ERROR: ' + e);
   }
 }
