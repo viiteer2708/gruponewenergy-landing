@@ -58,9 +58,8 @@ create index if not exists tramitaciones_creada_idx on public.tramitaciones (cre
 create index if not exists tramitaciones_estado_idx on public.tramitaciones (estado, creada_en desc);
 
 create or replace function public.tramitacion_tocar() returns trigger
-language plpgsql as $$ begin new.actualizada_en = now(); return new; end $$;
-drop trigger if exists tramitaciones_tocar on public.tramitaciones;
-create trigger tramitaciones_tocar before update on public.tramitaciones
+language plpgsql set search_path = public as $$ begin new.actualizada_en = now(); return new; end $$;
+create or replace trigger tramitaciones_tocar before update on public.tramitaciones
   for each row execute function public.tramitacion_tocar();
 
 -- 2) Documentos: una fila por archivo (orden 0 = firma del comercial).
