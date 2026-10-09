@@ -1300,19 +1300,18 @@
             const isBlank = !ctx.getImageData(0, 0, canvas.width, canvas.height).data.some((ch, i) => i % 4 === 3 && ch !== 0);
             if (!isBlank) formData.firma = sigData;
 
-            // Convertir archivos a base64 EN PARALELO
+            // Preparar los archivos (reducir las fotos grandes + base64) UNO A UNO.
+            // Las fotos de móvil de 6-8 MB tardaban ~28 s solo en guardarse en Drive
+            // y la subida desde el móvil era lenta: las de más de 1 MB se reducen
+            // antes de enviarlas (ver reducirFoto; los PDF no se tocan). Secuencial
+            // a propósito: varias fotos grandes a la vez agotan la memoria de los
+            // móviles viejos. (9-oct-2026, aprobado por Victor.)
             const files = selectedFiles.files;
             if (files.length > 0) {
-                setStatus('Procesando ' + files.length + ' archivo' + (files.length > 1 ? 's' : '') + '...');
-                const filePromises = Array.from(files).map(file =>
-                    fileToBase64(file).then(base64 => ({
-                        name: file.name,
-                        type: file.type,
-                        size: formatFileSize(file.size),
-                        data: base64
-                    }))
-                );
-                formData.archivos = await Promise.all(filePromises);
+                setStatus('Preparando ' + files.length + ' archivo' + (files.length > 1 ? 's' : '') + '...');
+                for (const file of Array.from(files)) {
+                    formData.archivos.push(await prepararArchivo(file));
+                }
             }
 
             // Enviar a Google Apps Script. El contrato SOLO se da por enviado si el
@@ -1322,15 +1321,19 @@
             // preflight; Apps Script con acceso "Cualquier persona" devuelve CORS
             // y la respuesta es legible.)
             //
-            // Cada intento tiene un tiempo máximo (60 s + 4 s por MB subido). El
+            // Cada intento tiene un tiempo máximo (120 s + 8 s por MB subido). El
             // 10-sep-2026 el backend se quedó colgado escribiendo la hoja de
-            // registro (3 min y más de 6 min) y el navegador esperaba sin límite.
-            // Si vence, se reintenta con el MISMO ref_id y el backend responde
-            // "ya tramitado" sin duplicar nada. "Servidor ocupado" / "procesando"
-            // (retryable) también se reintentan; los rechazos deterministas
-            // (token, tamaño, tipo de archivo) no.
+            // registro (3 min y más de 6 min) y el navegador esperaba sin límite;
+            // ese cuelgue ya está resuelto en el backend (el trabajo pesado va sin
+            // candado). Por eso el límite pasó de 60 s + 4 s/MB a 120 s + 8 s/MB
+            // (9-oct-2026): una subida lenta desde el móvil vencía antes de
+            // terminar, y una espera falsa obliga a subir TODO otra vez, que
+            // cuesta más que esperar. Si vence, se reintenta con el MISMO ref_id
+            // y el backend responde "ya tramitado" sin duplicar nada. "Servidor
+            // ocupado" / "procesando" (retryable) también se reintentan; los
+            // rechazos deterministas (token, tamaño, tipo de archivo) no.
             const body = JSON.stringify(formData);
-            const attemptTimeoutMs = Math.round((60 + 4 * body.length / 1048576) * 1000);
+            const attemptTimeoutMs = Math.round((120 + 8 * body.length / 1048576) * 1000);
             const maxRetries = 4;
             let result = null;
             let lastError = null;
@@ -1485,6 +1488,93 @@
             };
             reader.readAsDataURL(file);
         });
+    }
+
+    // ===== FOTOS: REDUCIR ANTES DE SUBIR (9-oct-2026, aprobado por Victor) =====
+    // Las fotos de móvil pesan 6-8 MB: guardarlas en Drive tardaba ~28 s por envío
+    // y la subida desde el móvil era lenta. Las JPG/PNG de MÁS de 1 MB se redibujan
+    // en un lienzo (lado largo máx. 2400 px) y se mandan como JPEG al 85 %: siguen
+    // siendo legibles. Los PDF/Word y las fotos pequeñas no se tocan. Reducir es
+    // solo una mejora: ante CUALQUIER fallo se manda el archivo original, nunca se
+    // impide el envío.
+    const FOTO_MAX_LADO = 2400;            // px del lado largo
+    const FOTO_CALIDAD = 0.85;             // calidad JPEG
+    const FOTO_UMBRAL_BYTES = 1024 * 1024; // solo se tocan fotos de MÁS de 1 MB
+
+    // Devuelve una File JPEG reducida o null (= mandar el original). Nunca rechaza.
+    function reducirFoto(file) {
+        return new Promise(function(resolve) {
+            let url = null;
+            let vigilante = null;
+            let hecho = false;
+            function fin(resultado) {
+                if (hecho) return;
+                hecho = true;
+                clearTimeout(vigilante);
+                if (url) { try { URL.revokeObjectURL(url); } catch (e) {} }
+                resolve(resultado);
+            }
+            try {
+                if (!/\.(jpe?g|png)$/i.test(file.name) || file.size <= FOTO_UMBRAL_BYTES) {
+                    fin(null);
+                    return;
+                }
+                // Si el navegador se queda colgado decodificando o codificando, se
+                // manda el original en vez de dejar al comercial esperando
+                vigilante = setTimeout(function() { fin(null); }, 30000);
+                url = URL.createObjectURL(file);
+                const img = new Image();
+                img.onerror = function() { fin(null); };
+                img.onload = function() {
+                    try {
+                        const w = img.naturalWidth, h = img.naturalHeight;
+                        if (!w || !h) { fin(null); return; }
+                        const k = Math.min(1, FOTO_MAX_LADO / Math.max(w, h));
+                        const lienzo = document.createElement('canvas');
+                        lienzo.width = Math.max(1, Math.round(w * k));
+                        lienzo.height = Math.max(1, Math.round(h * k));
+                        const g = lienzo.getContext('2d');
+                        // Fondo blanco: un PNG con transparencia saldría negro en JPEG
+                        g.fillStyle = '#fff';
+                        g.fillRect(0, 0, lienzo.width, lienzo.height);
+                        g.drawImage(img, 0, 0, lienzo.width, lienzo.height);
+                        lienzo.toBlob(function(blob) {
+                            try {
+                                if (blob && blob.size < file.size) {
+                                    // El backend valida la extensión: tiene que ser .jpg
+                                    fin(new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' }));
+                                } else {
+                                    fin(null);
+                                }
+                            } catch (e) {
+                                fin(null);
+                            }
+                            // Liberar la memoria del lienzo (Safari en iPhone la retiene)
+                            lienzo.width = lienzo.height = 0;
+                        }, 'image/jpeg', FOTO_CALIDAD);
+                    } catch (e) {
+                        fin(null);
+                    }
+                };
+                img.src = url;
+            } catch (e) {
+                fin(null);
+            }
+        });
+    }
+
+    // Foto reducida (si procede) + base64. 'size' es el tamaño REAL de lo que se
+    // envía, el que verá tramitación en el correo. Si el archivo original no se
+    // puede leer, fileToBase64 rechaza con unreadableFile, igual que siempre.
+    async function prepararArchivo(file) {
+        const reducida = await reducirFoto(file);
+        const f = reducida || file;
+        return {
+            name: f.name,
+            type: f.type,
+            size: formatFileSize(f.size),
+            data: await fileToBase64(f)
+        };
     }
 
     function formatFileSize(bytes) {
