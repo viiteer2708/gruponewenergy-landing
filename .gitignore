@@ -4,3 +4,8 @@
 .env.local
 node_modules/
 tests/e2e/salidas/
+# Documentos de prueba que genera tests/fixtures/generar.mjs (el PDF de 5,5 MB no debe ir al repositorio)
+tests/fixtures/*.pdf
+tests/fixtures/*.jpg
+tests/fixtures/*.png
+tests/fixtures/*.bin
