@@ -605,6 +605,30 @@
             z-index: 50;
             transition: width .3s;
         }
+
+        /* ===== BARRA DE SUBIDA (Tramitación v2) =====
+           Fina, bajo el botón y solo mientras se suben los documentos: en reposo
+           no ocupa sitio, así que el formulario se ve exactamente igual que antes. */
+        .subida-barra {
+            display: none;
+            height: 4px;
+            margin-top: .65rem;
+            border-radius: 2px;
+            background: var(--border);
+            overflow: hidden;
+        }
+
+        .subida-barra.visible {
+            display: block;
+        }
+
+        .subida-barra-relleno {
+            height: 100%;
+            width: 0;
+            border-radius: 2px;
+            background: var(--primary);
+            transition: width .25s ease;
+        }
     </style>
 </head>
 <body>
@@ -847,6 +871,9 @@
                     <span class="spinner"></span>
                     <span class="status-text" id="statusText">Preparando...</span>
                 </button>
+                <div class="subida-barra" id="subidaBarra" role="progressbar" aria-label="Progreso de la subida de documentos" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                    <div class="subida-barra-relleno" id="subidaBarraRelleno"></div>
+                </div>
             </div>
 
         </form>
@@ -1176,12 +1203,42 @@
         }
     });
 
-    // ===== GOOGLE APPS SCRIPT URL =====
+    // ===== TRAMITACIÓN v2: ENVÍO POR LA API PROPIA + SUBIDA DIRECTA AL ALMACÉN =====
+    // (9-oct-2026) Camino nuevo: 1) `iniciar` apunta el contrato en nuestra base y
+    // devuelve una dirección firmada por documento; 2) cada documento se sube DIRECTO
+    // al almacén, de uno en uno, con barra de progreso y reintentos; 3) `confirmar`
+    // comprueba que todo ha llegado. Solo entonces se enseña «Contrato enviado».
+    // Si la API nueva no contesta al empezar (3 fallos por red, tiempo, 404 o 5xx),
+    // el envío antiguo por Google Apps Script sigue ahí como respaldo
+    // (enviarPorRespaldo, con la MISMA referencia).
+    // Diseño completo: docs/diseno-tramitacion-v2.md
+    const API_BASE = '';                          // mismo origen (tramitatucontrato.energy)
+    const FORMULARIO = 'gnew';
+    // Interruptor del respaldo: pasada la primera semana sin incidencias, a false.
+    const RESPALDO_APPS_SCRIPT = true;
+    const CORREO_TRAMITACION = 'escaneos@gruponew.energy';
+    const COLOR_PRIMARIO = '#0B6E4F';
+    const COLOR_TEXTO = '#6B7280';
+
+    // Tiempos y reintentos (milisegundos)
+    const INICIAR_TOPE_MS = 20000;                // cada intento de «iniciar»
+    const INICIAR_INTENTOS = 3;                   // con esperas de 2 s y 5 s
+    const INICIAR_ESPERAS_MS = [2000, 5000];
+    const SUBIDA_BASE_MS = 45000;                 // cada intento de subida de un archivo: 45 s + 12 s por MB
+    const SUBIDA_POR_MB_MS = 12000;
+    const SUBIDA_INTENTOS = 3;                    // con esperas de 2 s y 5 s
+    const SUBIDA_ESPERAS_MS = [2000, 5000];
+    const CONFIRMAR_TOPE_MS = 25000;              // cada intento de «confirmar»
+    const CONFIRMAR_INTENTOS = 4;                 // con esperas de 2,5 s × intento
+    const VUELTAS_MAX = 2;                        // veces que «confirmar» puede mandar de vuelta a «iniciar»
+    const MAX_MB_ARCHIVO = 25;                    // tope del almacén por archivo
+
+    // ===== GOOGLE APPS SCRIPT URL (solo para el respaldo: enviarPorRespaldo) =====
     // Backend re-montado en la cuenta de MEGA (2026-06). Proyecto
     // "Grupo New Energy - Formulario" → carpeta "Contratos Grupo New Energy".
     const SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbyZFCbmZlf0odxTltfM8Txraq4Gt6Q5FFVbzdnGFfEChWKnPeMK9DfULka6IibjPqXc/exec';
 
-    // Token compartido con el backend (FORM_TOKEN en Code.gs): deben coincidir.
+    // Token compartido con el backend (FORM_TOKEN en Code.gs y en api/_lib/config.js): deben coincidir.
     // No es un secreto (va en el HTML); solo frena el spam automatizado.
     const FORM_TOKEN = 'GNE-2026-w7k4q9x2';
 
@@ -1192,11 +1249,31 @@
     // como duplicado.
     let currentRefId = null;
 
+    // Referencia del intento ANTERIOR cuando, tras un intento, el comercial cambia la
+    // lista de documentos (lista nueva = referencia nueva). Viaja UNA vez en `iniciar`
+    // para que el envío viejo quede «Incompleta» en la bandeja sin dar falsas alarmas.
+    let refAnterior = null;
+
+    // Lo preparado del intento en curso (documentos listos para subir, datos tecleados,
+    // firma...). Sobrevive a un fallo para que «Reintentar» siga por donde se quedó.
+    let envio = null;
+    let enCurso = false;
+
+    // Fotos ya reducidas (reducirFoto): los reintentos suben la MISMA lista con los MISMOS
+    // tamaños, que es lo que el servidor compara. Clave: «nombre|tamaño|fecha» del original;
+    // valor: la File reducida, o null si va el original.
+    const fotosReducidas = new Map();
+
     window.addEventListener('pageshow', function(e) {
         if (!e.persisted) return;
         // Página restaurada desde bfcache (Atrás desde gracias.html): nueva
         // referencia y botón utilizable de nuevo
         currentRefId = null;
+        refAnterior = null;
+        envio = null;
+        enCurso = false;
+        fotosReducidas.clear();
+        ocultarBarra();
         const btn = document.getElementById('submitBtn');
         btn.classList.remove('loading');
         btn.disabled = false;
@@ -1221,8 +1298,26 @@
         statusText.textContent = msg;
     }
 
-    form.addEventListener('submit', async function(e) {
+    // Barra fina bajo el botón (solo visible mientras se suben los documentos)
+    const subidaBarra = document.getElementById('subidaBarra');
+    const subidaBarraRelleno = document.getElementById('subidaBarraRelleno');
+
+    function mostrarBarra(fraccion) {
+        const pct = Math.max(0, Math.min(100, Math.round(fraccion * 100)));
+        subidaBarra.classList.add('visible');
+        subidaBarraRelleno.style.width = pct + '%';
+        subidaBarra.setAttribute('aria-valuenow', String(pct));
+    }
+
+    function ocultarBarra() {
+        subidaBarra.classList.remove('visible');
+        subidaBarraRelleno.style.width = '0';
+        subidaBarra.setAttribute('aria-valuenow', '0');
+    }
+
+    form.addEventListener('submit', function(e) {
         e.preventDefault();
+        if (enCurso) return;
 
         // ===== VALIDACIÓN DE FORMATOS =====
         // (los `required` vacíos ya los frena la validación nativa del navegador)
@@ -1253,226 +1348,780 @@
             return;
         }
 
+        ejecutarEnvio(false);
+    });
+
+    // ===== TRAMITACIÓN v2: LAS PIEZAS DEL ENVÍO =====
+
+    function esperar(ms) {
+        return new Promise(function(resolve) { setTimeout(resolve, ms); });
+    }
+
+    function claveArchivo(f) {
+        return f.name + '|' + f.size + '|' + f.lastModified;
+    }
+
+    function claveLista(files) {
+        return files.map(claveArchivo).join('\n');
+    }
+
+    // Nombre que cabe en el botón: «contrato-muy-largo-del…cliente.pdf»
+    function nombreCorto(nombre) {
+        const n = String(nombre || '');
+        return n.length <= 32 ? n : n.slice(0, 20) + '…' + n.slice(-10);
+    }
+
+    // Tipo MIME por EXTENSIÓN, nunca por file.type: los móviles lo dan vacío en .doc y
+    // .docx, y el almacén solo admite estos cinco tipos exactos.
+    const TIPOS_MIME = {
+        pdf: 'application/pdf',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        doc: 'application/msword',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    };
+
+    function mimeDe(nombre) {
+        const m = /\.([A-Za-z0-9]+)$/.exec(String(nombre || '').trim());
+        const ext = m ? m[1].toLowerCase() : '';
+        return Object.prototype.hasOwnProperty.call(TIPOS_MIME, ext) ? TIPOS_MIME[ext] : null;
+    }
+
+    // Paso 2: leer el primer byte de cada archivo. Un archivo movido, renombrado o borrado
+    // después de adjuntarlo (o una copia temporal de WhatsApp/Mail) falla AQUÍ, antes de
+    // subir nada.
+    function comprobarLectura(file) {
+        return new Promise(function(resolve, reject) {
+            const trozo = file.slice(0, 1);
+            if (typeof trozo.arrayBuffer === 'function') {
+                trozo.arrayBuffer().then(function() { resolve(); }, reject);
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = function() { resolve(); };
+            reader.onerror = function() { reject(reader.error); };
+            reader.readAsArrayBuffer(trozo);
+        });
+    }
+
+    function esFotoGrande(file) {
+        return /\.(jpe?g|png)$/i.test(file.name) && file.size > FOTO_UMBRAL_BYTES;
+    }
+
+    // Lo que se manda a `iniciar` en `datos` (los `name` de los campos del formulario)
+    function datosDelFormulario() {
+        return {
+            quien_eres: form.quien_eres.value,
+            email_comercial: form.email_comercial.value,
+            compania: form.compania.value,
+            cups: form.cups.value,
+            oferta: form.oferta.value,
+            tarifa: form.tarifa.value,
+            p1: form.p1.value, p2: form.p2.value, p3: form.p3.value,
+            p4: form.p4.value, p5: form.p5.value, p6: form.p6.value,
+            titular: form.titular.value,
+            cif_nif: form.cif_nif.value,
+            nombre_firmante: form.nombre_firmante.value,
+            dni_firmante: form.dni_firmante.value,
+            dir_suministro: form.dir_suministro.value,
+            codigo_postal: form.codigo_postal.value,
+            poblacion: form.poblacion.value,
+            provincia: form.provincia.value,
+            movil: form.movil.value,
+            email_cliente: form.email_cliente.value,
+            cuenta_bancaria: form.cuenta_bancaria.value,
+            cambio_titular: form.cambio_titular.value,
+            nuevo_titular: form.nuevo_titular ? form.nuevo_titular.value : '',
+            observaciones: form.observaciones.value,
+            terminos: form.terminos.checked === true
+        };
+    }
+
+    // Firma: '' si el lienzo está en blanco, o la imagen PNG en data URL
+    function leerFirma() {
+        const sigData = canvas.toDataURL('image/png');
+        const isBlank = !ctx.getImageData(0, 0, canvas.width, canvas.height).data.some((ch, i) => i % 4 === 3 && ch !== 0);
+        return isBlank ? '' : sigData;
+    }
+
+    // Pasos 1-3: lista de documentos, lectura y reducción de las fotos grandes
+    async function prepararEnvio() {
+        const files = Array.from(selectedFiles.files);
+        const clave = claveLista(files);
+
+        // ¿Cambió la lista de documentos desde el intento anterior? Entonces este envío es
+        // OTRO: referencia nueva, y la anterior (si llegó a la base) viaja como `ref_anterior`.
+        // Si la referencia anterior nunca llegó al servidor, se conserva la que ya estuviera
+        // pendiente de avisar.
+        if (envio && envio.clave !== clave) {
+            if (currentRefId && envio.iniciarEnviado) refAnterior = currentRefId;
+            currentRefId = null;
+            envio = null;
+        }
+        // Si esta tramitación ya se intentó (reintento manual tras un fallo), se reutiliza su
+        // referencia para que el servidor reconozca el envío y siga por donde se quedó
+        if (!currentRefId) currentRefId = generateRefId();
+        if (!envio) envio = { clave: clave, iniciarEnviado: false, refOk: null, items: [], datos: null, firma: '', hp: '' };
+
+        // Paso 2: lectura
+        for (const f of files) {
+            try {
+                await comprobarLectura(f);
+            } catch (readErr) {
+                const err = new Error('archivo ilegible');
+                err.unreadableFile = f.name;
+                throw err;
+            }
+        }
+
+        // Paso 3: fotos grandes (reducirFoto). Una a una (memoria de móviles viejos) y el
+        // resultado se guarda para los reintentos
+        if (files.some(function(f) { return esFotoGrande(f) && !fotosReducidas.has(claveArchivo(f)); })) {
+            setStatus('Preparando las fotos...');
+        }
+        const items = [];
+        for (const f of files) {
+            const k = claveArchivo(f);
+            if (!fotosReducidas.has(k)) fotosReducidas.set(k, await reducirFoto(f));
+            const reducida = fotosReducidas.get(k);
+            const subir = reducida || f;
+            items.push({
+                original: f,
+                subir: subir,
+                nombre: subir.name,
+                tamano: subir.size,
+                tamanoOriginal: reducida ? f.size : 0
+            });
+        }
+        const vivas = new Set(files.map(claveArchivo));
+        Array.from(fotosReducidas.keys()).forEach(function(k) { if (!vivas.has(k)) fotosReducidas.delete(k); });
+
+        envio.clave = clave;
+        envio.items = items;
+        envio.datos = datosDelFormulario();
+        envio.firma = leerFirma();
+        envio.hp = form.gnew_hp.value;
+        return envio;
+    }
+
+    // ----- Llamadas a la API propia -----
+
+    const MENSAJE_GENERICO = 'No se ha podido enviar el contrato. Inténtalo de nuevo en un momento.';
+
+    function fraseDelServidor(json) {
+        const m = json && typeof json.mensaje === 'string' ? json.mensaje.trim() : '';
+        return m && m.length <= 300 ? m : MENSAJE_GENERICO;
+    }
+
+    // POST JSON con tiempo máximo. Devuelve {tipo:'respuesta', status, json} o {tipo:'red'|'tiempo'}
+    async function llamarApi(ruta, cuerpo, topeMs) {
+        const ctrl = new AbortController();
+        const timer = setTimeout(function() { ctrl.abort(); }, topeMs);
+        try {
+            const res = await fetch(API_BASE + ruta, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(cuerpo),
+                cache: 'no-store',
+                signal: ctrl.signal
+            });
+            let json = null;
+            try { json = JSON.parse(await res.text()); } catch (parseErr) { json = null; }
+            return { tipo: 'respuesta', status: res.status, json: json };
+        } catch (fetchErr) {
+            return { tipo: (fetchErr && fetchErr.name === 'AbortError') ? 'tiempo' : 'red' };
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+
+    // 'camino' = la API no ha contestado como es debido (red, tiempo, 404, 5xx o algo que no
+    // es nuestro JSON): se reintenta y, si no hay manera, entra el respaldo
+    function clasificarIniciar(r) {
+        if (r.tipo !== 'respuesta') return { estado: 'camino' };
+        const j = r.json;
+        if (r.status === 404 || r.status >= 500) return { estado: 'camino' };
+        if (r.status === 200) {
+            if (j && j.ok === true && (j.listo === true || Array.isArray(j.subidas))) return { estado: 'ok', json: j };
+            return { estado: 'camino' };
+        }
+        if (!j || j.ok !== false) return { estado: 'camino' };
+        if (r.status === 400 && j.campos && typeof j.campos === 'object') return { estado: 'campos', campos: j.campos };
+        if (r.status === 409 && j.codigo === 'lista_distinta') return { estado: 'lista_distinta' };
+        return { estado: 'rechazo', mensaje: fraseDelServidor(j) };
+    }
+
+    function clasificarConfirmar(r) {
+        if (r.tipo !== 'respuesta') return { estado: 'camino' };
+        const j = r.json;
+        if (r.status === 200 && j && j.ok === true && j.listo === true) return { estado: 'ok' };
+        if (r.status === 409 && j && j.codigo === 'faltan_archivos') return { estado: 'faltan' };
+        if (r.status === 404 && j && j.codigo === 'desconocida') return { estado: 'desconocida' };
+        if (r.status === 404 || r.status >= 500 || r.status === 200) return { estado: 'camino' };
+        if (!j || j.ok !== false) return { estado: 'camino' };
+        return { estado: 'rechazo', mensaje: fraseDelServidor(j) };
+    }
+
+    function cuerpoIniciar(p) {
+        return {
+            formulario: FORMULARIO,
+            token: FORM_TOKEN,
+            ref: currentRefId,
+            ref_anterior: refAnterior,
+            hp: p.hp,
+            datos: p.datos,
+            firma: p.firma,
+            archivos: p.items.map(function(it, i) {
+                const a = { orden: i + 1, nombre: it.nombre, tamano: it.tamano };
+                if (it.tamanoOriginal) a.tamano_original = it.tamanoOriginal;
+                return a;
+            })
+        };
+    }
+
+    // Paso 4: apuntar el contrato y pedir las direcciones de subida (3 intentos)
+    async function iniciarConReintentos(p) {
+        let ultimo = { estado: 'camino' };
+        for (let intento = 1; intento <= INICIAR_INTENTOS; intento++) {
+            setStatus(intento === 1
+                ? 'Guardando los datos del contrato...'
+                : 'Reintentando... (' + intento + '/' + INICIAR_INTENTOS + ')');
+            p.iniciarEnviado = true;
+            const c = clasificarIniciar(await llamarApi('/api/tramitacion/iniciar', cuerpoIniciar(p), INICIAR_TOPE_MS));
+            if (c.estado !== 'camino') return c;
+            ultimo = c;
+            if (intento < INICIAR_INTENTOS) await esperar(INICIAR_ESPERAS_MS[intento - 1]);
+        }
+        return ultimo;
+    }
+
+    // ----- Subida directa al almacén (XMLHttpRequest: es lo que da el progreso real) -----
+
+    // El almacén rechaza con HTTP 400 y el código real en el cuerpo (statusCode 413 = demasiado
+    // grande, 415 = tipo no admitido). Esos rechazos no se reintentan: volverían a fallar igual.
+    function clasificarRechazoAlmacen(xhr) {
+        let cuerpo = null;
+        try { cuerpo = JSON.parse(xhr.responseText); } catch (parseErr) { cuerpo = null; }
+        const codigo = cuerpo ? String(cuerpo.statusCode || '') : '';
+        const clave = cuerpo ? String(cuerpo.code || cuerpo.error || '') : '';
+        if (xhr.status === 413 || codigo === '413' || /EntityTooLarge|payload too large/i.test(clave)) {
+            return { ok: false, motivo: 'rechazado', razon: 'grande' };
+        }
+        if (xhr.status === 415 || codigo === '415' || /InvalidMimeType|unsupported media/i.test(clave)) {
+            return { ok: false, motivo: 'rechazado', razon: 'tipo' };
+        }
+        return { ok: false, motivo: 'servidor' };
+    }
+
+    // PUT del archivo a la URL firmada. Devuelve {ok:true} o {ok:false, motivo:'red'|'tiempo'|'servidor'|'rechazado', razon?}
+    function subirArchivo(url, file, tipo, topeMs, alProgreso) {
+        return new Promise(function(resolve) {
+            let terminado = false;
+            function fin(resultado) {
+                if (terminado) return;
+                terminado = true;
+                resolve(resultado);
+            }
+            try {
+                const xhr = new XMLHttpRequest();
+                xhr.open('PUT', url, true);
+                xhr.setRequestHeader('Content-Type', tipo);
+                xhr.setRequestHeader('x-upsert', 'true');
+                xhr.timeout = topeMs;
+                xhr.upload.onprogress = function(ev) {
+                    if (ev.lengthComputable) alProgreso(ev.loaded, ev.total);
+                };
+                xhr.onload = function() {
+                    if (xhr.status >= 200 && xhr.status < 300) fin({ ok: true });
+                    else fin(clasificarRechazoAlmacen(xhr));
+                };
+                xhr.onerror = function() { fin({ ok: false, motivo: 'red' }); };
+                xhr.onabort = function() { fin({ ok: false, motivo: 'red' }); };
+                xhr.ontimeout = function() { fin({ ok: false, motivo: 'tiempo' }); };
+                xhr.send(file);
+            } catch (sendErr) {
+                fin({ ok: false, motivo: 'red' });
+            }
+        });
+    }
+
+    // Paso 5 (un archivo): 3 intentos con la MISMA dirección firmada (vale para reintentos)
+    async function subirUno(it, s, n, total, hechosAntes, bytesTotal) {
+        const nombre = nombreCorto(it.nombre);
+        const tipo = mimeDe(it.subir.name) || s.tipo_mime || 'application/octet-stream';
+        const tope = Math.round(SUBIDA_BASE_MS + SUBIDA_POR_MB_MS * (it.tamano / 1048576));
+        for (let intento = 1; intento <= SUBIDA_INTENTOS; intento++) {
+            let pct = 0;
+            let ultimoCambio = Date.now();
+            const texto = function() {
+                return intento === 1
+                    ? 'Subiendo documento ' + n + ' de ' + total + ': ' + nombre + ' · ' + pct + ' %'
+                    : 'Reintentando documento ' + n + ' de ' + total + ': ' + nombre + ' (intento ' + intento + '/' + SUBIDA_INTENTOS + ')';
+            };
+            setStatus(texto());
+            // Si el porcentaje no se mueve en 20 s, se dice que sigue en marcha
+            const vigia = setInterval(function() {
+                if (Date.now() - ultimoCambio >= 20000) setStatus(texto() + ' (sigue en marcha)');
+            }, 5000);
+            let r;
+            try {
+                r = await subirArchivo(s.url, it.subir, tipo, tope, function(cargado, totalBytes) {
+                    const parte = totalBytes > 0 ? Math.min(1, cargado / totalBytes) : 0;
+                    mostrarBarra((hechosAntes + it.tamano * parte) / bytesTotal);
+                    const nuevo = Math.min(100, Math.floor(parte * 100));
+                    if (nuevo !== pct) {
+                        pct = nuevo;
+                        ultimoCambio = Date.now();
+                        setStatus(texto());
+                    }
+                });
+            } finally {
+                clearInterval(vigia);
+            }
+            if (r.ok) return { estado: 'ok' };
+            if (r.motivo === 'rechazado') return { estado: 'archivo', razon: r.razon, nombre: it.nombre };
+            if (intento < SUBIDA_INTENTOS) await esperar(SUBIDA_ESPERAS_MS[intento - 1]);
+        }
+        return { estado: 'subida_incompleta' };
+    }
+
+    // Paso 5: todos los documentos que faltan, de uno en uno (los `ya_subido` se saltan)
+    async function subirPendientes(p, subidas) {
+        const porOrden = {};
+        (Array.isArray(subidas) ? subidas : []).forEach(function(s) {
+            if (s && Number.isInteger(s.orden)) porOrden[s.orden] = s;
+        });
+        const total = p.items.length;
+        const bytesTotal = p.items.reduce(function(suma, it) { return suma + it.tamano; }, 0) || 1;
+        let hechos = 0;
+        mostrarBarra(0);
+        for (let i = 0; i < total; i++) {
+            const it = p.items[i];
+            const s = porOrden[i + 1];
+            if (!s) return { estado: 'subida_incompleta' };
+            if (s.ya_subido !== true) {
+                if (typeof s.url !== 'string' || !/^https?:\/\//i.test(s.url)) return { estado: 'subida_incompleta' };
+                const r = await subirUno(it, s, i + 1, total, hechos, bytesTotal);
+                if (r.estado !== 'ok') return r;
+            }
+            hechos += it.tamano;
+            mostrarBarra(hechos / bytesTotal);
+        }
+        return { estado: 'ok' };
+    }
+
+    // Paso 6: que el servidor compruebe que está todo (4 intentos, con 2,5 s × n de espera)
+    async function confirmarConReintentos() {
+        for (let intento = 1; intento <= CONFIRMAR_INTENTOS; intento++) {
+            setStatus(intento === 1
+                ? 'Comprobando que ha llegado todo...'
+                : 'Reintentando... (' + intento + '/' + CONFIRMAR_INTENTOS + ')');
+            mostrarBarra(1);
+            const c = clasificarConfirmar(await llamarApi('/api/tramitacion/confirmar',
+                { formulario: FORMULARIO, token: FORM_TOKEN, ref: currentRefId }, CONFIRMAR_TOPE_MS));
+            if (c.estado !== 'camino') return c;
+            if (intento < CONFIRMAR_INTENTOS) await esperar(2500 * intento);
+        }
+        return { estado: 'subida_incompleta' };
+    }
+
+    // Pasos 4-6 con sus vueltas. Devuelve {estado}: 'ok' (con ref) · 'campos' · 'rechazo' ·
+    // 'archivo' · 'subida_incompleta' · 'camino' (la API no contesta y esta referencia nunca
+    // llegó a la base: aquí entra el respaldo)
+    async function enviarPorLaApi(p) {
+        let vueltas = 0;
+        let referenciaRenovada = false;
+        for (;;) {
+            ocultarBarra();
+            const ini = await iniciarConReintentos(p);
+            if (ini.estado === 'lista_distinta') {
+                // La referencia ya existe en la base con OTRA lista: se usa una nueva (una vez)
+                // y la vieja queda «Incompleta»
+                if (referenciaRenovada) return { estado: 'rechazo', mensaje: MENSAJE_GENERICO };
+                referenciaRenovada = true;
+                refAnterior = currentRefId;
+                currentRefId = generateRefId();
+                p.refOk = null;
+                continue;
+            }
+            if (ini.estado === 'camino') {
+                // Solo se recurre al respaldo si esta referencia NUNCA llegó a la base: si ya
+                // estaba apuntada, el respaldo dejaría un envío a medias sin cerrar
+                return { estado: p.refOk === currentRefId ? 'subida_incompleta' : 'camino' };
+            }
+            if (ini.estado !== 'ok') return ini;
+            p.refOk = currentRefId;
+            refAnterior = null; // ya ha viajado: solo viaja una vez
+            if (ini.json.listo === true) return { estado: 'ok', ref: currentRefId };
+
+            const sub = await subirPendientes(p, ini.json.subidas);
+            if (sub.estado !== 'ok') return sub;
+
+            const conf = await confirmarConReintentos();
+            if (conf.estado === 'ok') return { estado: 'ok', ref: currentRefId };
+            if (conf.estado === 'faltan' || conf.estado === 'desconocida') {
+                // El servidor no lo ve todo: se vuelve a «iniciar», que da direcciones solo de lo que falta
+                vueltas++;
+                if (vueltas > VUELTAS_MAX) return { estado: 'subida_incompleta' };
+                continue;
+            }
+            return conf;
+        }
+    }
+
+    // ===== RESPALDO: el envío antiguo por Google Apps Script, entero =====
+    // Solo entra con RESPALDO_APPS_SCRIPT = true cuando «iniciar» falla 3 veces por red,
+    // tiempo, 404 o 5xx. Usa la MISMA referencia (ref_id). Termina sin error si el backend
+    // confirma success:true y lanza si no.
+    async function enviarPorRespaldo(p, refId) {
+        ocultarBarra();
+        const formData = { token: FORM_TOKEN, ref_id: refId, hp: p.hp };
+        Object.keys(p.datos).forEach(function(k) {
+            if (k !== 'terminos') formData[k] = p.datos[k];
+        });
+        formData.firma = p.firma;
+        formData.archivos = [];
+
+        // Preparar los archivos (reducir las fotos grandes + base64) UNO A UNO.
+        // Las fotos de móvil de 6-8 MB tardaban ~28 s solo en guardarse en Drive y la
+        // subida desde el móvil era lenta: las de más de 1 MB se reducen antes de
+        // enviarlas (ver reducirFoto; los PDF no se tocan). Secuencial a propósito:
+        // varias fotos grandes a la vez agotan la memoria de los móviles viejos.
+        const files = p.items.map(function(it) { return it.original; });
+        if (files.length > 0) {
+            setStatus('Preparando ' + files.length + ' archivo' + (files.length > 1 ? 's' : '') + '...');
+            for (const file of files) {
+                formData.archivos.push(await prepararArchivo(file));
+            }
+        }
+
+        // Enviar a Google Apps Script. El contrato SOLO se da por enviado si el
+        // backend responde success:true — un fallo de red no es un envío. El
+        // ref_id hace los reintentos idempotentes: el backend nunca duplica.
+        // (El body viaja como string sin Content-Type → request "simple" sin
+        // preflight; Apps Script con acceso "Cualquier persona" devuelve CORS
+        // y la respuesta es legible.)
+        //
+        // Cada intento tiene un tiempo máximo (120 s + 8 s por MB subido). El
+        // 10-sep-2026 el backend se quedó colgado escribiendo la hoja de
+        // registro (3 min y más de 6 min) y el navegador esperaba sin límite;
+        // ese cuelgue ya está resuelto en el backend (el trabajo pesado va sin
+        // candado). Por eso el límite pasó de 60 s + 4 s/MB a 120 s + 8 s/MB
+        // (9-oct-2026): una subida lenta desde el móvil vencía antes de
+        // terminar, y una espera falsa obliga a subir TODO otra vez, que
+        // cuesta más que esperar. Si vence, se reintenta con el MISMO ref_id
+        // y el backend responde "ya tramitado" sin duplicar nada. "Servidor
+        // ocupado" / "procesando" (retryable) también se reintentan; los
+        // rechazos deterministas (token, tamaño, tipo de archivo) no.
+        const body = JSON.stringify(formData);
+        const attemptTimeoutMs = Math.round((120 + 8 * body.length / 1048576) * 1000);
+        const maxRetries = 4;
+        let result = null;
+        let lastError = null;
+
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            const baseMsg = attempt === 1
+                ? 'Enviando contrato... No cierres esta página'
+                : 'Reintentando envío (' + attempt + '/' + maxRetries + ')... No cierres esta página';
+            setStatus(baseMsg);
+            const ctrl = new AbortController();
+            const startedAt = Date.now();
+            const timer = setTimeout(function() { ctrl.abort(); }, attemptTimeoutMs);
+            // A partir de 20 s, contador visible para que se vea que sigue vivo
+            const ticker = setInterval(function() {
+                const s = Math.round((Date.now() - startedAt) / 1000);
+                if (s >= 20) setStatus(baseMsg + ' (' + s + ' s, sigue en marcha)');
+            }, 5000);
+            try {
+                const res = await fetch(SCRIPT_URL, {
+                    method: 'POST',
+                    body: body,
+                    redirect: 'follow',
+                    signal: ctrl.signal
+                });
+                const json = JSON.parse(await res.text());
+                if (json && json.success === true) {
+                    result = json;
+                    break;
+                }
+                lastError = new Error(json && json.error ? json.error : 'El servidor no confirmó el envío');
+                const retryable = !!(json && (json.retryable === true
+                    || /servidor ocupado|procesando/i.test(String(json.error || ''))));
+                if (json && json.success === false && !retryable) {
+                    // Rechazo explícito y determinista del backend: reintentar
+                    // solo volvería a subir todo el payload para el mismo error
+                    break;
+                }
+            } catch (fetchErr) {
+                lastError = (fetchErr && fetchErr.name === 'AbortError')
+                    ? new Error('El servidor ha tardado más de ' + Math.round(attemptTimeoutMs / 1000) + ' s en responder')
+                    : fetchErr;
+            } finally {
+                clearTimeout(timer);
+                clearInterval(ticker);
+            }
+            if (attempt < maxRetries) {
+                await new Promise(r => setTimeout(r, 2500 * attempt));
+            }
+        }
+
+        // (el motivo del fallo NO se enseña: lo ve el comercial, y no es un texto para él)
+        if (!result) throw lastError || new Error('sin confirmar');
+    }
+
+    // ===== LO QUE VE EL COMERCIAL =====
+
+    function restaurarBoton() {
+        const btn = document.getElementById('submitBtn');
+        btn.classList.remove('loading');
+        btn.disabled = false;
+        setStatus('');
+        ocultarBarra();
+    }
+
+    // Paso 7: éxito. Solo se llega aquí con listo:true del servidor (o success:true del respaldo)
+    function terminarConExito(ref) {
+        currentRefId = null; // el siguiente contrato usará una referencia nueva
+        refAnterior = null;
+        envio = null;
+        fotosReducidas.clear();
+        mostrarBarra(1);
+        setStatus('Contrato enviado');
+        window.location.href = 'gracias.html?ref=' + encodeURIComponent(ref);
+    }
+
+    // Email manual de respaldo. encodeURIComponent del cuerpo completo:
+    // un '&' o '#' en los datos truncaría el mailto a mitad de resumen.
+    function hrefMailto(refId) {
+        const resumenLines = [
+            'Ref: ' + refId,
+            'Comercial: ' + form.quien_eres.value,
+            'Compañía: ' + form.compania.value,
+            'CUPS: ' + form.cups.value,
+            'Titular: ' + form.titular.value,
+            'CIF/NIF: ' + form.cif_nif.value,
+            'Tarifa: ' + form.tarifa.value,
+            'Dirección: ' + form.dir_suministro.value,
+            'Móvil: ' + form.movil.value
+        ];
+        return 'mailto:' + CORREO_TRAMITACION
+            + '?subject=' + encodeURIComponent('Contrato para tramitar - ' + form.titular.value + ' (' + refId + ')')
+            + '&body=' + encodeURIComponent(resumenLines.join('\n') + '\n\nAdjunto la documentación escaneada.');
+    }
+
+    const ESTILO_BOTON = {
+        primario: 'display:block;width:100%;box-sizing:border-box;padding:.75rem 1rem;border:none;border-radius:10px;background:' + COLOR_PRIMARIO + ';color:#fff;cursor:pointer;font-family:inherit;font-weight:600;font-size:.95rem;text-decoration:none;text-align:center;margin:0 0 .75rem',
+        contorno: 'display:block;width:100%;box-sizing:border-box;padding:.7rem 1rem;border:1.5px solid ' + COLOR_PRIMARIO + ';border-radius:10px;background:#fff;color:' + COLOR_PRIMARIO + ';cursor:pointer;font-family:inherit;font-weight:600;font-size:.95rem;text-decoration:none;text-align:center;margin:0 0 .75rem',
+        secundario: 'display:inline-block;padding:.5rem 1.5rem;border:1px solid #E2E8F0;border-radius:8px;background:#fff;cursor:pointer;font-family:inherit;color:' + COLOR_TEXTO + ';font-size:.85rem'
+    };
+
+    function cerrarOverlay() {
+        const ov = document.getElementById('overlayEnvio');
+        if (ov) ov.remove();
+    }
+
+    // Tarjeta de aviso con el mismo aspecto de siempre. `cuerpo` es una lista en orden de
+    // {p: texto} · {html: texto FIJO del formulario} · {nota: texto} · {ref: referencia} ·
+    // {boton: {texto, tipo, href?, alPulsar?}}. Todo texto variable entra con textContent.
+    function mostrarOverlay(titulo, cuerpo) {
+        cerrarOverlay();
+        const ov = document.createElement('div');
+        ov.id = 'overlayEnvio';
+        ov.setAttribute('role', 'dialog');
+        ov.setAttribute('aria-modal', 'true');
+        ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:1rem';
+        const card = document.createElement('div');
+        card.style.cssText = 'background:#fff;border-radius:16px;padding:2.5rem;max-width:500px;width:100%;max-height:100%;overflow:auto;text-align:center;box-shadow:0 10px 25px rgba(0,0,0,.15)';
+        const icono = document.createElement('div');
+        icono.style.cssText = 'width:64px;height:64px;background:#FEE2E2;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.25rem;font-size:1.8rem';
+        icono.innerHTML = '&#9888;';
+        const h = document.createElement('h3');
+        h.style.cssText = 'font-size:1.2rem;color:#DC2626;margin-bottom:.75rem';
+        h.textContent = titulo;
+        card.appendChild(icono);
+        card.appendChild(h);
+        cuerpo.forEach(function(parte) {
+            let el;
+            if (parte.boton) {
+                const b = parte.boton;
+                el = document.createElement(b.href ? 'a' : 'button');
+                if (b.href) el.href = b.href; else el.type = 'button';
+                el.style.cssText = ESTILO_BOTON[b.tipo];
+                el.textContent = b.texto;
+                if (b.alPulsar) el.addEventListener('click', b.alPulsar);
+            } else {
+                el = document.createElement('p');
+                if (parte.nota !== undefined) {
+                    el.style.cssText = 'color:#9CA3AF;font-size:.8rem;margin-bottom:1rem';
+                    el.textContent = parte.nota;
+                } else if (parte.ref !== undefined) {
+                    if (!parte.ref) return;
+                    el.style.cssText = 'color:#9CA3AF;font-size:.8rem;margin-bottom:1rem;word-break:break-word';
+                    el.textContent = 'Referencia: ' + parte.ref;
+                } else {
+                    el.style.cssText = 'color:' + COLOR_TEXTO + ';font-size:.95rem;line-height:1.6;margin-bottom:1.5rem';
+                    if (parte.html !== undefined) el.innerHTML = parte.html; else el.textContent = parte.p;
+                }
+            }
+            card.appendChild(el);
+        });
+        ov.appendChild(card);
+        document.body.appendChild(ov);
+    }
+
+    // 8a. La subida no termina (o el servidor no llega a confirmar): se puede seguir por donde se quedó
+    function mostrarOverlaySubidaIncompleta(refId) {
+        mostrarOverlay('No hemos podido terminar el envío', [
+            { p: 'La documentación no ha terminado de subir, seguramente por la conexión. No hace falta volver a rellenar nada: pulsa «Reintentar» y seguiremos por donde se quedó. Si no lo consigues, puedes enviar los datos y los documentos por email a ' + CORREO_TRAMITACION + '.' },
+            { ref: refId },
+            { boton: { texto: 'Reintentar', tipo: 'primario', alPulsar: function() { cerrarOverlay(); ejecutarEnvio(true); } } },
+            { boton: { texto: 'Enviar por email', tipo: 'contorno', href: hrefMailto(refId) } },
+            { boton: { texto: 'Cerrar', tipo: 'secundario', alPulsar: cerrarOverlay } }
+        ]);
+    }
+
+    // 8b. Ni la API nueva ni el respaldo han podido: el overlay de siempre, sin la línea técnica
+    function mostrarOverlayRespaldoFallido(refId) {
+        mostrarOverlay('Error al enviar el formulario', [
+            { html: 'No se ha podido enviar el contrato automáticamente. Por favor, <strong>envía los datos y documentación por email</strong> para que podamos tramitarlo.' },
+            { ref: refId },
+            { boton: { texto: 'Enviar por email a ' + CORREO_TRAMITACION, tipo: 'primario', href: hrefMailto(refId) } },
+            { nota: 'Recuerda adjuntar los contratos escaneados al email' },
+            { boton: { texto: 'Cerrar e intentar de nuevo', tipo: 'secundario', alPulsar: cerrarOverlay } }
+        ]);
+    }
+
+    // El servidor ha dicho que no (token, límites, demasiados envíos...) con una frase en llano
+    function mostrarOverlayRechazo(mensaje) {
+        mostrarOverlay('No se ha podido enviar el contrato', [
+            { p: mensaje },
+            { boton: { texto: 'Cerrar', tipo: 'primario', alPulsar: cerrarOverlay } }
+        ]);
+    }
+
+    // Errores de campos que devuelve el servidor (400): en línea, como los demás errores
+    function mostrarErroresDeCampos(campos) {
+        clearFieldErrors();
+        let primero = null;
+        let primeraFrase = '';
+        Object.keys(campos).forEach(function(nombre) {
+            const frase = campos[nombre];
+            if (typeof frase !== 'string' || !/^[a-z0-9_]+$/.test(nombre)) return;
+            if (!primeraFrase) primeraFrase = frase;
+            let input = null;
+            if (nombre === 'documentacion') input = fileInput;
+            else if (nombre === 'firma') input = canvas;
+            else input = form.elements[nombre] || null;
+            if (!input || typeof input.closest !== 'function') return;
+            const campo = input.closest('.field');
+            if (!campo) return;
+            setFieldError(input, frase);
+            if (!primero) primero = campo;
+        });
+        if (primero) primero.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        else mostrarOverlayRechazo(primeraFrase || 'Revisa los datos del formulario e inténtalo de nuevo.');
+    }
+
+    // El almacén rechazó un documento (demasiado grande o de un tipo no admitido)
+    function mostrarErrorDeArchivo(razon, nombre) {
+        const n = '«' + nombreCorto(nombre) + '»';
+        const frase = razon === 'grande'
+            ? n + ' es demasiado grande: el máximo es de ' + MAX_MB_ARCHIVO + ' MB por archivo. Quítalo de la lista (con la ×) y vuelve a pulsar «Tramitar Contrato».'
+            : n + ' no es de un tipo admitido: solo se admiten PDF, JPG, PNG, DOC o DOCX. Quítalo de la lista (con la ×) y vuelve a pulsar «Tramitar Contrato».';
+        clearFieldErrors();
+        setFieldError(fileInput, frase);
+        const campo = fileInput.closest('.field');
+        if (campo) campo.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    // Al quitar un documento de la lista, su error en línea ya no tiene sentido
+    fileList.addEventListener('click', function(e) {
+        if (e.target && typeof e.target.closest === 'function' && e.target.closest('.remove-file')) {
+            const campo = fileInput.closest('.field');
+            if (campo) campo.classList.remove('has-error');
+        }
+    });
+
+    function mostrarArchivoIlegible(badName) {
+        // El envío no llegó a salir: quitar el archivo de la lista y pedir
+        // que lo vuelva a adjuntar desde su ubicación actual
+        const dt = new DataTransfer();
+        for (let i = 0; i < selectedFiles.files.length; i++) {
+            if (selectedFiles.files[i].name !== badName) dt.items.add(selectedFiles.files[i]);
+        }
+        selectedFiles = dt;
+        fileInput.files = selectedFiles.files;
+        renderFileList();
+
+        const ov = document.createElement('div');
+        ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:1rem';
+        const cardEl = document.createElement('div');
+        cardEl.style.cssText = 'background:#fff;border-radius:16px;padding:2.5rem;max-width:500px;width:100%;text-align:center;box-shadow:0 10px 25px rgba(0,0,0,.15)';
+        cardEl.innerHTML = '<div style="width:64px;height:64px;background:#FEF3C7;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.25rem;font-size:1.8rem">&#128206;</div>'
+            + '<h3 style="font-size:1.2rem;color:#B45309;margin-bottom:.75rem">No se ha podido leer un archivo</h3>'
+            + '<p style="color:#6B7280;font-size:.95rem;line-height:1.6;margin-bottom:.75rem">El contrato <strong>no se ha enviado</strong>. El archivo <strong class="bad-file"></strong> ya no está donde estaba cuando lo adjuntaste (renombrado, movido o borrado; o era una copia temporal de WhatsApp o Mail).</p>'
+            + '<p style="color:#6B7280;font-size:.95rem;line-height:1.6;margin-bottom:1.5rem">Lo hemos quitado de la lista. Vuelve a adjuntarlo desde su ubicación actual y pulsa de nuevo el botón de enviar. El resto de datos se conservan.</p>'
+            + '<button type="button" style="padding:.75rem 2rem;border:none;border-radius:10px;background:#0B6E4F;color:#fff;cursor:pointer;font-family:inherit;font-weight:600;font-size:.95rem">Entendido</button>';
+        cardEl.querySelector('.bad-file').textContent = '«' + badName + '»';
+        cardEl.querySelector('button').addEventListener('click', function() { ov.remove(); });
+        ov.appendChild(cardEl);
+        document.body.appendChild(ov);
+        document.getElementById('fileList').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    // ===== EL ENVÍO, DE PRINCIPIO A FIN =====
+    // `reanudar` = true cuando el comercial pulsa «Reintentar»: se sigue con lo ya preparado
+    // (mismos documentos, mismos datos, MISMA referencia) desde el paso 4.
+    async function ejecutarEnvio(reanudar) {
+        if (enCurso) return;
+        enCurso = true;
         const btn = document.getElementById('submitBtn');
         btn.classList.add('loading');
         btn.disabled = true;
-        setStatus('Preparando datos...');
-
-        // Si esta tramitación ya se intentó (reintento manual tras un fallo),
-        // reutilizar su referencia para que el backend pueda deduplicar
-        if (!currentRefId) currentRefId = generateRefId();
-        const refId = currentRefId;
-
         try {
-            // Recoger datos del formulario
-            const formData = {
-                token: FORM_TOKEN,
-                ref_id: refId,
-                hp: form.gnew_hp.value,
-                quien_eres: form.quien_eres.value,
-                email_comercial: form.email_comercial.value,
-                compania: form.compania.value,
-                cups: form.cups.value,
-                oferta: form.oferta.value,
-                tarifa: form.tarifa.value,
-                p1: form.p1.value, p2: form.p2.value, p3: form.p3.value,
-                p4: form.p4.value, p5: form.p5.value, p6: form.p6.value,
-                titular: form.titular.value,
-                cif_nif: form.cif_nif.value,
-                nombre_firmante: form.nombre_firmante.value,
-                dni_firmante: form.dni_firmante.value,
-                dir_suministro: form.dir_suministro.value,
-                codigo_postal: form.codigo_postal.value,
-                poblacion: form.poblacion.value,
-                provincia: form.provincia.value,
-                movil: form.movil.value,
-                email_cliente: form.email_cliente.value,
-                cuenta_bancaria: form.cuenta_bancaria.value,
-                cambio_titular: form.cambio_titular.value,
-                nuevo_titular: form.nuevo_titular ? form.nuevo_titular.value : '',
-                observaciones: form.observaciones.value,
-                firma: '',
-                archivos: []
-            };
-
-            // Firma
-            const sigData = canvas.toDataURL('image/png');
-            const isBlank = !ctx.getImageData(0, 0, canvas.width, canvas.height).data.some((ch, i) => i % 4 === 3 && ch !== 0);
-            if (!isBlank) formData.firma = sigData;
-
-            // Preparar los archivos (reducir las fotos grandes + base64) UNO A UNO.
-            // Las fotos de móvil de 6-8 MB tardaban ~28 s solo en guardarse en Drive
-            // y la subida desde el móvil era lenta: las de más de 1 MB se reducen
-            // antes de enviarlas (ver reducirFoto; los PDF no se tocan). Secuencial
-            // a propósito: varias fotos grandes a la vez agotan la memoria de los
-            // móviles viejos. (9-oct-2026, aprobado por Victor.)
-            const files = selectedFiles.files;
-            if (files.length > 0) {
-                setStatus('Preparando ' + files.length + ' archivo' + (files.length > 1 ? 's' : '') + '...');
-                for (const file of Array.from(files)) {
-                    formData.archivos.push(await prepararArchivo(file));
-                }
-            }
-
-            // Enviar a Google Apps Script. El contrato SOLO se da por enviado si el
-            // backend responde success:true — un fallo de red no es un envío. El
-            // ref_id hace los reintentos idempotentes: el backend nunca duplica.
-            // (El body viaja como string sin Content-Type → request "simple" sin
-            // preflight; Apps Script con acceso "Cualquier persona" devuelve CORS
-            // y la respuesta es legible.)
-            //
-            // Cada intento tiene un tiempo máximo (120 s + 8 s por MB subido). El
-            // 10-sep-2026 el backend se quedó colgado escribiendo la hoja de
-            // registro (3 min y más de 6 min) y el navegador esperaba sin límite;
-            // ese cuelgue ya está resuelto en el backend (el trabajo pesado va sin
-            // candado). Por eso el límite pasó de 60 s + 4 s/MB a 120 s + 8 s/MB
-            // (9-oct-2026): una subida lenta desde el móvil vencía antes de
-            // terminar, y una espera falsa obliga a subir TODO otra vez, que
-            // cuesta más que esperar. Si vence, se reintenta con el MISMO ref_id
-            // y el backend responde "ya tramitado" sin duplicar nada. "Servidor
-            // ocupado" / "procesando" (retryable) también se reintentan; los
-            // rechazos deterministas (token, tamaño, tipo de archivo) no.
-            const body = JSON.stringify(formData);
-            const attemptTimeoutMs = Math.round((120 + 8 * body.length / 1048576) * 1000);
-            const maxRetries = 4;
-            let result = null;
-            let lastError = null;
-
-            for (let attempt = 1; attempt <= maxRetries; attempt++) {
-                const baseMsg = attempt === 1
-                    ? 'Enviando contrato... No cierres esta página'
-                    : 'Reintentando envío (' + attempt + '/' + maxRetries + ')... No cierres esta página';
-                setStatus(baseMsg);
-                const ctrl = new AbortController();
-                const startedAt = Date.now();
-                const timer = setTimeout(function() { ctrl.abort(); }, attemptTimeoutMs);
-                // A partir de 20 s, contador visible para que se vea que sigue vivo
-                const ticker = setInterval(function() {
-                    const s = Math.round((Date.now() - startedAt) / 1000);
-                    if (s >= 20) setStatus(baseMsg + ' (' + s + ' s, sigue en marcha)');
-                }, 5000);
-                try {
-                    const res = await fetch(SCRIPT_URL, {
-                        method: 'POST',
-                        body: body,
-                        redirect: 'follow',
-                        signal: ctrl.signal
-                    });
-                    const json = JSON.parse(await res.text());
-                    if (json && json.success === true) {
-                        result = json;
-                        break;
-                    }
-                    lastError = new Error(json && json.error ? json.error : 'El servidor no confirmó el envío');
-                    const retryable = !!(json && (json.retryable === true
-                        || /servidor ocupado|procesando/i.test(String(json.error || ''))));
-                    if (json && json.success === false && !retryable) {
-                        // Rechazo explícito y determinista del backend: reintentar
-                        // solo volvería a subir todo el payload para el mismo error
-                        break;
-                    }
-                } catch (fetchErr) {
-                    lastError = (fetchErr && fetchErr.name === 'AbortError')
-                        ? new Error('El servidor ha tardado más de ' + Math.round(attemptTimeoutMs / 1000) + ' s en responder')
-                        : fetchErr;
-                } finally {
-                    clearTimeout(timer);
-                    clearInterval(ticker);
-                }
-                if (attempt < maxRetries) {
-                    await new Promise(r => setTimeout(r, 2500 * attempt));
-                }
-            }
-
-            if (result) {
-                currentRefId = null; // el siguiente contrato usará una referencia nueva
-                setStatus('Contrato enviado correctamente');
-                window.location.href = 'gracias.html';
+            let p;
+            if (reanudar && envio) {
+                p = envio;
             } else {
-                throw lastError || new Error('No se pudo confirmar el envío tras ' + maxRetries + ' intentos');
+                setStatus('Preparando el envío...');
+                p = await prepararEnvio();
             }
 
-        } catch (err) {
-            console.error('Error envío:', err);
-            btn.classList.remove('loading');
-            btn.disabled = false;
-            setStatus('');
-
-            if (err && err.unreadableFile) {
-                // El envío no llegó a salir: quitar el archivo de la lista y pedir
-                // que lo vuelva a adjuntar desde su ubicación actual
-                const badName = err.unreadableFile;
-                const dt = new DataTransfer();
-                for (let i = 0; i < selectedFiles.files.length; i++) {
-                    if (selectedFiles.files[i].name !== badName) dt.items.add(selectedFiles.files[i]);
-                }
-                selectedFiles = dt;
-                fileInput.files = selectedFiles.files;
-                renderFileList();
-
-                const ov = document.createElement('div');
-                ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:1rem';
-                const cardEl = document.createElement('div');
-                cardEl.style.cssText = 'background:#fff;border-radius:16px;padding:2.5rem;max-width:500px;width:100%;text-align:center;box-shadow:0 10px 25px rgba(0,0,0,.15)';
-                cardEl.innerHTML = '<div style="width:64px;height:64px;background:#FEF3C7;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.25rem;font-size:1.8rem">&#128206;</div>'
-                    + '<h3 style="font-size:1.2rem;color:#B45309;margin-bottom:.75rem">No se ha podido leer un archivo</h3>'
-                    + '<p style="color:#6B7280;font-size:.95rem;line-height:1.6;margin-bottom:.75rem">El contrato <strong>no se ha enviado</strong>. El archivo <strong class="bad-file"></strong> ya no está donde estaba cuando lo adjuntaste (renombrado, movido o borrado; o era una copia temporal de WhatsApp o Mail).</p>'
-                    + '<p style="color:#6B7280;font-size:.95rem;line-height:1.6;margin-bottom:1.5rem">Lo hemos quitado de la lista. Vuelve a adjuntarlo desde su ubicación actual y pulsa de nuevo el botón de enviar. El resto de datos se conservan.</p>'
-                    + '<button type="button" style="padding:.75rem 2rem;border:none;border-radius:10px;background:#0B6E4F;color:#fff;cursor:pointer;font-family:inherit;font-weight:600;font-size:.95rem">Entendido</button>';
-                cardEl.querySelector('.bad-file').textContent = '«' + badName + '»';
-                cardEl.querySelector('button').addEventListener('click', function() { ov.remove(); });
-                ov.appendChild(cardEl);
-                document.body.appendChild(ov);
-                document.getElementById('fileList').scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const r = await enviarPorLaApi(p);
+            if (r.estado === 'ok') {
+                terminarConExito(r.ref);
                 return;
             }
 
-            // Email manual de respaldo. encodeURIComponent del cuerpo completo:
-            // un '&' o '#' en los datos truncaría el mailto a mitad de resumen.
-            const resumenLines = [
-                'Ref: ' + refId,
-                'Comercial: ' + form.quien_eres.value,
-                'Compañía: ' + form.compania.value,
-                'CUPS: ' + form.cups.value,
-                'Titular: ' + form.titular.value,
-                'CIF/NIF: ' + form.cif_nif.value,
-                'Tarifa: ' + form.tarifa.value,
-                'Dirección: ' + form.dir_suministro.value,
-                'Móvil: ' + form.movil.value
-            ];
-            const mailtoHref = 'mailto:escaneos@gruponew.energy'
-                + '?subject=' + encodeURIComponent('Contrato para tramitar - ' + form.titular.value + ' (' + refId + ')')
-                + '&body=' + encodeURIComponent(resumenLines.join('\n') + '\n\nAdjunto la documentación escaneada.');
+            if (r.estado === 'camino' && RESPALDO_APPS_SCRIPT) {
+                // La API nueva no contesta: se envía por el camino antiguo con la MISMA referencia
+                try {
+                    await enviarPorRespaldo(p, currentRefId);
+                    terminarConExito(currentRefId);
+                } catch (errRespaldo) {
+                    restaurarBoton();
+                    if (errRespaldo && errRespaldo.unreadableFile) mostrarArchivoIlegible(errRespaldo.unreadableFile);
+                    else mostrarOverlayRespaldoFallido(currentRefId);
+                }
+                return;
+            }
 
-            // Mostrar overlay de error con instrucciones
-            const overlay = document.createElement('div');
-            overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:1rem';
-            overlay.innerHTML = '<div style="background:#fff;border-radius:16px;padding:2.5rem;max-width:500px;width:100%;text-align:center;box-shadow:0 10px 25px rgba(0,0,0,.15)">'
-                + '<div style="width:64px;height:64px;background:#FEE2E2;border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 1.25rem;font-size:1.8rem">&#9888;</div>'
-                + '<h3 style="font-size:1.2rem;color:#DC2626;margin-bottom:.75rem">Error al enviar el formulario</h3>'
-                + '<p style="color:#6B7280;font-size:.95rem;line-height:1.6;margin-bottom:1.5rem">'
-                + 'No se ha podido enviar el contrato automáticamente. Por favor, <strong>envía los datos y documentación por email</strong> para que podamos tramitarlo.'
-                + '</p>'
-                + '<a href="' + mailtoHref + '" '
-                + 'style="display:inline-block;padding:.75rem 2rem;background:#0B6E4F;color:#fff;text-decoration:none;border-radius:10px;font-weight:600;font-size:.95rem;margin-bottom:.75rem">'
-                + 'Enviar por email a escaneos@gruponew.energy</a>'
-                + '<p style="color:#9CA3AF;font-size:.8rem;margin-bottom:1rem">Recuerda adjuntar los contratos escaneados al email</p>'
-                + '<button type="button" style="padding:.5rem 1.5rem;border:1px solid #E2E8F0;border-radius:8px;background:#fff;cursor:pointer;font-family:inherit;color:#6B7280;font-size:.85rem">Cerrar e intentar de nuevo</button>'
-                + '</div>';
-
-            // Motivo real del fallo (textContent: puede venir del servidor, nunca como HTML)
-            const detail = document.createElement('p');
-            detail.style.cssText = 'color:#9CA3AF;font-size:.8rem;margin-bottom:1rem;word-break:break-word';
-            detail.textContent = 'Detalle: ' + (err && err.message ? err.message : 'error desconocido');
-            const card = overlay.firstElementChild;
-            card.insertBefore(detail, card.querySelector('a'));
-
-            // Cerrar SIEMPRE el overlay completo (closest('div[style]') desde el
-            // botón devolvía la tarjeta blanca y dejaba el fondo bloqueando la página)
-            overlay.querySelector('button').addEventListener('click', function() { overlay.remove(); });
-            document.body.appendChild(overlay);
+            restaurarBoton();
+            if (r.estado === 'campos') mostrarErroresDeCampos(r.campos);
+            else if (r.estado === 'rechazo') mostrarOverlayRechazo(r.mensaje);
+            else if (r.estado === 'archivo') mostrarErrorDeArchivo(r.razon, r.nombre);
+            else mostrarOverlaySubidaIncompleta(currentRefId); // subida_incompleta, o camino sin respaldo
+        } catch (err) {
+            // Nunca se enseña el mensaje técnico del error: solo una frase en llano
+            restaurarBoton();
+            if (err && err.unreadableFile) mostrarArchivoIlegible(err.unreadableFile);
+            else if (envio && envio.datos && currentRefId) mostrarOverlaySubidaIncompleta(currentRefId);
+            else mostrarOverlayRespaldoFallido(currentRefId || '');
+        } finally {
+            enCurso = false;
         }
-    });
+    }
 
     function fileToBase64(file) {
         return new Promise((resolve, reject) => {

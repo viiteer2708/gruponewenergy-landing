@@ -88,6 +88,28 @@
             line-height: 1.6;
         }
 
+        .referencia {
+            font-size: .95rem;
+            font-weight: 500;
+            color: #374151;
+        }
+
+        .referencia[hidden] {
+            display: none;
+        }
+
+        .referencia strong {
+            display: inline-block;
+            margin-top: .25rem;
+            padding: .15rem .65rem;
+            border-radius: 8px;
+            background: #f0faf6;
+            color: #094D38;
+            font-weight: 700;
+            letter-spacing: .03em;
+            word-break: break-all;
+        }
+
         .btn {
             display: inline-block;
             padding: .75rem 2rem;
@@ -114,7 +136,7 @@
 <body>
 
 <div class="card">
-    <img src="https://dl.dropboxusercontent.com/scl/fi/8fgtbv4s3uyfwwyh7ie93/Redes-sociales-01.png?rlkey=wzp55afahi4ks8z9u1c4v8i65"
+    <img src="/logo-gnew.png"
          alt="Grupo New Energy" class="logo">
 
     <div class="check-circle">
@@ -122,15 +144,16 @@
     </div>
 
     <h1>Contrato Enviado</h1>
-    <p>Hemos recibido tu solicitud con toda la documentacion adjunta. Nos ponemos YA con la tramitacion de tu contrato.</p>
+    <p>Hemos recibido tu solicitud con toda la documentación adjunta. Nos ponemos YA con la tramitación de tu contrato.</p>
+
+    <p class="referencia" id="referencia" hidden>Tu referencia: <strong id="refTexto"></strong></p>
 
     <div class="info-box">
-        Los datos y archivos adjuntos han sido enviados a<br>
-        <strong>escaneos@gruponew.energy</strong><br>
+        Hemos guardado tu contrato y la documentación y hemos avisado al equipo de tramitación.
+        Recibirás un <strong>acuse de recibo</strong> con la referencia; si falta algún documento
+        (por ejemplo, la factura), te escribirán desde ese mismo correo: responde al acuse citando la referencia.
         <span style="display:block;margin-top:10px;font-size:.92em;opacity:.9">
-            Recibirás un <strong>acuse de recibo</strong> en tu email con la referencia.
-            Si falta algún documento (por ejemplo, la factura), tramitación te escribirá desde
-            <strong>escaneos@gruponew.energy</strong>: responde a ese correo o al acuse, citando la referencia.
+            Equipo de tramitación: <strong>escaneos@gruponew.energy</strong>
         </span>
     </div>
 
@@ -138,6 +161,17 @@
 </div>
 
 <footer>&copy; 2026 Grupo New Energy</footer>
+
+<script>
+(function() {
+    // La referencia llega en la dirección (?ref=GNE-20261009-ABC123). Solo se enseña si tiene
+    // EXACTAMENTE ese formato y siempre como texto, nunca como HTML.
+    var ref = new URLSearchParams(window.location.search).get('ref') || '';
+    if (!/^GNE-\d{8}-[A-Z0-9]{4,10}$/.test(ref)) return;
+    document.getElementById('refTexto').textContent = ref;
+    document.getElementById('referencia').hidden = false;
+})();
+</script>
 
 </body>
 </html>
