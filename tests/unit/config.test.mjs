@@ -70,6 +70,35 @@ test('interruptores: esPrueba, simulando y simularFallo (este solo cuenta en mod
   assert.equal(config.simulando(), false);
 });
 
+test('falloSimulado: «1» = caído, «adjuntos» = rechazo por adjuntos; solo en modo prueba y nada más vale', () => {
+  assert.equal(config.falloSimulado(), null);
+  process.env.ALTAVOZ_SIMULAR_FALLO = '1';
+  assert.equal(config.falloSimulado(), null, 'sin TRAMITACION_PRUEBA=1 se ignora (en producción nunca hay fallo simulado)');
+  process.env.ALTAVOZ_SIMULAR_FALLO = 'adjuntos';
+  assert.equal(config.falloSimulado(), null);
+  assert.equal(config.simularFallo(), false);
+  process.env.TRAMITACION_PRUEBA = '1';
+  assert.equal(config.falloSimulado(), 'adjuntos');
+  assert.equal(config.simularFallo(), false, 'el rechazo por adjuntos NO es Altavoz caído');
+  process.env.ALTAVOZ_SIMULAR_FALLO = '1';
+  assert.equal(config.falloSimulado(), 'caido');
+  assert.equal(config.simularFallo(), true);
+  for (const otro of ['0', '', 'si', 'ADJUNTOS', 'caido', 'true']) {
+    process.env.ALTAVOZ_SIMULAR_FALLO = otro;
+    assert.equal(config.falloSimulado(), null, JSON.stringify(otro));
+  }
+  delete process.env.ALTAVOZ_SIMULAR_FALLO;
+  assert.equal(config.falloSimulado(), null);
+});
+
+test('ADJUNTOS_AVISO: los topes de Altavoz (10 ficheros, 3.000.000 bytes, nombre de 200, seis extensiones) y congelados', () => {
+  assert.equal(config.ADJUNTOS_AVISO.max, 10);
+  assert.equal(config.ADJUNTOS_AVISO.maxBytes, 3_000_000);
+  assert.equal(config.ADJUNTOS_AVISO.maxNombre, 200);
+  assert.deepEqual([...config.ADJUNTOS_AVISO.extensiones], ['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx']);
+  assert.ok(Object.isFrozen(config.ADJUNTOS_AVISO) && Object.isFrozen(config.ADJUNTOS_AVISO.extensiones));
+});
+
 test('URLs base: sin barra final, para poder concatenar rutas', () => {
   process.env.SUPABASE_URL = 'https://x.supabase.co//';
   process.env.ALTAVOZ_URL = 'https://altavoz.gruponewenergy.es/';

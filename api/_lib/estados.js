@@ -75,6 +75,11 @@ export function esperaMinutos(intento) {
  * Tabla (diseño §2.2). Lo que la tabla no recoge (un 409 con otro código, 404, 413,
  * 3xx, cualquier otra cosa) se trata como `pendiente`: se reintenta, el vigilante avisa
  * a los 10 minutos y al 8.º fallo se da por agotado. Un correo nunca se pierde en silencio.
+ *
+ * Ojo con los AVISOS CON ADJUNTOS (orden 6): un 422 (sin `codigo`) o un 413 aquí no significan «configuración mal
+ * puesta» ni «respuesta inesperada», sino «los adjuntos no valen / pesan demasiado». La cola (cola.intentarEnvio)
+ * lo reconoce por `rechazo_adjuntos` y lo reintenta SIN adjuntos en el mismo intento; esta función solo clasifica
+ * el resultado FINAL (el del reintento sin adjuntos, o el de un correo que nunca llevó adjuntos).
  */
 export function clasificarAltavoz({ status, codigo, red, intentos } = {}) {
   const http = Number(status);

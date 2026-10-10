@@ -12,16 +12,26 @@
 //    minuto (un correo duplicado, nunca uno perdido).
 //  - El cuerpo del correo NO se guarda: se regenera cada vez desde la fila y sus documentos (correos.js). Solo en
 //    simulación (pruebas) se guardan cuerpo_html y cuerpo_texto, para que las pruebas puedan leerlos.
+//  - ADJUNTOS DEL AVISO (orden 6, decisión de Victor del 10-oct-2026). Cada intento de enviar un AVISO (al confirmar, el
+//    vigilante o «Volver a enviar» en la bandeja) elige qué documentos van adjuntos (correos.seleccionarAdjuntos: topes de
+//    Altavoz), los DESCARGA otra vez del almacén (nunca se guardan en la base), regenera el cuerpo y lo manda. Lo que
+//    no cabe, o no se ha podido descargar, queda «en la bandeja». Prioridad absoluta: que backoffice RECIBA el aviso.
+//      · si falla la descarga de algún adjunto (error, tiempo o tamaño distinto del comprobado) el aviso sale con los
+//        que sí se han descargado y se apunta el evento `adjuntos_no_descargados`;
+//      · si Altavoz rechaza por los adjuntos (422 sin `codigo` o 413) se reintenta EN EL MISMO intento sin adjuntos
+//        (todo «en la bandeja») y se apunta `adjuntos_rechazados`: sigue siendo UN intento en la cuenta de la fila;
+//      · cualquier otro fallo sigue como siempre (cola, esperas, vigilante).
+//    El acuse al comercial no lleva adjuntos.
 //  - `prueba`: todo lo que procesa el robot (reintentar, liberar, conciliar, atascados) mira SOLO las tramitaciones
 //    cuyo `prueba` coincide con el modo del servidor (esPrueba()). Así el vigilante de producción jamás envía los
 //    correos de una tramitación de prueba, y el servidor de pruebas jamás toca los de producción.
 //  - Los eventos no llevan datos personales (solo tipo, estado, código e intentos).
 //  - Sin console.* salvo dos console.error con frases fijas (textoSeguroDeError): nunca contenido ni direcciones.
-import { enviarAviso, ErrorSimulacion, TOPE_ENVIO_MS } from './cartero.js';
+import { enviarAviso, ErrorSimulacion, TOPE_AVISO_MS, TOPE_ENVIO_MS } from './cartero.js';
 import { MARCAS, avisoDestino, esPrueba, sitioUrl } from './config.js';
-import { armarAcuse, armarAviso, ETIQUETA_CORREO, urlFichaDe } from './correos.js';
+import { armarAcuse, armarAviso, ETIQUETA_CORREO, seleccionarAdjuntos, urlFichaDe } from './correos.js';
 import { MAX_INTENTOS, esperaMinutos } from './estados.js';
-import { ErrorSupabase, actualizar, insertar, seleccionar } from './supabase.js';
+import { ErrorSupabase, actualizar, descargarObjeto, insertar, seleccionar } from './supabase.js';
 
 /** Tipos de correo que gestiona el robot (el código de acceso a la bandeja nunca se reintenta solo). */
 export const TIPOS_DE_COLA = Object.freeze(['aviso', 'acuse']);
@@ -29,9 +39,25 @@ export const TIPOS_DE_COLA = Object.freeze(['aviso', 'acuse']);
 /** Lo que vale un cerrojo: pasado este tiempo, el correo en `enviando` se da por abandonado. */
 export const CERROJO_MS = 60_000;
 
-/** Tope de tiempo de confirmar: el aviso se intenta 6 s y el acuse solo si han pasado menos de 12 s desde el inicio. */
-export const TOPE_CONFIRMAR_MS = 6_000;
-export const PRESUPUESTO_ACUSE_MS = 12_000;
+/**
+ * Tiempos de confirmar. El AVISO tiene 15 s EN TOTAL (descargar los documentos del almacén y entregarlos a Altavoz; era
+ * 6 s cuando no llevaba adjuntos). El ACUSE, que no lleva adjuntos, sigue con 6 s, y solo se intenta si desde el inicio
+ * de `confirmar` han pasado menos de 20 s (era 12): si el aviso ha tardado más, el acuse lo manda el vigilante.
+ */
+export const TOPE_CONFIRMAR_AVISO_MS = TOPE_AVISO_MS;
+export const TOPE_CONFIRMAR_ACUSE_MS = 6_000;
+export const PRESUPUESTO_ACUSE_MS = 20_000;
+
+/**
+ * De esos 15 s, la descarga de los adjuntos (todos, de 2 en 2) usa como mucho el 40 % y nunca más de 6 s: lo que queda es
+ * para Altavoz (que recibe hasta ~4 MB en base64). Si un documento tarda más, se manda el aviso sin él.
+ */
+export const TOPE_DESCARGAS_MS = 6_000;
+const PARTE_PARA_DESCARGAS = 0.4;
+export const CONCURRENCIA_DESCARGAS = 2;
+
+/** El reintento SIN adjuntos tras un rechazo tiene como mínimo esto, aunque el primer envío se haya gastado el plazo. */
+export const MINIMO_REINTENTO_SIN_ADJUNTOS_MS = 4_000;
 
 // Columnas de una fila de correo sin los cuerpos (que pueden pesar decenas de KB).
 const COLUMNAS_CORREO = 'id,tramitacion_id,tipo,marca,para,responder_a,asunto,etiqueta,estado,codigo_respuesta,intentos,'
@@ -136,14 +162,166 @@ export async function crearCorreos(tramitacion, documentos = []) {
 // Enviar
 // ---------------------------------------------------------------------------
 
-/** Cuerpo del correo, regenerado desde la fila de la tramitación y sus documentos. */
-function contenidoDe(correo, { tramitacion, documentos }) {
-  const destino = avisoDestino(tramitacion.formulario);
-  if (correo.tipo === 'aviso') {
-    return armarAviso({ tramitacion, documentos, urlFicha: urlFichaDe(sitioUrl(), tramitacion.ref), destino });
+/** Cuerpo del acuse, regenerado desde la fila de la tramitación y sus documentos (nunca lleva adjuntos). */
+function contenidoDeAcuse({ tramitacion, documentos }) {
+  return armarAcuse({ tramitacion, documentos, destino: avisoDestino(tramitacion.formulario) });
+}
+
+/** Cuerpo del aviso para una selección de adjuntos (ver correos.seleccionarAdjuntos). */
+function contenidoDeAviso({ tramitacion, documentos }, seleccion) {
+  return armarAviso({
+    tramitacion,
+    documentos,
+    seleccion,
+    urlFicha: urlFichaDe(sitioUrl(), tramitacion.ref),
+    destino: avisoDestino(tramitacion.formulario),
+  });
+}
+
+/** Por qué ha fallado una descarga, en una palabra fija (nunca el mensaje de error: podría llevar rutas del almacén). */
+function causaDeDescarga(error) {
+  if (error instanceof ErrorSupabase) {
+    if (error.codigo === 'tiempo') return 'tiempo';
+    if (error.codigo === 'red') return 'red';
+    if (error.codigo === 'tamano') return 'tamano';
+    if (error.status === 404 || error.statusInterno === 404 || error.codigo === 'NoSuchKey') return 'no_existe';
   }
-  if (correo.tipo === 'acuse') return armarAcuse({ tramitacion, documentos, destino });
-  throw new TypeError('Este tipo de correo no se puede regenerar');
+  return 'otro';
+}
+
+/**
+ * Descarga del almacén los documentos que la selección dice que van adjuntos y comprueba que cada uno pesa EXACTAMENTE
+ * lo comprobado al confirmar. Nunca lanza: un documento que falla (error, tiempo o tamaño distinto) pasa a `fuera`
+ * (motivo 'descarga') y el aviso sale con los demás.
+ *   tope          tiempo TOTAL para bajarlos todos (un plazo común: lo que no llegue a tiempo falla con 'tiempo')
+ *   concurrencia  cuántos se bajan a la vez (2): el almacén de Supabase responde 429 «SlowDown / Too many connections»
+ *                 cuando va justo de conexiones; con pocas a la vez no se le añade presión a las subidas de los comerciales
+ *   descargar     solo para las pruebas: otra función en lugar de supabase.descargarObjeto
+ * Devuelve {seleccion, ficheros, fallos}:
+ *   seleccion  la selección ya corregida: lo que de verdad se ha descargado en `adjuntos`, el resto en `fuera`
+ *   ficheros   [{nombre, contenido: Buffer}] en el orden de los adjuntos, listos para el cartero
+ *   fallos     [{orden, causa}] de los que han fallado (sin nombres: el historial no lleva datos personales)
+ */
+export async function descargarAdjuntos(seleccion, { tope, concurrencia = CONCURRENCIA_DESCARGAS, descargar = descargarObjeto }) {
+  const elegidos = seleccion.adjuntos;
+  const hasta = Date.now() + tope;
+  const resultados = new Array(elegidos.length);
+  let siguiente = 0;
+  const trabajador = async () => {
+    while (siguiente < elegidos.length) {
+      const i = siguiente++;
+      const { doc, bytes } = elegidos[i];
+      try {
+        const queda = hasta - Date.now();
+        if (queda <= 0) throw new ErrorSupabase('Se ha acabado el tiempo para bajar los documentos', { status: 0, codigo: 'tiempo' });
+        const datos = await descargar(doc.ruta, { tope: queda, maxBytes: bytes });
+        if (!Buffer.isBuffer(datos) || datos.length !== bytes) throw new ErrorSupabase('El documento descargado no pesa lo comprobado', { status: 200, codigo: 'tamano' });
+        resultados[i] = { datos };
+      } catch (error) {
+        resultados[i] = { error };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrencia), elegidos.length) }, trabajador));
+
+  const adjuntos = [];
+  const ficheros = [];
+  const fuera = [...seleccion.fuera];
+  const fallos = [];
+  resultados.forEach((r, i) => {
+    const elegido = elegidos[i];
+    if (r.datos) {
+      adjuntos.push(elegido);
+      ficheros.push({ nombre: elegido.nombre, contenido: r.datos });
+    } else {
+      fuera.push({ ...elegido, motivo: 'descarga' });
+      fallos.push({ orden: elegido.doc.orden, causa: causaDeDescarga(r.error) });
+    }
+  });
+  fuera.sort((a, b) => a.pos - b.pos); // el orden de siempre: documentos 1..N y la firma al final
+  return { seleccion: { adjuntos, fuera }, ficheros, fallos };
+}
+
+/** El correo no se ha podido ni armar: cuenta como intento fallido (si no, se quedaría reintentando para siempre). */
+const falloDePreparacion = (intentos) => (intentos >= MAX_INTENTOS
+  ? { estado: 'agotado', codigo: 'preparacion', motivo: 'No se ha podido preparar el correo (se han agotado los intentos)', simulado: false, altavoz_id: null }
+  : { estado: 'pendiente', codigo: 'preparacion', motivo: 'No se ha podido preparar el correo', simulado: false, altavoz_id: null });
+
+/**
+ * Prepara y manda UN correo. El acuse es lo de siempre (sin adjuntos). El aviso: elige, descarga, arma el cuerpo, lo
+ * manda y, si Altavoz rechaza por los adjuntos, lo manda otra vez sin ellos (ver la cabecera). `topeEnvio` es el
+ * tiempo total del aviso (descargas incluidas). Devuelve {resultado, contenido, adjuntos, enBandeja, eventos}: `eventos`
+ * son los apuntes del historial por lo ocurrido con los adjuntos (sin datos personales). Lanza lo que lance el cartero
+ * (ErrorSimulacion).
+ */
+async function enviarCorreo(correo, contexto, { intentos, topeEnvio }) {
+  const base = { marca: correo.marca, para: correo.para, asunto: correo.asunto, etiqueta: correo.etiqueta, responder_a: correo.responder_a };
+  const eventos = [];
+  if (!contexto) return { resultado: falloDePreparacion(intentos), contenido: null, adjuntos: 0, enBandeja: 0, eventos };
+
+  if (correo.tipo !== 'aviso') {
+    let contenido = null;
+    try {
+      contenido = correo.tipo === 'acuse' ? contenidoDeAcuse(contexto) : null; // otro tipo: no se regenera
+    } catch {
+      contenido = null;
+    }
+    if (!contenido) return { resultado: falloDePreparacion(intentos), contenido: null, adjuntos: 0, enBandeja: 0, eventos };
+    const resultado = await enviarAviso({ ...base, html: contenido.html, texto: contenido.texto }, { tope: topeEnvio, intentos });
+    return { resultado, contenido, adjuntos: 0, enBandeja: 0, eventos };
+  }
+
+  const plazo = Date.now() + topeEnvio;
+  const quedan = (minimo) => Math.max(plazo - Date.now(), Math.min(topeEnvio, minimo));
+
+  // 1. Qué va adjunto y descargarlo (si nada de eso funciona, el aviso sale igual, con todo «en la bandeja»)
+  let seleccion = seleccionarAdjuntos(contexto.documentos);
+  let ficheros = [];
+  if (seleccion.adjuntos.length > 0) {
+    try {
+      const descargado = await descargarAdjuntos(seleccion, { tope: Math.min(TOPE_DESCARGAS_MS, Math.round(topeEnvio * PARTE_PARA_DESCARGAS)) });
+      seleccion = descargado.seleccion;
+      ficheros = descargado.ficheros;
+      if (descargado.fallos.length > 0) {
+        eventos.push({
+          tipo: 'adjuntos_no_descargados',
+          detalle: { n: descargado.fallos.length, ordenes: descargado.fallos.map((f) => f.orden), causas: [...new Set(descargado.fallos.map((f) => f.causa))] },
+        });
+      }
+    } catch {
+      seleccion = seleccionarAdjuntos(contexto.documentos, { maxAdjuntos: 0 });
+      ficheros = [];
+    }
+  }
+
+  // 2. El cuerpo y el envío
+  const armar = (sel) => {
+    try {
+      return contenidoDeAviso(contexto, sel);
+    } catch {
+      return null;
+    }
+  };
+  let contenido = armar(seleccion);
+  if (!contenido) return { resultado: falloDePreparacion(intentos), contenido: null, adjuntos: 0, enBandeja: 0, eventos };
+  let resultado = await enviarAviso(
+    { ...base, html: contenido.html, texto: contenido.texto, adjuntos: ficheros },
+    { tope: quedan(1_000), intentos },
+  );
+
+  // 3. Altavoz no quiere los adjuntos: el mismo intento, sin ellos. Backoffice tiene que recibir el aviso.
+  if (resultado.rechazo_adjuntos === true && ficheros.length > 0) {
+    eventos.push({ tipo: 'adjuntos_rechazados', detalle: { http: resultado.http, n: ficheros.length } });
+    seleccion = seleccionarAdjuntos(contexto.documentos, { maxAdjuntos: 0 });
+    ficheros = [];
+    contenido = armar(seleccion);
+    if (!contenido) return { resultado: falloDePreparacion(intentos), contenido: null, adjuntos: 0, enBandeja: 0, eventos };
+    resultado = await enviarAviso(
+      { ...base, html: contenido.html, texto: contenido.texto },
+      { tope: quedan(MINIMO_REINTENTO_SIN_ADJUNTOS_MS), intentos },
+    );
+  }
+  return { resultado, contenido, adjuntos: seleccion.adjuntos.length, enBandeja: seleccion.fuera.length, eventos };
 }
 
 /** Quita el cerrojo sin contar intento (para cuando el fallo fue nuestro, antes de hablar con Altavoz). */
@@ -161,8 +339,10 @@ async function soltarCerrojo(id) {
  *   {intentado:true, id, tipo, estado, intentos, simulado, cerrojoPerdido}   tras el intento
  * Lanza si la base no responde (el cerrojo se suelta antes) o ErrorSimulacion (enviar de verdad en modo prueba).
  * Un fallo de Altavoz NO lanza: queda en la fila (`pendiente` con la espera siguiente, o un estado terminal).
+ * `tope` es el tiempo que se le da al envío: por defecto 15 s para un aviso (descarga de adjuntos incluida) y 8 s para
+ * el resto; cada llamada puede fijar el suyo (confirmar usa 15 s para el aviso y 6 s para el acuse).
  */
-export async function intentarEnvio(correoId, { tope = TOPE_ENVIO_MS, actor = 'sistema' } = {}) {
+export async function intentarEnvio(correoId, { tope, actor = 'sistema' } = {}) {
   const bloqueados = await actualizar(
     'tramitacion_correos',
     { id: `eq.${correoId}`, estado: 'eq.pendiente' },
@@ -183,38 +363,16 @@ export async function intentarEnvio(correoId, { tope = TOPE_ENVIO_MS, actor = 's
   }
 
   const intentos = (correo.intentos ?? 0) + 1;
+  const topeEnvio = Number.isFinite(tope) && tope > 0 ? tope : (correo.tipo === 'aviso' ? TOPE_AVISO_MS : TOPE_ENVIO_MS);
 
-  let contenido = null;
+  let envio;
   try {
-    contenido = contexto ? contenidoDe(correo, contexto) : null;
-  } catch {
-    contenido = null; // no se pudo armar: se cuenta como intento fallido (si no, se quedaría reintentando para siempre)
+    envio = await enviarCorreo(correo, contexto, { intentos, topeEnvio });
+  } catch (error) {
+    await soltarCerrojo(correo.id);
+    throw error;
   }
-
-  let resultado;
-  if (!contenido) {
-    resultado = intentos >= MAX_INTENTOS
-      ? { estado: 'agotado', codigo: 'preparacion', motivo: 'No se ha podido preparar el correo (se han agotado los intentos)', simulado: false, altavoz_id: null }
-      : { estado: 'pendiente', codigo: 'preparacion', motivo: 'No se ha podido preparar el correo', simulado: false, altavoz_id: null };
-  } else {
-    try {
-      resultado = await enviarAviso(
-        {
-          marca: correo.marca,
-          para: correo.para,
-          asunto: correo.asunto,
-          html: contenido.html,
-          texto: contenido.texto,
-          etiqueta: correo.etiqueta,
-          responder_a: correo.responder_a,
-        },
-        { tope, intentos },
-      );
-    } catch (error) {
-      await soltarCerrojo(correo.id);
-      throw error;
-    }
-  }
+  const { resultado, contenido } = envio;
 
   let cambios;
   if (resultado.estado === 'enviado') {
@@ -250,8 +408,14 @@ export async function intentarEnvio(correoId, { tope = TOPE_ENVIO_MS, actor = 's
   const guardado = await actualizar('tramitacion_correos', { id: `eq.${correo.id}`, estado: 'eq.enviando' }, cambios);
 
   if (correo.tramitacion_id) {
+    for (const evento of envio.eventos) await registrarEvento(correo.tramitacion_id, evento.tipo, actor, evento.detalle);
     if (resultado.estado === 'enviado') {
-      await registrarEvento(correo.tramitacion_id, `${correo.tipo}_enviado`, actor, { intentos, simulado: resultado.simulado === true });
+      await registrarEvento(correo.tramitacion_id, `${correo.tipo}_enviado`, actor, {
+        intentos,
+        simulado: resultado.simulado === true,
+        // Del aviso: cuántos documentos han ido adjuntos y cuántos se han quedado solo en la bandeja
+        ...(correo.tipo === 'aviso' ? { adjuntos: envio.adjuntos, en_bandeja: envio.enBandeja } : {}),
+      });
     } else {
       await registrarEvento(correo.tramitacion_id, 'correo_fallo', actor, {
         tipo: correo.tipo,
@@ -281,8 +445,9 @@ const estaVencido = (correo, ahora = Date.now()) => (
 
 /**
  * Lo que hace `confirmar` (y el camino «ya recibida» de `confirmar`) al cerrar una tramitación: crea el
- * aviso y el acuse si faltan y los intenta ahora, con tope de 6 s cada uno; el acuse solo si desde `inicio`
- * han pasado menos de 12 s. Solo intenta los que ya les toca (`pendiente` con `proximo_intento` pasado): un
+ * aviso y el acuse si faltan y los intenta ahora, el aviso con tope de 15 s (descarga de adjuntos incluida) y el acuse
+ * con 6 s; el acuse solo si desde `inicio` han pasado menos de 20 s. Solo intenta los que ya les toca (`pendiente`
+ * con `proximo_intento` pasado): un
  * reintento del navegador no martillea a Altavoz mientras el correo espera su turno. Si algo falla, el contrato
  * ya está a salvo: lo recoge el vigilante (o la conciliación) en menos de 5 minutos. Nunca lanza, salvo
  * ErrorSimulacion.
@@ -293,9 +458,9 @@ export async function despachar(tramitacion, documentos, { inicio = Date.now() }
     correos = (await crearCorreos(tramitacion, documentos)).correos;
     const aviso = correos.find((c) => c.tipo === 'aviso');
     const acuse = correos.find((c) => c.tipo === 'acuse');
-    if (aviso && estaVencido(aviso)) await intentarEnvio(aviso.id, { tope: TOPE_CONFIRMAR_MS });
+    if (aviso && estaVencido(aviso)) await intentarEnvio(aviso.id, { tope: TOPE_CONFIRMAR_AVISO_MS });
     if (acuse && estaVencido(acuse) && Date.now() - inicio < PRESUPUESTO_ACUSE_MS) {
-      await intentarEnvio(acuse.id, { tope: TOPE_CONFIRMAR_MS });
+      await intentarEnvio(acuse.id, { tope: TOPE_CONFIRMAR_ACUSE_MS });
     }
   } catch (error) {
     if (error instanceof ErrorSimulacion) throw error;
@@ -347,7 +512,7 @@ export async function liberarCerrojos({ ahora = Date.now() } = {}) {
  * `proximo_intento` ya ha pasado (aviso y acuse; nunca códigos de acceso), en serie y con tope por correo.
  * Un correo que falla no frena a los demás. Devuelve {liberados, reintentados, enviados}.
  */
-export async function reintentarPendientes({ max = 10, tope = TOPE_ENVIO_MS, ahora = Date.now(), actor = 'vigilante' } = {}) {
+export async function reintentarPendientes({ max = 10, tope, ahora = Date.now(), actor = 'vigilante' } = {}) {
   const liberados = await liberarCerrojos({ ahora });
   const vencidos = await seleccionar('tramitacion_correos', {
     select: 'id,tramitaciones!inner(prueba)',
@@ -443,7 +608,7 @@ export async function atascados({ ahora = Date.now(), minutos = 10 } = {}) {
  * proceso (cerrojo vivo) no lo toca y devuelve {ocupado:true}. `actor` es el email de backoffice.
  * Devuelve {ok:false, motivo:'desconocida'} | {ok:true, ocupado:true} | {ok:true, ocupado:false, estado, intentos}.
  */
-export async function reenviar(tramitacionId, tipo, { actor = 'sistema', tope = TOPE_ENVIO_MS } = {}) {
+export async function reenviar(tramitacionId, tipo, { actor = 'sistema', tope } = {}) {
   if (!TIPOS_DE_COLA.includes(tipo)) throw new RangeError('Tipo de correo no válido');
   const contexto = await cargarTramitacion(tramitacionId);
   if (!contexto) return { ok: false, motivo: 'desconocida' };

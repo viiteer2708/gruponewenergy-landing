@@ -17,13 +17,24 @@
 //    las direcciones: ver VARIABLES_PERMITIDAS.
 //
 // Ganchos (los usan los tests; la base se lee siempre por aquí, nunca directamente):
-//   GET  /__pruebas/correos?para=&tipo=       últimos 5 correos simulados, con su cuerpo
-//   GET  /__pruebas/tramitacion?ref=          {tramitacion, documentos, correos, eventos} de una tramitación de prueba
-//   POST /__pruebas/altavoz {caido: bool}     simula Altavoz caído (503) o lo recupera
-//   POST /__pruebas/env {VARIABLE: 'x'|null}  pone o quita una variable de proceso (cuotas…); devuelve los valores previos
+//   GET  /__pruebas/correos?para=&tipo=&asunto=   {correos, envios, espia}: `correos` = últimos 5 correos simulados de la base,
+//                                                 con su cuerpo y, si el espía los vio, sus `adjuntos` [{nombre, bytes, md5}];
+//                                                 `envios` = lo que el espía anotó EN MEMORIA de cada llamada a Altavoz (incluidas
+//                                                 las rechazadas): para, asunto, adjuntos con su md5 y el resultado
+//   GET  /__pruebas/tramitacion?ref=              {tramitacion, documentos, correos, eventos} de una tramitación de prueba
+//   POST /__pruebas/altavoz {caido: bool}         simula Altavoz caído (503) o lo recupera
+//   POST /__pruebas/altavoz {rechazo_adjuntos: bool}  simula que Altavoz rechaza los avisos que llevan adjuntos (422) o lo quita
+//   POST /__pruebas/env {VARIABLE: 'x'|null}      pone o quita una variable de proceso (cuotas…); devuelve los valores previos
+//
+// EL ESPÍA (orden 6). En simulación no sale ningún correo, pero las pruebas tienen que poder ver qué adjuntos llevaría cada
+// aviso. Eso se apunta en MEMORIA aquí, no en la base ni en api/: al arrancar, este servidor cambia el cartero por
+// tests/cartero-espia.mjs (que envuelve al de verdad) con un gancho de resolución de módulos de Node (module.registerHooks,
+// Node 22.15 o más). Solo vale para las funciones que corren DENTRO de este servidor: las pruebas que llaman a cola.js o a
+// vigilante.js en su propio proceso no pasan por él (para ver los adjuntos, hay que llamar a la API por HTTP).
 import { createServer } from 'node:http';
 import { existsSync, readFileSync } from 'node:fs';
 import { readFile, stat } from 'node:fs/promises';
+import * as modulos from 'node:module';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -52,6 +63,48 @@ const TIPOS = Object.freeze({
 // Variables que el gancho /__pruebas/env puede tocar. Todo lo demás (ALTAVOZ_*, SUPABASE_*, *_SECRETO,
 // AVISO_DESTINO, SITIO_URL…) está prohibido: la simulación es obligatoria en todo este trabajo.
 const VARIABLES_PERMITIDAS = /^(CUOTA_[A-Z_]+_HORA|TRAMITACION_PRUEBA|ALTAVOZ_SIMULAR_FALLO)$/;
+
+// ---------------------------------------------------------------------------
+// El espía de Altavoz: se pone en lugar del cartero (ver la cabecera)
+// ---------------------------------------------------------------------------
+
+const URL_CARTERO = pathToFileURL(join(RAIZ, 'api', '_lib', 'cartero.js')).href;
+const URL_ESPIA = pathToFileURL(join(RAIZ, 'tests', 'cartero-espia.mjs')).href;
+let espiaInstalado = false;
+
+/** Cambia, para todo lo que se cargue después, api/_lib/cartero.js por tests/cartero-espia.mjs. true si se ha podido. */
+function instalarEspia() {
+  if (espiaInstalado) return true;
+  if (typeof modulos.registerHooks !== 'function') {
+    console.warn('AVISO: este Node no tiene module.registerHooks (hace falta 22.15 o más): el servidor no verá los adjuntos de cada aviso.');
+    return false;
+  }
+  modulos.registerHooks({
+    resolve(especificador, contexto, siguiente) {
+      const resuelto = siguiente(especificador, contexto);
+      // Solo el cartero de verdad (sin «?real»): el espía lo carga con «?real» y así llega al de verdad
+      return resuelto.url === URL_CARTERO ? { ...resuelto, url: URL_ESPIA, shortCircuit: true } : resuelto;
+    },
+  });
+  espiaInstalado = true;
+  return true;
+}
+
+const ETIQUETA_DE_TIPO = Object.freeze({ aviso: 'tramitacion-aviso', acuse: 'tramitacion-acuse', codigo_acceso: 'bandeja-codigo' });
+
+/** Lo que el espía ha anotado (del más antiguo al más nuevo); lista vacía si no está instalado. */
+async function enviosEspiados(filtros = {}) {
+  return espiaInstalado ? (await import('./cartero-espia.mjs')).enviosAnotados(filtros) : [];
+}
+
+/** A cada correo de la base, le añade los `adjuntos` [{nombre, bytes, md5}] del envío que lo dejó «enviado» (null si no se sabe). */
+function conSusAdjuntos(filas, envios) {
+  return filas.map((fila) => {
+    const envio = [...envios].reverse().find((e) => e.resultado.altavoz_id !== null && e.resultado.altavoz_id === fila.altavoz_id
+      && e.para === String(fila.para).toLowerCase() && e.etiqueta === fila.etiqueta);
+    return { ...fila, adjuntos: envio ? envio.adjuntos : null };
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Arranque y comprobaciones
@@ -245,12 +298,17 @@ async function atenderGancho(req, res, url, { seleccionar }) {
   if (ruta === 'correos' && req.method === 'GET') {
     const para = url.searchParams.get('para');
     const tipo = url.searchParams.get('tipo');
+    const asunto = url.searchParams.get('asunto');
     if (tipo !== null && !['aviso', 'acuse', 'codigo_acceso'].includes(tipo)) return json(res, 400, { ok: false, codigo: 'tipo' });
     if (para !== null && !/^[^\s,<>]{3,254}$/.test(para)) return json(res, 400, { ok: false, codigo: 'para' });
+    if (asunto !== null && asunto.length > 300) return json(res, 400, { ok: false, codigo: 'asunto' });
     const query = { select: '*', simulado: 'eq.true', order: 'enviado_en.desc', limit: 5 };
     if (para) query.para = `eq.${para.trim().toLowerCase()}`;
     if (tipo) query.tipo = `eq.${tipo}`;
-    return json(res, 200, { ok: true, correos: await seleccionar('tramitacion_correos', query) });
+    const filas = await seleccionar('tramitacion_correos', query);
+    // Lo que el espía anotó en memoria; cada correo de la base lleva los adjuntos del envío que lo dejó «enviado»
+    const envios = await enviosEspiados({ para: para ?? undefined, etiqueta: tipo ? ETIQUETA_DE_TIPO[tipo] : undefined, asunto: asunto ?? undefined });
+    return json(res, 200, { ok: true, correos: conSusAdjuntos(filas, envios), envios, espia: espiaInstalado });
   }
 
   if (ruta === 'tramitacion' && req.method === 'GET') {
@@ -264,15 +322,22 @@ async function atenderGancho(req, res, url, { seleccionar }) {
       seleccionar('tramitacion_correos', { tramitacion_id: `eq.${id}`, order: 'tipo.asc' }),
       seleccionar('tramitacion_eventos', { tramitacion_id: `eq.${id}`, order: 'id.asc' }),
     ]);
-    return json(res, 200, { ok: true, tramitacion: filas[0], documentos, correos, eventos });
+    return json(res, 200, { ok: true, tramitacion: filas[0], documentos, correos: conSusAdjuntos(correos, await enviosEspiados()), eventos });
   }
 
   if (ruta === 'altavoz' && req.method === 'POST') {
     const datos = await cuerpoJson();
-    if (!datos || typeof datos.caido !== 'boolean') return json(res, 400, { ok: false, codigo: 'caido' });
-    if (datos.caido) process.env.ALTAVOZ_SIMULAR_FALLO = '1';
-    else delete process.env.ALTAVOZ_SIMULAR_FALLO;
-    return json(res, 200, { ok: true, caido: datos.caido });
+    if (datos && typeof datos.caido === 'boolean') {
+      if (datos.caido) process.env.ALTAVOZ_SIMULAR_FALLO = '1';
+      else delete process.env.ALTAVOZ_SIMULAR_FALLO;
+      return json(res, 200, { ok: true, caido: datos.caido });
+    }
+    if (datos && typeof datos.rechazo_adjuntos === 'boolean') {
+      if (datos.rechazo_adjuntos) process.env.ALTAVOZ_SIMULAR_FALLO = 'adjuntos';
+      else delete process.env.ALTAVOZ_SIMULAR_FALLO;
+      return json(res, 200, { ok: true, rechazo_adjuntos: datos.rechazo_adjuntos });
+    }
+    return json(res, 400, { ok: false, codigo: 'caido' });
   }
 
   if (ruta === 'env' && req.method === 'POST') {
@@ -300,6 +365,7 @@ async function atenderGancho(req, res, url, { seleccionar }) {
 
 export async function crearServidor() {
   cargarEntorno();
+  instalarEspia(); // antes de cargar nada de api/: el cartero que se importe ya será el del espía
   const { esPrueba, simulando } = await import('../api/_lib/config.js');
   const { seleccionar } = await import('../api/_lib/supabase.js');
   const vercel = cargarVercel();

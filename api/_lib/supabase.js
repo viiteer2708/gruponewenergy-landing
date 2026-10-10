@@ -82,20 +82,36 @@ function leerJson(texto, operacion, status) {
 
 /**
  * Un fetch con la clave de servicio, el tope y los errores ya traducidos. Devuelve
- * {status, cabeceras, texto} cuando la respuesta es 2xx; en cualquier otro caso lanza ErrorSupabase.
+ * {status, cabeceras, texto, datos} cuando la respuesta es 2xx; en cualquier otro caso lanza ErrorSupabase.
  * Las cabeceras de autenticación van al final: quien llama no puede pisarlas.
+ *   binario    el cuerpo de una respuesta 2xx se lee como bytes (`datos`: Buffer) y NO como texto: un archivo leído con
+ *              .text() se corrompe. Los errores se leen siempre como texto (son JSON cortos).
+ *   maxBytes   (solo con binario) si la respuesta DICE pesar más (Content-Length), se corta sin leerla y se lanza
+ *              ErrorSupabase con codigo 'tamano'. Es un freno grueso; la comprobación exacta la hace quien llama.
  */
-async function pedir({ metodo, url, cabeceras = {}, cuerpo, tope, operacion }) {
+async function pedir({ metodo, url, cabeceras = {}, cuerpo, tope, operacion, binario = false, maxBytes }) {
   const clave = supabaseClave(); // falta de variable = error de configuración, no de red: se deja subir tal cual
   const headers = { ...cabeceras, apikey: clave, Authorization: `Bearer ${clave}` };
   const limite = Number.isFinite(tope) && tope > 0 ? tope : TOPE_MS;
 
   let respuesta;
-  let texto;
+  let texto = '';
+  let datos = null;
+  let pesaDemasiado = false;
   try {
     // redirect:'error' → si alguna vez redirigen, no se manda la clave a otro sitio
     respuesta = await fetch(url, { method: metodo, headers, body: cuerpo, redirect: 'error', signal: AbortSignal.timeout(limite) });
-    texto = await respuesta.text();
+    if (binario && respuesta.ok) {
+      const dicho = Number(respuesta.headers.get('content-length'));
+      if (Number.isFinite(maxBytes) && Number.isFinite(dicho) && dicho > maxBytes) {
+        pesaDemasiado = true;
+        await respuesta.body?.cancel();
+      } else {
+        datos = Buffer.from(await respuesta.arrayBuffer());
+      }
+    } else {
+      texto = await respuesta.text();
+    }
   } catch (error) {
     const agotado = error?.name === 'TimeoutError' || error?.name === 'AbortError';
     throw new ErrorSupabase(
@@ -104,6 +120,9 @@ async function pedir({ metodo, url, cabeceras = {}, cuerpo, tope, operacion }) {
     );
   }
 
+  if (pesaDemasiado) {
+    throw new ErrorSupabase(`El almacén ha devuelto un objeto más grande de lo esperado (${operacion})`, { status: respuesta.status, codigo: 'tamano' });
+  }
   if (!respuesta.ok) {
     const { codigo, statusInterno } = leerError(texto);
     throw new ErrorSupabase(
@@ -111,7 +130,7 @@ async function pedir({ metodo, url, cabeceras = {}, cuerpo, tope, operacion }) {
       { status: respuesta.status, codigo, statusInterno },
     );
   }
-  return { status: respuesta.status, cabeceras: respuesta.headers, texto };
+  return { status: respuesta.status, cabeceras: respuesta.headers, texto, datos };
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +302,24 @@ export async function subirObjeto(ruta, datos, mime, { tope } = {}) {
     operacion,
   });
   return { ruta, clave: leerJson(r.texto, operacion, r.status)?.Key ?? null };
+}
+
+/**
+ * Descarga un objeto del bucket privado desde el servidor (con la clave de servicio) y lo devuelve como Buffer: así
+ * se leen los documentos para adjuntarlos al aviso. Un objeto que no existe es un ErrorSupabase (Storage contesta
+ * HTTP 400 con `statusInterno` 404). `maxBytes` corta antes de leer si el objeto dice pesar más; el tamaño EXACTO
+ * lo comprueba quien llama contra `tamano_comprobado`. Tope de 10 s por defecto (`tope` en milisegundos).
+ */
+export async function descargarObjeto(ruta, { tope, maxBytes } = {}) {
+  const r = await pedir({
+    metodo: 'GET',
+    url: `${baseAlmacen()}/object/${BUCKET}/${codificarRuta(ruta)}`,
+    tope,
+    operacion: 'descargar objeto',
+    binario: true,
+    maxBytes,
+  });
+  return r.datos;
 }
 
 /** Quita barras de los lados y valida el prefijo de una carpeta. */

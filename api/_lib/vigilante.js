@@ -4,7 +4,8 @@
 // POST /api/tramitacion/vigilante y esta pasada hace, EN ESTE ORDEN:
 //   0. conciliar        las recibidas/tramitadas de los últimos 7 días a las que les falta el aviso o el acuse los reciben
 //   1. liberar          los correos `enviando` con el cerrojo vencido vuelven a `pendiente` (cuenta como un intento)
-//   2. reintentar       hasta 10 correos `pendiente` a los que ya les toca (aviso y acuse; nunca códigos de acceso)
+//   2. reintentar       hasta 10 correos `pendiente` a los que ya les toca (aviso y acuse; nunca códigos de acceso);
+//                       el aviso vuelve a descargar los documentos y los adjunta (cola.intentarEnvio)
 //   3. abandonar        las `subiendo` sin movimiento en 24 h pasan a `abandonada`
 //   4. limpiar          cuotas y códigos de acceso de más de un día
 // y devuelve el parte: lo que ha hecho y lo que preocupa (correos atascados, subidas a medias).
@@ -17,14 +18,18 @@
 //    nada de prueba y el servidor de pruebas (que habla con la misma base real) no ve nada de producción. Las cuotas y
 //    los códigos de acceso no cuelgan de una tramitación: en modo prueba solo se limpian los de prueba (claves
 //    `pruebas:*` y alias victor.molins.10+…@gmail.com, como scripts/limpiar-pruebas.mjs).
-//  - PRESUPUESTO DE TIEMPO. El script del VPS corta a los 25 s y la función vive 60 s como mucho; con Altavoz colgado
-//    cada envío tarda hasta 8 s. Por eso no se EMPIEZA ningún envío pasados `limiteEnvioMs` (10 s) desde el inicio de
-//    la pasada: lo que no quepa lo recoge la pasada siguiente, 5 minutos después. Así una caída de Altavoz nunca se
-//    ve desde el VPS como «la web no responde».
+//  - PRESUPUESTO DE TIEMPO (orden 6, con los avisos llevando adjuntos). La función vive 60 s como mucho y el script del
+//    VPS corta a los 55 s. Un aviso puede tardar hasta 15 s (descargar los documentos del almacén + entregarlos a
+//    Altavoz; si Altavoz rechaza los adjuntos, el reintento sin ellos suma como mucho 4 s más) y un acuse hasta 8 s.
+//    Por eso no se EMPIEZA ningún envío pasados `limiteEnvioMs` (25 s) desde el inicio de la pasada: lo que no quepa
+//    lo recoge la pasada siguiente, 5 minutos después. Peor caso con Altavoz colgado: 25 s (el último envío empieza justo
+//    antes del límite) + 15 s (su tope) + 4 s (reintento sin adjuntos, solo si el rechazo llegó tarde) + 2 s (cerrojo,
+//    lectura y escritura en la base alrededor del envío) + 5 s (conciliar, abandonar, limpiar y el parte: consultas de
+//    ~0,2 s) = 51 s < 55 s del script < 60 s de la función. Así una caída de Altavoz nunca se ve desde el VPS como «la web
+//    no responde». (tests/unit/tiempos.test.mjs ata estos números con vercel.json y el script.)
 //  - Nada de datos personales: la respuesta lleva referencias, estados y contadores, nunca nombres, correos ni IBAN.
 //  - Los fallos de la base suben como excepción (el handler responde 5xx y la siguiente pasada repite todo: cada paso
 //    es idempotente). Solo hay un console.error, con una frase fija (textoSeguroDeError).
-import { TOPE_ENVIO_MS } from './cartero.js';
 import {
   TIPOS_DE_COLA, atascados as correosAtascados, conciliar, liberarCerrojos, registrarEvento, reintentarPendientes, textoSeguroDeError,
 } from './cola.js';
@@ -33,7 +38,7 @@ import { urlFichaDe } from './correos.js';
 import { ErrorSupabase, actualizar, borrar, rest, seleccionar } from './supabase.js';
 
 export const MAX_CORREOS_POR_PASADA = 10;
-export const LIMITE_NUEVO_ENVIO_MS = 10_000;
+export const LIMITE_NUEVO_ENVIO_MS = 25_000;
 export const HORAS_PARA_ABANDONAR = 24;
 export const MINUTOS_SUBIDA_A_MEDIAS = 60;
 export const MINUTOS_ATASCO = 10;
@@ -150,14 +155,15 @@ function fichaDe(ref) {
  *     subidas_a_medias:[{ref, formulario, creada_en, actualizada_en, minutos}], pendientes_total }
  * `atascados` = correos aviso/acuse sin enviar que están en un estado terminal (agotado, suprimido, incierto, error de
  * configuración) o llevan más de 10 minutos. Parámetros solo para las pruebas: `ahora`, `maxCorreos`, `tope` (por
- * envío) y `limiteEnvioMs` (pasado ese tiempo no se empieza otro envío).
+ * envío; sin él, el de cada tipo: 15 s el aviso y 8 s el acuse) y `limiteEnvioMs` (pasado ese tiempo no se empieza
+ * otro envío).
  * Lanza si la base falla (cada paso es idempotente: la pasada siguiente lo repite) y ErrorSimulacion si se intenta
  * enviar de verdad en modo prueba.
  */
 export async function ejecutarPasada({
   ahora = Date.now(),
   maxCorreos = MAX_CORREOS_POR_PASADA,
-  tope = TOPE_ENVIO_MS,
+  tope,
   limiteEnvioMs = LIMITE_NUEVO_ENVIO_MS,
 } = {}) {
   const inicio = Date.now();

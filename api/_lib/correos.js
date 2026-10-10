@@ -3,11 +3,14 @@
 //
 // Aquí solo se arma el contenido; enviarlo es cosa del cartero. El aspecto sale de
 // buildEmailHtml / buildAcuseHtml de los Code.gs de siempre (cabecera #094D38 GNEW y
-// #0D9488 MEGA), pero SIN adjuntos: el aviso lleva un botón a la ficha de la bandeja.
+// #0D9488 MEGA). Desde la orden 6 (decisión de Victor, 10-oct-2026) el aviso a backoffice vuelve a llevar la
+// documentación ADJUNTA, con los mismos topes que el Code.gs y que Altavoz (hasta 10 ficheros y 3.000.000 bytes
+// reales entre todos; ver seleccionarAdjuntos); lo que no cabe se queda «en la bandeja», y el botón a la ficha
+// va SIEMPRE. El acuse al comercial no cambia: sin adjuntos, sin IBAN ni DNI.
 // Todo lo que viene del formulario se escapa en el HTML; el texto plano no se escapa
 // (si no, saldrían «&amp;» a la vista).
-import { MARCAS, CODIGO_ACCESO } from './config.js';
-import { enUnaLinea, recortar } from './nombres.js';
+import { ADJUNTOS_AVISO, MARCAS, CODIGO_ACCESO } from './config.js';
+import { enUnaLinea, extensionDe, recortar } from './nombres.js';
 
 /** Etiqueta que lleva cada tipo de correo en Altavoz (para encontrarlos después). */
 export const ETIQUETA_CORREO = Object.freeze({
@@ -17,6 +20,11 @@ export const ETIQUETA_CORREO = Object.freeze({
 });
 
 export const MAX_ASUNTO = 200;
+
+// Frases fijas del aviso a backoffice (las mismas en HTML y en texto)
+const TITULO_ADJUNTOS = 'Documentación adjunta a este correo';
+const TEXTO_NO_CABEN = 'No caben como adjunto y están en la bandeja:';
+const TEXTO_BOTON_BANDEJA = 'Abrir en la bandeja';
 
 /** Escapa lo que va dentro del HTML (texto y atributos). */
 export function escapeHtml(valor) {
@@ -79,6 +87,88 @@ export function asuntoDe(formulario, datos) {
   else if (formulario === 'gnew') partes = ['Nuevo Contrato', parte(d.compania, 40), titular, comercial, cups];
   else throw new TypeError('Formulario no válido');
   return ajustarAsunto(partes.filter(Boolean).join(' - '));
+}
+
+// ---------------------------------------------------------------------------
+// Adjuntos del aviso: qué documentos van adjuntos y cómo se llaman
+// ---------------------------------------------------------------------------
+
+/**
+ * El nombre tal como lo dejará Altavoz: los saltos de línea, tabuladores y comillas dobles pasan a un espacio y se
+ * recortan los espacios de los lados (api.md §5). Lo que no tenga nombre se llama «documento».
+ */
+export function nombreDeAdjunto(nombre) {
+  return String(nombre ?? '').replace(/[\r\n\t"]+/g, ' ').trim() || 'documento';
+}
+
+/**
+ * Hace distintos los nombres de una lista sin perder la extensión: dni.jpg, dni (2).jpg, dni (3).jpg. No distingue
+ * mayúsculas de minúsculas (Windows y Mac tampoco: «DNI.jpg» y «dni.jpg» se pisarían al guardarlos). Devuelve una
+ * lista del mismo largo y en el mismo orden. Altavoz NO exige nombres distintos: esto lo hacemos para que backoffice
+ * no se encuentre dos «dni.jpg» en el correo.
+ */
+export function nombresUnicos(nombres) {
+  const usados = new Set();
+  return (Array.isArray(nombres) ? nombres : []).map((crudo) => {
+    const base = nombreDeAdjunto(crudo);
+    const punto = base.lastIndexOf('.');
+    const raiz = punto > 0 ? base.slice(0, punto) : base;
+    const extension = punto > 0 ? base.slice(punto) : '';
+    let nombre = base;
+    for (let n = 2; usados.has(nombre.toLowerCase()); n++) {
+      const sufijo = ` (${n})${extension}`;
+      nombre = `${Array.from(raiz).slice(0, Math.max(1, ADJUNTOS_AVISO.maxNombre - sufijo.length)).join('')}${sufijo}`;
+    }
+    usados.add(nombre.toLowerCase());
+    return nombre;
+  });
+}
+
+const EXTENSIONES_ADJUNTO = new Set(ADJUNTOS_AVISO.extensiones);
+
+/**
+ * Qué documentos de una tramitación van adjuntos al aviso y cuáles se quedan solo en la bandeja. Las mismas reglas que
+ * el Code.gs de siempre y que los topes de Altavoz:
+ *   · solo los documentos en estado `subido` y con su tamaño comprobado (`tamano_comprobado` > 0);
+ *   · primero los de orden 1..N, por su orden; la firma (orden 0) al FINAL;
+ *   · cada uno entra si los bytes acumulados más los suyos no pasan de 3.000.000 Y quedan plazas (10 EN TOTAL, la firma
+ *     incluida); si uno no cabe, se salta y los siguientes se miran igualmente («por orden de llegada»).
+ * Devuelve {adjuntos, fuera}, ambas en el orden de arriba:
+ *   adjuntos  [{doc, nombre, bytes, pos}]           nombre = el que llevará el adjunto (distinto del de los demás);
+ *                                                   pos = su lugar en ese orden (para volver a ordenar lo que cambie de lista)
+ *   fuera     [{doc, nombre, bytes, motivo, pos}]   motivo: 'cupo' (no cabe en bytes o en plazas) · 'no_subido' · 'tipo'
+ *                                                   (quien descarga añade 'descarga': no se ha podido bajar del almacén)
+ * `maxAdjuntos`/`maxBytes` se pueden rebajar (con `maxAdjuntos: 0` todo queda fuera: es lo que se hace sin adjuntos).
+ * No descarga nada: los `bytes` que cuentan son los de la base; quien descarga comprueba que coinciden.
+ */
+export function seleccionarAdjuntos(documentos, { maxAdjuntos = ADJUNTOS_AVISO.max, maxBytes = ADJUNTOS_AVISO.maxBytes } = {}) {
+  const lista = (Array.isArray(documentos) ? documentos : []).filter((d) => d !== null && typeof d === 'object');
+  const lugar = (doc) => (Number(doc.orden) === 0 ? Number.POSITIVE_INFINITY : Number(doc.orden ?? 0));
+  const ordenados = [...lista].sort((a, b) => lugar(a) - lugar(b));
+  const nombres = nombresUnicos(ordenados.map((doc) => doc.nombre));
+
+  const adjuntos = [];
+  const fuera = [];
+  let acumulado = 0;
+  ordenados.forEach((doc, i) => {
+    const nombre = nombres[i];
+    const comprobado = Number(doc.tamano_comprobado);
+    const tieneTamano = doc.tamano_comprobado !== null && doc.tamano_comprobado !== undefined && Number.isSafeInteger(comprobado) && comprobado > 0;
+    let motivo = null;
+    if (doc.estado !== 'subido' || !tieneTamano) motivo = 'no_subido';
+    else if (!EXTENSIONES_ADJUNTO.has(extensionDe(nombre)) || Array.from(nombre).length > ADJUNTOS_AVISO.maxNombre) motivo = 'tipo';
+    else if (adjuntos.length >= maxAdjuntos || acumulado + comprobado > maxBytes) motivo = 'cupo';
+
+    if (motivo === null) {
+      acumulado += comprobado;
+      adjuntos.push({ doc, nombre, bytes: comprobado, pos: i });
+    } else {
+      const declarado = Number(doc.tamano_declarado);
+      const bytes = tieneTamano ? comprobado : (Number.isSafeInteger(declarado) && declarado >= 0 ? declarado : null);
+      fuera.push({ doc, nombre, bytes, motivo, pos: i });
+    }
+  });
+  return { adjuntos, fuera };
 }
 
 // ---------------------------------------------------------------------------
@@ -224,20 +314,32 @@ function textoDocumentos(titulo, docs, conTamano) {
 // Aviso a backoffice
 // ---------------------------------------------------------------------------
 
+/** Lo que se enseña de cada documento en el aviso: {nombre, tamano}. El tamaño sale de los bytes reales. */
+const comoLista = (entradas) => entradas.map((e) => ({ nombre: enUnaLinea(e.nombre) || 'documento', tamano: tamanoTexto(e.bytes) }));
+
+/** «contrato.pdf (5,50 MB), foto.jpg (2,10 MB)» (sin el tamaño si no se conoce). */
+const enFrase = (docs) => docs.map((d) => (d.tamano ? `${d.nombre} (${d.tamano})` : d.nombre)).join(', ');
+
 /**
- * Aviso a backoffice: todos los datos del contrato (IBAN completo incluido), la lista de
- * documentos con su tamaño y un botón a la ficha de la bandeja. Sin adjuntos.
+ * Aviso a backoffice: todos los datos del contrato (IBAN completo incluido), la documentación ADJUNTA a este correo
+ * (nombre y tamaño de cada adjunto), un aviso con lo que no cabe como adjunto y se queda en la bandeja, y SIEMPRE un
+ * botón a la ficha de la bandeja.
  *   tramitacion  la fila de `tramitaciones`
  *   documentos   las filas de `tramitacion_documentos`
+ *   seleccion    {adjuntos, fuera}: lo que de verdad lleva el correo (ver seleccionarAdjuntos; quien descarga los
+ *                ficheros mueve a `fuera` los que no se han podido descargar). Si no se pasa, se supone que NO va
+ *                nada adjunto y todos los documentos están «en la bandeja»
  *   urlFicha     https://…/bandeja/c/<ref>  (ver urlFichaDe)
  *   destino      el buzón al que el comercial debe mandar lo que falte (AVISO_DESTINO)
  * Devuelve {asunto, html, texto}.
  */
-export function armarAviso({ tramitacion, documentos = [], urlFicha, destino } = {}) {
+export function armarAviso({ tramitacion, documentos = [], seleccion, urlFicha, destino } = {}) {
   const marca = exigirTramitacion(tramitacion);
   const t = tramitacion;
   const c = marca.colores;
-  const docs = documentosOrdenados(documentos);
+  const { adjuntos, fuera } = seleccion ?? seleccionarAdjuntos(documentos, { maxAdjuntos: 0 });
+  const adjuntados = comoLista(adjuntos ?? []);
+  const enBandeja = comoLista(fuera ?? []);
   const filas = filasAviso(t);
   const fecha = fechaMadrid(t.recibida_en ?? t.creada_en ?? new Date());
   const enlace = esUrlHttp(urlFicha) ? urlFicha.trim() : '';
@@ -258,7 +360,13 @@ export function armarAviso({ tramitacion, documentos = [], urlFicha, destino } =
     ? '<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:24px auto 4px"><tr>'
       + `<td align="center" bgcolor="${c.cabecera}" style="background:${c.cabecera};border-radius:8px">`
       + `<a href="${escapeHtml(enlace)}" style="display:inline-block;padding:14px 28px;font-family:Arial,sans-serif;font-size:15px;font-weight:700;color:#ffffff;text-decoration:none">`
-      + 'Ver y descargar la documentación</a></td></tr></table>'
+      + `${TEXTO_BOTON_BANDEJA}</a></td></tr></table>`
+    : '';
+
+  // Lo que no ha cabido como adjunto (o no se ha podido descargar) está en la bandeja
+  const avisoBandeja = enBandeja.length > 0
+    ? '<div style="margin-top:12px;padding:12px 14px;background:#FFF7ED;border:1px solid #FDBA74;border-radius:8px;font-size:13px;color:#7C2D12">'
+      + `<strong>${TEXTO_NO_CABEN}</strong> ${escapeHtml(enFrase(enBandeja))}.</div>`
     : '';
 
   const pie = `<div style="margin-top:20px;padding-top:14px;border-top:1px solid #e2e8f0;font-size:12px;color:${c.textoSuave};line-height:1.5">`
@@ -270,7 +378,8 @@ export function armarAviso({ tramitacion, documentos = [], urlFicha, destino } =
     + '<div style="background:#ffffff;padding:24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px">'
     + franja
     + tablaHtml(filas, c)
-    + listaDocumentosHtml('Documentación', docs, c, true)
+    + listaDocumentosHtml(TITULO_ADJUNTOS, adjuntados, c, true)
+    + avisoBandeja
     + boton
     + pie
     + '</div></div>',
@@ -283,8 +392,9 @@ export function armarAviso({ tramitacion, documentos = [], urlFicha, destino } =
     '',
     textoFilas(filas),
     '',
-    textoDocumentos('Documentación', docs, true),
-    enlace ? `\nVer y descargar la documentación: ${enlace}` : '',
+    textoDocumentos(TITULO_ADJUNTOS, adjuntados, true),
+    enBandeja.length > 0 ? `\n${TEXTO_NO_CABEN} ${enFrase(enBandeja)}.` : '',
+    enlace ? `\n${TEXTO_BOTON_BANDEJA}: ${enlace}` : '',
     '',
     pieTexto,
     'Aviso automático de tramitatucontrato.energy.',

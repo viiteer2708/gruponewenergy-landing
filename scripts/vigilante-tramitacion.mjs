@@ -25,7 +25,7 @@
 //     VIGILANTE_URL=https://…/api/tramitacion/vigilante   VIGILANTE_SECRETO=…        (obligatorias)
 //     NOTIFICAR=/root/notifica-telegram.sh   ESTADO=/root/.tramitacion-vigilante-state.json
 //     TESTIGO=/root/.tramitacion-vigilante-last                                         (opcionales; estos son los valores por defecto)
-//   VIGILANTE_TOPE_MS (solo pruebas) cambia el tope de 25 s de la llamada.
+//   VIGILANTE_TOPE_MS (solo pruebas) cambia el tope de 55 s de la llamada.
 //
 // Reglas del script:
 //  · Solo node:fs, node:child_process y fetch. No importa nada del repo (corre en el VPS desde una copia del repo).
@@ -45,7 +45,11 @@ const POR_DEFECTO = Object.freeze({
   NOTIFICAR: '/root/notifica-telegram.sh',
   TESTIGO: '/root/.tramitacion-vigilante-last',
 });
-const TOPE_LLAMADA_MS = 25_000;
+// 55 s: por encima de lo que puede tardar una pasada (51 s en el peor caso: no empieza envíos pasados 25 s, un aviso con
+// adjuntos tiene 15 s, +4 s de reintento sin adjuntos, 2 s alrededor del envío y 5 s de consultas; ver api/_lib/vigilante.js)
+// y por debajo de los 60 s de la función (maxDuration de vercel.json). Con 25 s, un aviso lento se habría visto aquí como
+// «la web no responde».
+const TOPE_LLAMADA_MS = 55_000;
 const TOPE_AVISO_MS = 45_000;
 const PURGA_MS = 24 * 60 * 60 * 1000; // lo que no se ve en 24 h se olvida
 const FALLOS_PARA_AVISAR = 2;

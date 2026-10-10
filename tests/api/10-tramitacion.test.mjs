@@ -283,8 +283,12 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
     assert.ok(aviso.cuerpo_html.includes(IBAN), 'El aviso lleva el IBAN completo');
     assert.ok(aviso.cuerpo_texto.includes(IBAN));
     assert.ok(aviso.cuerpo_html.includes(`${BASE}/bandeja/c/${ref}`), 'El aviso lleva el botón a la ficha de la bandeja');
-    assert.ok(aviso.cuerpo_html.includes('Ver y descargar la documentación'));
+    assert.ok(aviso.cuerpo_html.includes('Abrir en la bandeja'), 'El botón a la bandeja (con adjuntos o sin ellos)');
+    assert.ok(!aviso.cuerpo_html.includes('Ver y descargar la documentación'), 'El texto antiguo del botón ya no está');
     for (const nombre of ['contrato.pdf', 'dni.jpg', 'factura.png', 'firma.png']) assert.ok(aviso.cuerpo_html.includes(nombre), `El aviso lista ${nombre}`);
+    // Orden 6: el PDF de 5,5 MiB no cabe como adjunto (el tope es de 3.000.000 bytes) y se queda en la bandeja; lo demás va adjunto
+    assert.ok(aviso.cuerpo_html.includes('Documentación adjunta a este correo (3)'), 'dni.jpg, factura.png y la firma van adjuntos');
+    assert.ok(aviso.cuerpo_html.includes('No caben como adjunto y están en la bandeja:</strong> contrato.pdf (5,50 MB).'), 'El PDF grande se queda en la bandeja');
     assert.ok(aviso.cuerpo_html.includes('&lt;b&gt;etiqueta&lt;/b&gt;') && !aviso.cuerpo_html.includes('<b>etiqueta</b>'), 'Lo que teclea el comercial va escapado');
     assert.equal(acuse.asunto, `Recibido: ${asunto}`);
     assert.equal(acuse.para, EMAIL_COMERCIAL);

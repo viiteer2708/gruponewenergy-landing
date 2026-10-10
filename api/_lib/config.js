@@ -35,9 +35,24 @@ export function simulando() {
   return process.env.ALTAVOZ_SIMULAR === '1';
 }
 
+/**
+ * Modo de fallo que se simula en Altavoz (ALTAVOZ_SIMULAR_FALLO). Solo cuenta en modo prueba: en producción se ignora.
+ *   '1'         → 'caido'     Altavoz no contesta bien: 503 en todo
+ *   'adjuntos'  → 'adjuntos'  «rechazo por adjuntos»: 422 SOLO a los avisos que llevan adjuntos (como el de Altavoz cuando
+ *                             los ficheros no le valen o pasan de 3 MB); un aviso sin adjuntos sale bien
+ *   cualquier otra cosa → null (sin fallo)
+ */
+export function falloSimulado() {
+  if (!esPrueba()) return null;
+  const valor = process.env.ALTAVOZ_SIMULAR_FALLO;
+  if (valor === '1') return 'caido';
+  if (valor === 'adjuntos') return 'adjuntos';
+  return null;
+}
+
 /** ALTAVOZ_SIMULAR_FALLO=1 simula Altavoz caído. Solo cuenta en modo prueba: en producción se ignora. */
 export function simularFallo() {
-  return esPrueba() && process.env.ALTAVOZ_SIMULAR_FALLO === '1';
+  return falloSimulado() === 'caido';
 }
 
 /** Variable que contiene una URL base: obligatoria y sin barra final (para poder concatenar rutas). */
@@ -94,6 +109,18 @@ export const LIMITES = Object.freeze({
   maxBytesContrato: 60 * 1024 * 1024,
   maxCaracteresFirma: 2 * 1024 * 1024, // la firma es un PNG pequeño; más es abuso
   maxBytesJson: 3 * 1024 * 1024, // cuerpo JSON leído del stream (la firma va dentro)
+});
+
+/**
+ * Adjuntos del aviso a backoffice: los topes de Altavoz (api.md §5, `leerAdjuntos`). Hasta 10 ficheros y 3.000.000 bytes
+ * REALES entre todos (ya decodificados); el nombre, de 1 a 200 caracteres y con una extensión admitida (en mayúsculas o
+ * minúsculas). Pasarse da un 422 en Altavoz; una petición de más de ~4,5 MB la corta Vercel con un 413 antes de que llegue.
+ */
+export const ADJUNTOS_AVISO = Object.freeze({
+  max: 10,
+  maxBytes: 3_000_000,
+  maxNombre: 200,
+  extensiones: Object.freeze(['pdf', 'jpg', 'jpeg', 'png', 'doc', 'docx']),
 });
 
 /** Código de acceso a la bandeja: minutos que vale y fallos permitidos antes de quemarlo. */

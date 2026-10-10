@@ -300,7 +300,7 @@ describe('Vigilante (script) · la web no contesta', () => {
     assert.match(sinConexion.stdout, /no se ha podido conectar con la web/);
     assert.ok(!sinConexion.salida.includes('127.0.0.1:1'), 'Ni siquiera la URL de la prueba sin conexión sale en la salida');
 
-    // la web tarda más que el tope (aquí 300 ms en vez de 25 s)
+    // la web tarda más que el tope (aquí 300 ms en vez de 55 s)
     respuesta = { status: 200, cuerpo: parte(), retardoMs: 5000 };
     const lenta = await correr([], { env: { VIGILANTE_TOPE_MS: '300' } });
     assert.equal(lenta.codigo, 1);

@@ -11,6 +11,9 @@ import {
   armarAviso,
   armarAcuse,
   armarCodigo,
+  nombreDeAdjunto,
+  nombresUnicos,
+  seleccionarAdjuntos,
 } from '../../api/_lib/correos.js';
 
 const IBAN = 'ES9121000418450200051332';
@@ -204,31 +207,210 @@ test('aviso: cabecera de GNEW (#094D38) con fecha de Madrid y referencia; el de 
   assert.ok(mega.html.includes('Tipo Suministro') && mega.html.includes('Gas'));
 });
 
-test('aviso: botón «Ver y descargar la documentación» que apunta a la ficha de la bandeja', () => {
-  assert.ok(AVISO.html.includes('Ver y descargar la documentación'));
-  assert.match(AVISO.html, new RegExp(`<a href="${URL_FICHA.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}"[^>]*>\\s*Ver y descargar la documentación</a>`));
-  assert.ok(AVISO.texto.includes(`Ver y descargar la documentación: ${URL_FICHA}`));
+test('aviso: botón «Abrir en la bandeja» que apunta a la ficha, SIEMPRE (con o sin adjuntos)', () => {
+  const ENLACE = URL_FICHA.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+  assert.ok(AVISO.html.includes('Abrir en la bandeja'));
+  assert.match(AVISO.html, new RegExp(`<a href="${ENLACE}"[^>]*>\\s*Abrir en la bandeja</a>`));
+  assert.ok(AVISO.texto.includes(`Abrir en la bandeja: ${URL_FICHA}`));
+  assert.ok(!AVISO.html.includes('Ver y descargar la documentación') && !AVISO.texto.includes('Ver y descargar la documentación'), 'el texto antiguo ya no está');
+  // También cuando todo va adjunto, cuando nada va adjunto y cuando no hay documentos
+  for (const seleccion of [seleccionarAdjuntos(DOCS_SUBIDOS_PEQUENOS), seleccionarAdjuntos(DOCS_SUBIDOS_PEQUENOS, { maxAdjuntos: 0 }), { adjuntos: [], fuera: [] }]) {
+    const aviso = armarAviso({ tramitacion: FILA_GNEW, documentos: DOCS_SUBIDOS_PEQUENOS, seleccion, urlFicha: URL_FICHA, destino: DESTINO });
+    assert.match(aviso.html, new RegExp(`<a href="${ENLACE}"[^>]*>\\s*Abrir en la bandeja</a>`));
+    assert.ok(aviso.texto.includes(`Abrir en la bandeja: ${URL_FICHA}`));
+  }
   // Sin enlace válido no hay botón (nunca un enlace roto ni peligroso)
   for (const malo of [undefined, '', 'javascript:alert(1)', 'ftp://x.es', '/bandeja/c/x', 'https://x.es/" onclick="evil()', 'https://x.es/a b']) {
     const sin = armarAviso({ tramitacion: FILA_GNEW, documentos: DOCUMENTOS, urlFicha: malo, destino: DESTINO });
-    assert.ok(!sin.html.includes('Ver y descargar la documentación'), String(malo));
+    assert.ok(!sin.html.includes('Abrir en la bandeja'), String(malo));
     assert.ok(!sin.html.includes('onclick='), String(malo));
     assert.ok(!sin.html.includes('javascript:'), String(malo));
   }
 });
 
-test('aviso: lista de documentos con nombre y tamaño, en orden, con el recuento', () => {
-  assert.ok(AVISO.html.includes('Documentación (4)'));
-  const posiciones = ['firma.png', 'contrato.pdf', 'DNI frontal.jpg', 'factura.pdf'].map((n) => AVISO.html.indexOf(n));
-  assert.ok(posiciones.every((p) => p > 0) && posiciones.every((p, i) => i === 0 || p > posiciones[i - 1]), 'salen por orden');
-  for (const tamano of ['3 KB', '5,50 MB', '402 KB', '800 B']) assert.ok(AVISO.html.includes(tamano), tamano);
-  assert.ok(AVISO.texto.includes('Documentación (4):\n- firma.png (3 KB)\n- contrato.pdf (5,50 MB)\n- DNI frontal.jpg (402 KB)\n- factura.pdf (800 B)'));
-  // Aunque lleguen desordenados
-  const revuelto = armarAviso({ tramitacion: FILA_GNEW, documentos: [DOCUMENTOS[3], DOCUMENTOS[1], DOCUMENTOS[0], DOCUMENTOS[2]], urlFicha: URL_FICHA, destino: DESTINO });
-  assert.ok(revuelto.texto.indexOf('firma.png') < revuelto.texto.indexOf('contrato.pdf'));
-  // Sin documentos no hay sección vacía
+// Documentos ya subidos (lo que llega al aviso desde la base): la firma (orden 0), un contrato que NO cabe y dos pequeños
+const DOCS_SUBIDOS = Object.freeze(DOCUMENTOS.map((d) => Object.freeze({ ...d, estado: 'subido', tamano_comprobado: d.tamano_comprobado ?? d.tamano_declarado })));
+const DOCS_SUBIDOS_PEQUENOS = Object.freeze(DOCS_SUBIDOS.filter((d) => d.nombre !== 'contrato.pdf'));
+
+test('aviso con adjuntos: «Documentación adjunta a este correo (n)» con nombre y tamaño de cada adjunto, la firma al final', () => {
+  const seleccion = seleccionarAdjuntos(DOCS_SUBIDOS_PEQUENOS);
+  const aviso = armarAviso({ tramitacion: FILA_GNEW, documentos: DOCS_SUBIDOS_PEQUENOS, seleccion, urlFicha: URL_FICHA, destino: DESTINO });
+  assert.ok(aviso.html.includes('Documentación adjunta a este correo (3)'));
+  const posiciones = ['DNI frontal.jpg', 'factura.pdf', 'firma.png'].map((n) => aviso.html.indexOf(n));
+  assert.ok(posiciones.every((p) => p > 0) && posiciones.every((p, i) => i === 0 || p > posiciones[i - 1]), 'primero los documentos por su orden y la firma la última');
+  for (const tamano of ['402 KB', '800 B', '3 KB']) assert.ok(aviso.html.includes(tamano), tamano);
+  assert.ok(aviso.texto.includes('Documentación adjunta a este correo (3):\n- DNI frontal.jpg (402 KB)\n- factura.pdf (800 B)\n- firma.png (3 KB)'));
+  // todo cabe: no hay aviso de «no caben»
+  assert.ok(!aviso.html.includes('No caben como adjunto') && !aviso.texto.includes('No caben como adjunto'));
+  assert.ok(!aviso.html.includes('Documentación ('), 'el título antiguo ya no está');
+  // el recuento y las listas salen de la selección, no de los documentos que lleguen
+  const revuelto = armarAviso({ tramitacion: FILA_GNEW, documentos: [...DOCS_SUBIDOS_PEQUENOS].reverse(), seleccion, urlFicha: URL_FICHA, destino: DESTINO });
+  assert.equal(revuelto.html, aviso.html);
+  assert.equal(revuelto.texto, aviso.texto);
+});
+
+test('aviso con adjuntos: lo que no cabe sale en «No caben como adjunto y están en la bandeja: …» (HTML y texto)', () => {
+  const seleccion = seleccionarAdjuntos(DOCS_SUBIDOS);
+  assert.deepEqual(seleccion.fuera.map((f) => f.nombre), ['contrato.pdf']);
+  const aviso = armarAviso({ tramitacion: FILA_GNEW, documentos: DOCS_SUBIDOS, seleccion, urlFicha: URL_FICHA, destino: DESTINO });
+  assert.ok(aviso.html.includes('Documentación adjunta a este correo (3)'));
+  assert.match(aviso.html, /<strong>No caben como adjunto y están en la bandeja:<\/strong> contrato\.pdf \(5,50 MB\)\./);
+  assert.ok(aviso.texto.includes('No caben como adjunto y están en la bandeja: contrato.pdf (5,50 MB).'));
+  // el contrato grande no aparece entre los adjuntos
+  const bloqueAdjuntos = aviso.texto.slice(aviso.texto.indexOf('Documentación adjunta'), aviso.texto.indexOf('No caben'));
+  assert.ok(!bloqueAdjuntos.includes('contrato.pdf'));
+  // varios, separados por comas y con su tamaño
+  const dos = armarAviso({
+    tramitacion: FILA_GNEW,
+    documentos: DOCS_SUBIDOS,
+    seleccion: seleccionarAdjuntos(DOCS_SUBIDOS, { maxAdjuntos: 1 }),
+    urlFicha: URL_FICHA,
+    destino: DESTINO,
+  });
+  assert.ok(dos.texto.includes('Documentación adjunta a este correo (1):\n- DNI frontal.jpg (402 KB)\n'));
+  assert.ok(dos.texto.includes('No caben como adjunto y están en la bandeja: contrato.pdf (5,50 MB), factura.pdf (800 B), firma.png (3 KB).'));
+});
+
+test('aviso sin selección (o sin adjuntos): nada adjunto y TODOS los documentos «en la bandeja»; sin documentos no hay avisos', () => {
+  // AVISO se armó sin `seleccion`: es lo que hace crearCorreos para el asunto
+  assert.ok(!AVISO.html.includes('Documentación adjunta') && !AVISO.texto.includes('Documentación adjunta'), 'sin adjuntos no hay un «(0)» vacío');
+  assert.ok(AVISO.html.includes('No caben como adjunto y están en la bandeja:'));
+  for (const nombre of ['contrato.pdf', 'DNI frontal.jpg', 'factura.pdf', 'firma.png']) assert.ok(AVISO.texto.includes(nombre), nombre);
+  assert.ok(AVISO.texto.includes('contrato.pdf (5,50 MB), DNI frontal.jpg (402 KB), factura.pdf (800 B), firma.png (3 KB).'), 'documentos por su orden y la firma la última');
+  // sin documentos: ni sección de adjuntos ni aviso de «no caben»
   const sinDocs = armarAviso({ tramitacion: FILA_GNEW, documentos: [], urlFicha: URL_FICHA, destino: DESTINO });
-  assert.ok(!sinDocs.html.includes('Documentación (') && !sinDocs.texto.includes('Documentación ('));
+  for (const salida of [sinDocs.html, sinDocs.texto]) {
+    assert.ok(!salida.includes('Documentación adjunta') && !salida.includes('No caben como adjunto') && !salida.includes('Documentación ('));
+  }
+  const vacia = armarAviso({ tramitacion: FILA_GNEW, seleccion: { adjuntos: [], fuera: [] }, urlFicha: URL_FICHA, destino: DESTINO });
+  assert.ok(!vacia.html.includes('No caben como adjunto'));
+});
+
+test('aviso con adjuntos: los nombres se escapan en el HTML (un <script> en un nombre no llega vivo) y no en el texto', () => {
+  const docs = [
+    { orden: 1, nombre: '<script>alert(1)</script>.pdf', estado: 'subido', tamano_declarado: 100, tamano_comprobado: 100 },
+    { orden: 2, nombre: 'a&b "c".png', estado: 'subido', tamano_declarado: 5_000_000, tamano_comprobado: 5_000_000 },
+  ];
+  const aviso = armarAviso({ tramitacion: FILA_GNEW, documentos: docs, seleccion: seleccionarAdjuntos(docs), urlFicha: URL_FICHA, destino: DESTINO });
+  assert.ok(!aviso.html.includes('<script>alert(1)</script>'));
+  assert.ok(aviso.html.includes('&lt;script&gt;alert(1)&lt;/script&gt;.pdf'));
+  // el segundo no cabe (5 MB): sale en «no caben», con las comillas hechas espacio (como Altavoz) y el & escapado
+  assert.ok(aviso.html.includes('<strong>No caben como adjunto y están en la bandeja:</strong> a&amp;b c .png (4,77 MB).'), aviso.html.slice(aviso.html.indexOf('No caben') - 20, aviso.html.indexOf('No caben') + 120));
+  assert.ok(aviso.texto.includes('<script>alert(1)</script>.pdf (100 B)'), 'el texto plano no se escapa');
+  assert.ok(aviso.texto.includes('No caben como adjunto y están en la bandeja: a&b c .png (4,77 MB).'));
+});
+
+test('nombreDeAdjunto: saltos de línea, tabuladores y comillas pasan a espacio (como Altavoz); vacío → «documento»', () => {
+  assert.equal(nombreDeAdjunto('dni.jpg'), 'dni.jpg');
+  assert.equal(nombreDeAdjunto('  dni\r\nfrontal\t"1".jpg '), 'dni frontal 1 .jpg');
+  assert.equal(nombreDeAdjunto(''), 'documento');
+  assert.equal(nombreDeAdjunto(undefined), 'documento');
+  assert.equal(nombreDeAdjunto('   '), 'documento');
+});
+
+test('nombresUnicos: dni.jpg, dni (2).jpg, dni (3).jpg — sin perder la extensión y sin distinguir mayúsculas', () => {
+  assert.deepEqual(nombresUnicos(['dni.jpg', 'dni.jpg', 'dni.jpg']), ['dni.jpg', 'dni (2).jpg', 'dni (3).jpg']);
+  assert.deepEqual(nombresUnicos(['dni.jpg', 'DNI.JPG', 'Dni.jpg']), ['dni.jpg', 'DNI (2).JPG', 'Dni (3).jpg']);
+  assert.deepEqual(nombresUnicos(['a.pdf', 'b.pdf', 'a.pdf', 'a (2).pdf']), ['a.pdf', 'b.pdf', 'a (2).pdf', 'a (2) (2).pdf'], 'si «a (2).pdf» ya existe, el siguiente no lo pisa');
+  assert.deepEqual(nombresUnicos(['factura', 'factura']), ['factura', 'factura (2)'], 'sin extensión también');
+  assert.deepEqual(nombresUnicos(['x.pdf', 'y.pdf']), ['x.pdf', 'y.pdf'], 'los que ya son distintos no se tocan');
+  assert.deepEqual(nombresUnicos([]), []);
+  assert.deepEqual(nombresUnicos(undefined), []);
+  // un nombre larguísimo sigue cabiendo en los 200 caracteres de Altavoz, con su extensión
+  const largo = `${'a'.repeat(198)}.pdf`.slice(-200);
+  const [primero, segundo] = nombresUnicos([largo, largo]);
+  assert.equal(primero, largo);
+  assert.ok(Array.from(segundo).length <= 200 && segundo.endsWith(' (2).pdf'), segundo);
+});
+
+// ---------------------------------------------------------------------------
+// Qué documentos van adjuntos
+// ---------------------------------------------------------------------------
+
+const doc = (orden, nombre, bytes, extra = {}) => ({ orden, nombre, estado: 'subido', tamano_declarado: bytes, tamano_comprobado: bytes, ...extra });
+const nombresDe = (lista) => lista.map((x) => x.nombre);
+
+test('seleccionarAdjuntos: primero los de orden 1..N por su orden y la firma (orden 0) al final, aunque lleguen revueltos', () => {
+  const { adjuntos, fuera } = seleccionarAdjuntos([doc(0, 'firma.png', 283), doc(3, 'c.png', 30), doc(1, 'a.pdf', 10), doc(2, 'b.jpg', 20)]);
+  assert.deepEqual(nombresDe(adjuntos), ['a.pdf', 'b.jpg', 'c.png', 'firma.png']);
+  assert.deepEqual(adjuntos.map((a) => a.bytes), [10, 20, 30, 283]);
+  assert.deepEqual(adjuntos.map((a) => a.pos), [0, 1, 2, 3]);
+  assert.deepEqual(fuera, []);
+  assert.deepEqual(seleccionarAdjuntos(undefined), { adjuntos: [], fuera: [] });
+  assert.deepEqual(seleccionarAdjuntos([]), { adjuntos: [], fuera: [] });
+});
+
+test('seleccionarAdjuntos: 3.000.000 bytes reales entre todos — exactamente 3.000.000 cabe; un byte más, no', () => {
+  const justo = seleccionarAdjuntos([doc(1, 'a.pdf', 1_500_000), doc(2, 'b.pdf', 1_500_000)]);
+  assert.deepEqual(nombresDe(justo.adjuntos), ['a.pdf', 'b.pdf']);
+  const pasado = seleccionarAdjuntos([doc(1, 'a.pdf', 1_500_000), doc(2, 'b.pdf', 1_500_000), doc(3, 'c.pdf', 1)]);
+  assert.deepEqual(nombresDe(pasado.adjuntos), ['a.pdf', 'b.pdf']);
+  assert.deepEqual(pasado.fuera.map((f) => [f.nombre, f.motivo, f.bytes]), [['c.pdf', 'cupo', 1]]);
+  const unico = seleccionarAdjuntos([doc(1, 'enorme.pdf', 3_000_001)]);
+  assert.deepEqual(unico.adjuntos, []);
+  assert.equal(unico.fuera[0].motivo, 'cupo');
+  assert.deepEqual(nombresDe(seleccionarAdjuntos([doc(1, 'tope.pdf', 3_000_000)]).adjuntos), ['tope.pdf']);
+});
+
+test('seleccionarAdjuntos: uno que no cabe se salta y los siguientes se miran igualmente (el grande no bloquea a los pequeños)', () => {
+  // 5,5 MB + dos pequeños + la firma
+  const { adjuntos, fuera } = seleccionarAdjuntos([doc(1, 'grande.pdf', 5_767_168), doc(2, 'dni.jpg', 368), doc(3, 'factura.png', 283), doc(0, 'firma.png', 283)]);
+  assert.deepEqual(nombresDe(adjuntos), ['dni.jpg', 'factura.png', 'firma.png']);
+  assert.deepEqual(fuera.map((f) => [f.nombre, f.motivo]), [['grande.pdf', 'cupo']]);
+  // uno a medias: 2.000.000 entra, 1.500.000 ya no, 900.000 sí, 200.000 ya no, la firma sí
+  const medias = seleccionarAdjuntos([doc(1, 'a.pdf', 2_000_000), doc(2, 'b.pdf', 1_500_000), doc(3, 'c.pdf', 900_000), doc(4, 'd.pdf', 200_000), doc(0, 'firma.png', 283)]);
+  assert.deepEqual(nombresDe(medias.adjuntos), ['a.pdf', 'c.pdf', 'firma.png']);
+  assert.deepEqual(nombresDe(medias.fuera), ['b.pdf', 'd.pdf']);
+});
+
+test('seleccionarAdjuntos: como mucho 10 adjuntos EN TOTAL, la firma incluida (con 12 documentos + firma, entran los 10 primeros)', () => {
+  const doce = Array.from({ length: 12 }, (_, i) => doc(i + 1, `doc${String(i + 1).padStart(2, '0')}.jpg`, 1000));
+  const { adjuntos, fuera } = seleccionarAdjuntos([...doce, doc(0, 'firma.png', 283)]);
+  assert.equal(adjuntos.length, 10);
+  assert.deepEqual(nombresDe(adjuntos), doce.slice(0, 10).map((d) => d.nombre));
+  assert.deepEqual(nombresDe(fuera), ['doc11.jpg', 'doc12.jpg', 'firma.png'], 'el resto y la firma se quedan en la bandeja');
+  assert.ok(fuera.every((f) => f.motivo === 'cupo'));
+  // 9 documentos + firma = 10: todos
+  const nueve = seleccionarAdjuntos([...doce.slice(0, 9), doc(0, 'firma.png', 283)]);
+  assert.equal(nueve.adjuntos.length, 10);
+  assert.equal(nueve.adjuntos.at(-1).nombre, 'firma.png');
+  // 10 documentos + firma: la firma no cabe
+  const diez = seleccionarAdjuntos([...doce.slice(0, 10), doc(0, 'firma.png', 283)]);
+  assert.equal(diez.adjuntos.length, 10);
+  assert.deepEqual(nombresDe(diez.fuera), ['firma.png']);
+});
+
+test('seleccionarAdjuntos: solo los documentos `subido` y con su tamaño comprobado; el tipo y el tamaño de la base mandan', () => {
+  const { adjuntos, fuera } = seleccionarAdjuntos([
+    doc(1, 'bien.pdf', 100),
+    doc(2, 'pendiente.pdf', 100, { estado: 'pendiente' }),
+    doc(3, 'sin-tamano.pdf', 100, { tamano_comprobado: null }),
+    doc(4, 'vacio.pdf', 0, { tamano_comprobado: 0 }),
+    doc(5, 'notas.txt', 100),
+    doc(6, 'otro.docx', 100),
+  ]);
+  assert.deepEqual(nombresDe(adjuntos), ['bien.pdf', 'otro.docx']);
+  assert.deepEqual(fuera.map((f) => [f.nombre, f.motivo]), [['pendiente.pdf', 'no_subido'], ['sin-tamano.pdf', 'no_subido'], ['vacio.pdf', 'no_subido'], ['notas.txt', 'tipo']]);
+  assert.equal(fuera[1].bytes, 100, 'sin tamaño comprobado se enseña el declarado');
+  // las seis extensiones de Altavoz, en mayúsculas o minúsculas
+  const todas = seleccionarAdjuntos(['pdf', 'jpg', 'jpeg', 'PNG', 'doc', 'DOCX'].map((ext, i) => doc(i + 1, `f.${ext}`, 10)));
+  assert.equal(todas.adjuntos.length, 6);
+});
+
+test('seleccionarAdjuntos: dos documentos con el mismo nombre salen con nombres distintos (y la extensión intacta); la firma no se pisa', () => {
+  const { adjuntos } = seleccionarAdjuntos([doc(1, 'dni.jpg', 10), doc(2, 'dni.jpg', 11), doc(3, 'DNI.jpg', 12), doc(4, 'firma.png', 13), doc(0, 'firma.png', 283)]);
+  assert.deepEqual(nombresDe(adjuntos), ['dni.jpg', 'dni (2).jpg', 'DNI (3).jpg', 'firma.png', 'firma (2).png']);
+  assert.deepEqual(adjuntos.map((a) => a.doc.orden), [1, 2, 3, 4, 0]);
+  assert.equal(new Set(nombresDe(adjuntos).map((n) => n.toLowerCase())).size, 5);
+});
+
+test('seleccionarAdjuntos: con maxAdjuntos 0 todo queda fuera (así se arma «sin adjuntos»); los límites se pueden rebajar', () => {
+  const lista = [doc(1, 'a.pdf', 10), doc(2, 'b.pdf', 10)];
+  const nada = seleccionarAdjuntos(lista, { maxAdjuntos: 0 });
+  assert.deepEqual(nada.adjuntos, []);
+  assert.deepEqual(nada.fuera.map((f) => f.motivo), ['cupo', 'cupo']);
+  assert.deepEqual(nombresDe(seleccionarAdjuntos(lista, { maxAdjuntos: 1 }).adjuntos), ['a.pdf']);
+  assert.deepEqual(nombresDe(seleccionarAdjuntos(lista, { maxBytes: 15 }).adjuntos), ['a.pdf']);
 });
 
 test('aviso: pie con el email del comercial y el buzón de tramitación', () => {
