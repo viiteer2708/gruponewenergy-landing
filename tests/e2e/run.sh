@@ -4,7 +4,7 @@
 #   bash tests/e2e/run.sh formulario    los 9 casos del formulario (gnew.html, mega.html y las páginas de gracias)
 #   bash tests/e2e/run.sh extras        comprobaciones extra (rutas que los 9 casos no tocan; no cuentan en el «9/9»)
 #   bash tests/e2e/run.sh capturas      capturas a 390 px del html de MASTER (antes) y del actual (después), comparadas
-#   bash tests/e2e/run.sh bandeja       (la bandeja llega en la orden 4: aún no existe tests/e2e/bandeja.py)
+#   bash tests/e2e/run.sh bandeja       la bandeja de backoffice (acceso con código, lista, ficha, descargas, estado) y sus capturas a 390 y 1440 px
 #
 # Qué hace, por este orden:
 #   1. arranca el servidor local (127.0.0.1:8765) con nice: base REAL en MODO PRUEBA (todo lleva prueba=true y vive bajo
@@ -30,12 +30,7 @@ case "$SUITE" in
   formulario) PRUEBAS=("$PY" tests/e2e/formulario.py) ;;
   extras)     PRUEBAS=("$PY" tests/e2e/formulario.py extras) ;;
   capturas)   PRUEBAS=("$PY" tests/e2e/formulario.py capturas) ;;
-  bandeja)
-    if [ ! -f tests/e2e/bandeja.py ]; then
-      echo "La suite «bandeja» llega con la orden 4: todavía no existe tests/e2e/bandeja.py." >&2
-      exit 2
-    fi
-    PRUEBAS=("$PY" tests/e2e/bandeja.py) ;;
+  bandeja)    PRUEBAS=("$PY" tests/e2e/bandeja.py) ;;
   *)
     echo "Uso: bash tests/e2e/run.sh formulario|extras|capturas|bandeja" >&2
     exit 2 ;;

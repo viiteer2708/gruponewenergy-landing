@@ -1,0 +1,1214 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="referrer" content="no-referrer">
+    <link rel="icon" type="image/png" href="/favicon-gnew.png">
+    <title>Ficha | Bandeja de tramitación</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --primary: #0B6E4F;
+            --primary-dark: #094D38;
+            --primary-light: #0D8A63;
+            --accent: #F9A825;
+            --bg: #F5F7FA;
+            --card-bg: #FFFFFF;
+            --text: #1A1A2E;
+            --text-muted: #6B7280;
+            --border: #E2E8F0;
+            --error: #DC2626;
+            --shadow: 0 4px 6px -1px rgba(0,0,0,.07), 0 2px 4px -2px rgba(0,0,0,.05);
+            --radius: 12px;
+            --radius-sm: 8px;
+        }
+
+        html {
+            -webkit-text-size-adjust: 100%;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            min-height: 100vh;
+        }
+
+        button {
+            font: inherit;
+            color: inherit;
+        }
+
+        :focus-visible {
+            outline: 3px solid rgba(249, 168, 37, .75);
+            outline-offset: 2px;
+        }
+
+        [hidden] {
+            display: none !important;
+        }
+
+        /* ===== CABECERA ===== */
+        .cabecera {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            background: #fff;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .cabecera-in {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: .6rem 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: .75rem;
+        }
+
+        .marca {
+            display: flex;
+            align-items: center;
+            gap: .7rem;
+            min-width: 0;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .marca img {
+            height: 36px;
+            width: auto;
+            flex: none;
+        }
+
+        .marca-texto {
+            min-width: 0;
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: var(--primary-dark);
+        }
+
+        .btn-salir {
+            flex: none;
+            min-height: 40px;
+            padding: .4rem .9rem;
+            border: 1.5px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: #fff;
+            font-size: .875rem;
+            font-weight: 600;
+            color: var(--primary-dark);
+            cursor: pointer;
+        }
+
+        .btn-salir:hover {
+            border-color: var(--primary);
+            background: #F0FAF6;
+        }
+
+        /* ===== CONTENIDO ===== */
+        .contenedor {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: .75rem 1rem 3rem;
+        }
+
+        .volver {
+            display: inline-flex;
+            align-items: center;
+            min-height: 40px;
+            margin-bottom: .25rem;
+            font-size: .9rem;
+            font-weight: 600;
+            color: var(--primary);
+            text-decoration: none;
+        }
+
+        .volver:hover {
+            text-decoration: underline;
+        }
+
+        .mensaje {
+            padding: 2rem 1rem;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: .95rem;
+        }
+
+        .mensaje.error {
+            color: #991B1B;
+            background: #FEF2F2;
+            border: 1px solid #FECACA;
+            border-radius: var(--radius);
+        }
+
+        .mensaje .btn {
+            margin-top: .75rem;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 1rem;
+        }
+
+        /* ===== ENCABEZADO ===== */
+        .encabezado {
+            margin-bottom: 1rem;
+        }
+
+        .enc-fila {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: .6rem;
+        }
+
+        .enc-etiqueta {
+            font-size: .75rem;
+            font-weight: 600;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+        }
+
+        .ref {
+            font-size: 1.25rem;
+            font-weight: 700;
+            line-height: 1.3;
+            letter-spacing: .02em;
+            overflow-wrap: anywhere;
+        }
+
+        .insignias {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .4rem;
+        }
+
+        .ins {
+            display: inline-block;
+            padding: .15rem .7rem;
+            border-radius: 999px;
+            font-size: .75rem;
+            font-weight: 700;
+            letter-spacing: .02em;
+            line-height: 1.5;
+            white-space: nowrap;
+        }
+
+        .estado-recibida { background: #FEF3C7; color: #92400E; }
+        .estado-tramitada { background: #DCFCE7; color: #166534; }
+        .estado-subiendo { background: #DBEAFE; color: #1E40AF; }
+        .estado-abandonada { background: #FFEDD5; color: #9A3412; }
+        .estado-descartada { background: #FEE2E2; color: #991B1B; }
+        .marca-gnew { background: #E7F5EF; color: #094D38; }
+        .marca-mega { background: #CCFBF1; color: #0F766E; }
+
+        .tramitada-por {
+            margin-top: .6rem;
+            font-size: .875rem;
+            color: #166534;
+            overflow-wrap: anywhere;
+        }
+
+        .banner {
+            margin-top: .75rem;
+            padding: .7rem .9rem;
+            border-radius: var(--radius-sm);
+            background: #FFFBEB;
+            border: 1px solid #FDE68A;
+            color: #78350F;
+            font-size: .875rem;
+        }
+
+        .banner.rojo {
+            background: #FEF2F2;
+            border-color: #FECACA;
+            color: #7F1D1D;
+        }
+
+        .acciones {
+            margin-top: .9rem;
+        }
+
+        .acciones:empty {
+            display: none;
+        }
+
+        .btn {
+            min-height: 46px;
+            padding: .55rem 1.3rem;
+            border: 1.5px solid var(--primary);
+            border-radius: var(--radius-sm);
+            background: #fff;
+            font-size: .95rem;
+            font-weight: 600;
+            color: var(--primary);
+            cursor: pointer;
+            text-align: center;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .btn:hover:not(:disabled) {
+            background: #F0FAF6;
+        }
+
+        .btn:disabled {
+            opacity: .6;
+            cursor: default;
+        }
+
+        .btn.primario {
+            background: var(--primary);
+            color: #fff;
+        }
+
+        .btn.primario:hover:not(:disabled) {
+            background: var(--primary-dark);
+        }
+
+        .btn.ancho {
+            width: 100%;
+        }
+
+        .btn.peq {
+            min-height: 40px;
+            padding: .3rem .9rem;
+            font-size: .85rem;
+        }
+
+        .btn.suave {
+            border-color: var(--border);
+            color: var(--text);
+        }
+
+        .salto {
+            display: inline-flex;
+            align-items: center;
+            min-height: 40px;
+            margin-top: .5rem;
+            font-size: .9rem;
+            font-weight: 600;
+            color: var(--primary);
+            text-decoration: none;
+        }
+
+        .salto:hover {
+            text-decoration: underline;
+        }
+
+        #bloqueDocs {
+            scroll-margin-top: 4.5rem;
+        }
+
+        .confirmar {
+            margin-top: .9rem;
+            padding: .85rem .9rem;
+            border: 1.5px solid var(--accent);
+            border-radius: var(--radius-sm);
+            background: #FFFBEB;
+        }
+
+        .confirmar p {
+            font-size: .95rem;
+            font-weight: 600;
+            margin-bottom: .7rem;
+        }
+
+        .confirmar .botones {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .5rem;
+        }
+
+        .confirmar .botones .btn {
+            flex: 1 1 11rem;
+        }
+
+        .error-linea {
+            margin-top: .6rem;
+            padding: .55rem .8rem;
+            border-radius: var(--radius-sm);
+            background: #FEF2F2;
+            border: 1px solid #FECACA;
+            color: #991B1B;
+            font-size: .875rem;
+        }
+
+        .ok-linea {
+            margin-top: .6rem;
+            padding: .55rem .8rem;
+            border-radius: var(--radius-sm);
+            background: #F0FAF6;
+            border: 1px solid #D1EDE3;
+            color: var(--primary-dark);
+            font-size: .875rem;
+        }
+
+        /* ===== COLUMNAS ===== */
+        .cols {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+            align-items: start;
+        }
+
+        .col {
+            display: grid;
+            gap: 1rem;
+            min-width: 0;
+        }
+
+        .bloque h2 {
+            font-size: .8rem;
+            font-weight: 700;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+            color: var(--primary-dark);
+            margin-bottom: .5rem;
+        }
+
+        dl .fila {
+            display: grid;
+            grid-template-columns: 7.2rem minmax(0, 1fr);
+            gap: .6rem;
+            padding: .45rem 0;
+            border-top: 1px solid #EEF2F6;
+            font-size: .9rem;
+        }
+
+        dl .fila:first-child {
+            border-top: none;
+        }
+
+        dt {
+            color: var(--text-muted);
+            font-size: .8rem;
+            padding-top: .08rem;
+        }
+
+        dd {
+            overflow-wrap: anywhere;
+        }
+
+        dd.mono {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: .85rem;
+            letter-spacing: .02em;
+        }
+
+        dd.largo {
+            white-space: pre-wrap;
+        }
+
+        dd.vacio {
+            color: #9CA3AF;
+        }
+
+        /* ===== DOCUMENTOS ===== */
+        .docs {
+            list-style: none;
+        }
+
+        .doc {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: .5rem .75rem;
+            padding: .65rem 0;
+            border-top: 1px solid #EEF2F6;
+        }
+
+        .doc:first-child {
+            border-top: none;
+        }
+
+        .doc-info {
+            display: flex;
+            align-items: center;
+            gap: .65rem;
+            min-width: 0;
+            flex: 1 1 12rem;
+        }
+
+        .doc-icono {
+            flex: none;
+            width: 2.5rem;
+            height: 2.5rem;
+            border-radius: var(--radius-sm);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: .65rem;
+            font-weight: 800;
+            letter-spacing: .04em;
+            background: #E7F5EF;
+            color: var(--primary-dark);
+        }
+
+        .doc-icono.pdf { background: #FEE2E2; color: #991B1B; }
+        .doc-icono.img { background: #DBEAFE; color: #1E40AF; }
+        .doc-icono.word { background: #E0E7FF; color: #3730A3; }
+
+        .doc-nombre {
+            font-size: .9rem;
+            font-weight: 600;
+            overflow-wrap: anywhere;
+        }
+
+        .doc-meta {
+            font-size: .78rem;
+            color: var(--text-muted);
+        }
+
+        .doc-acciones {
+            display: flex;
+            gap: .4rem;
+            flex: none;
+        }
+
+        .zip {
+            margin-top: .75rem;
+        }
+
+        /* ===== CORREOS E HISTORIAL ===== */
+        .correo {
+            padding: .6rem 0;
+            border-top: 1px solid #EEF2F6;
+        }
+
+        .correo:first-of-type {
+            border-top: none;
+        }
+
+        .correo-estado {
+            font-size: .875rem;
+            color: #374151;
+            margin-bottom: .45rem;
+        }
+
+        .correo-estado.mal {
+            color: #991B1B;
+        }
+
+        .correo-resultado {
+            margin-top: .45rem;
+            font-size: .8125rem;
+            color: var(--primary-dark);
+        }
+
+        .correo-resultado.mal {
+            color: #991B1B;
+        }
+
+        .hist {
+            list-style: none;
+        }
+
+        .hist li {
+            display: grid;
+            grid-template-columns: 5.2rem minmax(0, 1fr);
+            gap: .6rem;
+            padding: .4rem 0;
+            border-top: 1px solid #EEF2F6;
+            font-size: .85rem;
+        }
+
+        .hist li:first-child {
+            border-top: none;
+        }
+
+        .hist .cuando {
+            color: var(--text-muted);
+            font-size: .75rem;
+            line-height: 1.35;
+            padding-top: .1rem;
+        }
+
+        .hist .cuando b {
+            display: block;
+            font-size: .85rem;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .hist .texto {
+            overflow-wrap: anywhere;
+        }
+
+        .nota {
+            font-size: .85rem;
+            color: var(--text-muted);
+        }
+
+        @media (min-width: 700px) {
+            .cabecera-in, .contenedor { padding-left: 1.5rem; padding-right: 1.5rem; }
+            .card { padding: 1.2rem 1.3rem; }
+            .btn.ancho { width: auto; }
+        }
+
+        @media (min-width: 960px) {
+            .cols { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); }
+            dl .fila { grid-template-columns: 9rem minmax(0, 1fr); }
+            .ref { font-size: 1.5rem; }
+            .salto { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+<header class="cabecera">
+    <div class="cabecera-in">
+        <a class="marca" href="/bandeja">
+            <img src="/logo-gnew.png" alt="Grupo New Energy">
+            <span class="marca-texto">Tramitaciones</span>
+        </a>
+        <button class="btn-salir" id="btnSalir" type="button">Salir</button>
+    </div>
+</header>
+
+<main class="contenedor">
+    <a class="volver" href="/bandeja">&larr; Volver a las tramitaciones</a>
+
+    <p class="mensaje" id="estadoCarga" role="status" aria-live="polite">Cargando la ficha…</p>
+
+    <div id="ficha" hidden>
+        <section class="card encabezado" aria-labelledby="ref">
+            <div class="enc-fila">
+                <div>
+                    <p class="enc-etiqueta">Referencia</p>
+                    <h1 class="ref" id="ref"></h1>
+                </div>
+                <div class="insignias" id="insignias"></div>
+            </div>
+            <p class="tramitada-por" id="tramitadaPor" hidden></p>
+            <div class="banner" id="banner" hidden></div>
+            <div class="acciones" id="acciones"></div>
+            <div class="confirmar" id="confirmar" role="alertdialog" aria-labelledby="confirmarTexto" hidden>
+                <p id="confirmarTexto"></p>
+                <div class="botones">
+                    <button class="btn primario" id="btnConfirmar" type="button"></button>
+                    <button class="btn" id="btnCancelar" type="button">Cancelar</button>
+                </div>
+            </div>
+            <p class="error-linea" id="errorAccion" role="alert" hidden></p>
+            <p class="ok-linea" id="okAccion" role="status" hidden></p>
+            <a class="salto" id="irDocs" href="#bloqueDocs" hidden></a>
+        </section>
+
+        <div class="cols">
+            <div class="col" id="colDatos"></div>
+            <div class="col">
+                <section class="card bloque" id="bloqueDocs"></section>
+                <section class="card bloque" id="bloqueCorreos"></section>
+                <section class="card bloque" id="bloqueHistorial"></section>
+            </div>
+        </div>
+    </div>
+</main>
+
+<script>
+(() => {
+    'use strict';
+
+    const ETIQUETA_ESTADO = { recibida: 'Pendiente', tramitada: 'Tramitada', subiendo: 'Subiendo', abandonada: 'Incompleta', descartada: 'Descartada' };
+    const ETIQUETA_MARCA = { gnew: 'GNEW', mega: 'MEGA' };
+    const FRASE_RED = 'No hemos podido conectar. Comprueba tu conexión e inténtalo de nuevo.';
+    const VIDA_ENLACES_MS = 9 * 60 * 1000; // 9 de los 10 minutos que vale cada enlace: un minuto de margen
+
+    // La referencia es el último tramo de /bandeja/c/<ref>
+    const ref = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || '');
+
+    const $ = (id) => document.getElementById(id);
+    let datos = null;          // la última respuesta de la ficha
+    let caducaMs = 0;          // cuándo se dan por caducados los enlaces de descarga (con el reloj de ESTE ordenador)
+    let confirmando = null;    // 'tramitar' | 'reabrir' | null
+    let cambiando = false;     // hay un cambio de estado en curso
+    let descargas = 0;         // descargas en curso (no se refresca la ficha mientras tanto)
+    let temporizador = null;
+
+    // ---------- utilidades ----------
+    function el(etiqueta, clase, texto) {
+        const e = document.createElement(etiqueta);
+        if (clase) e.className = clase;
+        if (texto !== undefined && texto !== null) e.textContent = texto;
+        return e;
+    }
+
+    const FMT_DIA = new Intl.DateTimeFormat('es-ES', { timeZone: 'Europe/Madrid', day: 'numeric', month: 'numeric', year: 'numeric' });
+    const FMT_HORA = new Intl.DateTimeFormat('es-ES', { timeZone: 'Europe/Madrid', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    function partes(iso) {
+        const t = Date.parse(iso);
+        if (!Number.isFinite(t)) return null;
+        const d = new Date(t);
+        const dia = Object.fromEntries(FMT_DIA.formatToParts(d).map((x) => [x.type, x.value]));
+        const hora = Object.fromEntries(FMT_HORA.formatToParts(d).map((x) => [x.type, x.value]));
+        return { dia: `${dia.day}-${dia.month}-${dia.year}`, hora: `${String(hora.hour).padStart(2, '0')}:${String(hora.minute).padStart(2, '0')}` };
+    }
+    const fechaHora = (iso) => { const p = partes(iso); return p ? `${p.dia} a las ${p.hora}` : ''; };
+    function esHoy(iso) {
+        const p = partes(iso);
+        return p && p.dia === partes(new Date().toISOString()).dia;
+    }
+    // «a las 12:31» si es de hoy; «el 8-10-2026 a las 12:31» si no
+    const cuando = (iso) => (esHoy(iso) ? `a las ${partes(iso).hora}` : `el ${fechaHora(iso)}`);
+
+    function tamano(bytes) {
+        const n = Number(bytes);
+        if (!Number.isFinite(n) || n < 0) return '';
+        if (n < 1024) return `${n} B`;
+        if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+        return `${(n / (1024 * 1024)).toFixed(2).replace('.', ',')} MB`;
+    }
+
+    const agrupar4 = (iban) => String(iban || '').replace(/\s+/g, '').replace(/(.{4})/g, '$1 ').trim();
+
+    let redirigiendo = false; // una sola vez: dos peticiones con 401 a la vez abortarían la primera navegación
+    function irALogin() {
+        if (redirigiendo) return;
+        redirigiendo = true;
+        location.replace('/bandeja/entrar?volver=' + encodeURIComponent(location.pathname + location.search));
+    }
+
+    // GET (sin cuerpo) o POST JSON. Devuelve {status, json}; sin red, {red: true}. Nunca lanza.
+    async function api(ruta, cuerpo) {
+        const opciones = { method: cuerpo === undefined ? 'GET' : 'POST', credentials: 'same-origin', headers: {} };
+        if (cuerpo !== undefined) {
+            opciones.headers['Content-Type'] = 'application/json';
+            opciones.body = JSON.stringify(cuerpo);
+        }
+        let r;
+        try {
+            r = await fetch(ruta, opciones);
+        } catch (e) {
+            return { red: true };
+        }
+        let json = null;
+        try { json = await r.json(); } catch (e) { json = null; }
+        return { status: r.status, json };
+    }
+
+    const mensajeDe = (r, porDefecto) => (r && r.json && typeof r.json.mensaje === 'string' && r.json.mensaje ? r.json.mensaje : porDefecto);
+
+    function avisar(caja, texto) {
+        const otra = caja === $('errorAccion') ? $('okAccion') : $('errorAccion');
+        otra.hidden = true;
+        caja.textContent = texto || '';
+        caja.hidden = !texto;
+    }
+
+    // ---------- carga ----------
+    function mostrarCarga(texto, conBotones, esError) {
+        const caja = $('estadoCarga');
+        caja.hidden = false;
+        caja.className = 'mensaje' + (esError ? ' error' : '');
+        caja.textContent = texto;
+        $('ficha').hidden = true;
+        if (conBotones) {
+            caja.appendChild(document.createElement('br'));
+            const b = el('button', 'btn', 'Reintentar');
+            b.type = 'button';
+            b.addEventListener('click', () => cargar(false));
+            caja.appendChild(b);
+        }
+    }
+
+    // `silenciosa` = refresco por detrás (enlaces caducados, después de un cambio): no tapa la ficha con «Cargando»
+    async function cargar(silenciosa) {
+        if (!silenciosa) mostrarCarga('Cargando la ficha…');
+        const r = await api('/api/bandeja/ficha?ref=' + encodeURIComponent(ref));
+        if (!r.red && r.status === 401) { irALogin(); return false; }
+        if (r.red) {
+            if (!silenciosa) mostrarCarga(FRASE_RED, true, true);
+            return false;
+        }
+        if (r.status === 404) {
+            mostrarCarga('No encontramos esta tramitación. Puede que la referencia no sea correcta.', false, true);
+            return false;
+        }
+        if (r.status !== 200 || !r.json || !r.json.tramitacion) {
+            if (!silenciosa) mostrarCarga(mensajeDe(r, 'No hemos podido cargar la ficha. Inténtalo de nuevo en un momento.'), true, true);
+            return false;
+        }
+        datos = r.json;
+        // Los enlaces valen 10 minutos. Se cuenta desde que llegan, con el reloj de este ordenador (no con la hora del servidor:
+        // si el reloj de la oficina va adelantado o atrasado, se daría por buenos enlaces que ya no valen, o al revés)
+        caducaMs = r.json.enlaces_caducan_en ? Date.now() + VIDA_ENLACES_MS : 0;
+        $('estadoCarga').hidden = true;
+        $('ficha').hidden = false;
+        pintar();
+        programarRefresco();
+        return true;
+    }
+
+    // Los enlaces valen 10 minutos: la ficha se vuelve a pedir un poco antes, o al volver a la pestaña
+    const enlacesCaducados = () => Boolean(datos) && datos.documentos.some((d) => d.url) && (!caducaMs || Date.now() > caducaMs - 20000);
+    const asegurarEnlaces = async () => (enlacesCaducados() ? cargar(true) : true);
+
+    function programarRefresco() {
+        clearTimeout(temporizador);
+        if (!caducaMs) return;
+        temporizador = setTimeout(() => {
+            if (!document.hidden && descargas === 0) cargar(true);
+        }, Math.max(30000, caducaMs - Date.now() - 60000));
+    }
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && datos && descargas === 0 && enlacesCaducados()) cargar(true);
+    });
+
+    // ---------- pintar ----------
+    function pintar() {
+        const t = datos.tramitacion;
+        document.title = `${t.ref} · Bandeja de tramitación`;
+        $('ref').textContent = t.ref;
+
+        const ins = $('insignias');
+        ins.textContent = '';
+        ins.appendChild(el('span', 'ins estado-' + t.estado, ETIQUETA_ESTADO[t.estado] || ''));
+        if (ETIQUETA_MARCA[t.formulario]) ins.appendChild(el('span', 'ins marca-' + t.formulario, ETIQUETA_MARCA[t.formulario]));
+
+        const por = $('tramitadaPor');
+        if (t.estado === 'tramitada' && t.tramitada_por) {
+            por.textContent = `Tramitada por ${t.tramitada_por}${t.tramitada_en ? ' el ' + fechaHora(t.tramitada_en) : ''}`;
+            por.hidden = false;
+        } else {
+            por.hidden = true;
+        }
+
+        const banner = $('banner');
+        let aviso = '';
+        let rojo = false;
+        if (t.estado === 'subiendo') aviso = 'El comercial todavía está subiendo la documentación. Cuando termine, esta tramitación aparecerá como pendiente.';
+        else if (t.estado === 'abandonada') aviso = 'Envío incompleto: la documentación no llegó a subirse entera. Puede que el comercial lo haya vuelto a enviar con otra referencia.';
+        else if (t.estado === 'descartada') { aviso = 'Este envío lo ha parado el filtro antibots: probablemente no es un contrato de verdad. Si crees que sí lo es, pide al comercial que lo envíe de nuevo.'; rojo = true; }
+        else if (t.sospechosa) { aviso = 'Este envío ha activado el filtro antibots: revísalo con cuidado.'; rojo = true; }
+        banner.textContent = aviso;
+        banner.className = 'banner' + (rojo ? ' rojo' : '');
+        banner.hidden = !aviso;
+
+        const salto = $('irDocs');
+        salto.textContent = `Ir a los documentos (${datos.documentos.length})`;
+        salto.hidden = datos.documentos.length === 0;
+
+        pintarAcciones();
+        pintarDatos();
+        pintarDocumentos();
+        pintarCorreos();
+        pintarHistorial();
+    }
+
+    function pintarAcciones() {
+        const t = datos.tramitacion;
+        const cont = $('acciones');
+        cont.textContent = '';
+        const accion = t.estado === 'recibida' ? 'tramitar' : (t.estado === 'tramitada' ? 'reabrir' : null);
+        if (accion) {
+            const b = el('button', 'btn ancho ' + (accion === 'tramitar' ? 'primario' : ''), accion === 'tramitar' ? 'Marcar como tramitada' : 'Volver a pendiente');
+            b.type = 'button';
+            b.id = 'btnEstado';
+            b.disabled = cambiando;
+            b.addEventListener('click', () => { confirmando = accion; avisar($('errorAccion'), ''); pintarAcciones(); $('btnConfirmar').focus(); });
+            if (confirmando !== accion) cont.appendChild(b);
+        }
+        const panel = $('confirmar');
+        panel.hidden = !(accion && confirmando === accion);
+        if (!panel.hidden) {
+            $('confirmarTexto').textContent = accion === 'tramitar'
+                ? '¿Marcar esta tramitación como tramitada?'
+                : '¿Volver a poner esta tramitación como pendiente?';
+            const si = $('btnConfirmar');
+            si.textContent = cambiando ? 'Guardando…' : (accion === 'tramitar' ? 'Sí, marcar como tramitada' : 'Sí, volver a pendiente');
+            si.disabled = cambiando;
+            si.onclick = () => cambiarEstado(accion);
+            $('btnCancelar').disabled = cambiando;
+            $('btnCancelar').onclick = () => { confirmando = null; pintarAcciones(); };
+        }
+    }
+
+    async function cambiarEstado(accion) {
+        if (cambiando) return;
+        cambiando = true;
+        pintarAcciones();
+        const r = await api('/api/bandeja/estado', { ref, accion });
+        cambiando = false;
+        if (!r.red && r.status === 401) { irALogin(); return; }
+        confirmando = null;
+        if (r.red) { avisar($('errorAccion'), FRASE_RED); pintarAcciones(); return; }
+        if (r.status === 200) {
+            avisar($('okAccion'), accion === 'tramitar' ? 'Marcada como tramitada.' : 'Vuelve a estar pendiente.');
+            await cargar(true);
+            return;
+        }
+        avisar($('errorAccion'), mensajeDe(r, 'No hemos podido guardar el cambio. Inténtalo de nuevo en un momento.'));
+        if (r.status === 409) await cargar(true); // otra persona la cambió: se enseña cómo está ahora
+        else pintarAcciones();
+    }
+
+    // ----- datos del contrato -----
+    function seccion(titulo, filas) {
+        const s = el('section', 'card bloque');
+        s.appendChild(el('h2', null, titulo));
+        const dl = el('dl');
+        for (const [etiqueta, valor, clase] of filas) {
+            const fila = el('div', 'fila');
+            fila.appendChild(el('dt', null, etiqueta));
+            const vacio = valor === null || valor === undefined || String(valor).trim() === '';
+            fila.appendChild(el('dd', vacio ? 'vacio' : (clase || null), vacio ? '—' : String(valor)));
+            dl.appendChild(fila);
+        }
+        s.appendChild(dl);
+        return s;
+    }
+
+    function potencias(p) {
+        if (!p || typeof p !== 'object') return '';
+        return ['p1', 'p2', 'p3', 'p4', 'p5', 'p6']
+            .filter((k) => p[k] !== undefined && p[k] !== null && String(p[k]).trim() !== '')
+            .map((k) => `${k.toUpperCase()}: ${p[k]} kW`)
+            .join(' · ');
+    }
+
+    function pintarDatos() {
+        const t = datos.tramitacion;
+        const col = $('colDatos');
+        col.textContent = '';
+        col.appendChild(seccion('Comercial', [
+            ['Nombre', t.comercial_nombre],
+            ['Correo', t.comercial_email],
+        ]));
+        const contrato = [
+            ['Compañía', t.compania],
+            ['CUPS', t.cups, 'mono'],
+        ];
+        if (t.tipo_suministro) contrato.push(['Suministro', t.tipo_suministro]);
+        contrato.push(['Oferta', t.oferta], ['Tarifa', t.tarifa], ['Potencias', potencias(t.potencias)]);
+        col.appendChild(seccion('Contrato', contrato));
+        col.appendChild(seccion('Titular', [
+            ['Titular', t.titular_nombre],
+            ['CIF / NIF', t.titular_nif, 'mono'],
+            ['Firmante', t.firmante_nombre],
+            ['DNI del firmante', t.firmante_nif, 'mono'],
+            ['IBAN', agrupar4(t.iban), 'mono'],
+        ]));
+        col.appendChild(seccion('Suministro', [
+            ['Dirección', t.direccion],
+            ['Código postal', t.cp],
+            ['Población', t.poblacion],
+            ['Provincia', t.provincia],
+        ]));
+        col.appendChild(seccion('Contacto', [
+            ['Móvil', t.telefono],
+            ['Correo del cliente', t.email_cliente],
+        ]));
+        col.appendChild(seccion('Cambio de titular', [
+            ['¿Cambio de titular?', t.cambio_titular ? 'Sí' : 'No'],
+            ['Nuevo titular', t.nuevo_titular],
+        ]));
+        col.appendChild(seccion('Observaciones', [['Notas', t.observaciones, 'largo']]));
+    }
+
+    // ----- documentos -----
+    const extensionDe = (nombre) => {
+        const m = /\.([A-Za-z0-9]{1,5})$/.exec(String(nombre || ''));
+        return m ? m[1].toLowerCase() : '';
+    };
+    function claseIcono(ext) {
+        if (ext === 'pdf') return 'pdf';
+        if (ext === 'jpg' || ext === 'jpeg' || ext === 'png') return 'img';
+        if (ext === 'doc' || ext === 'docx') return 'word';
+        return '';
+    }
+    const dosCifras = (n) => String(n).padStart(2, '0');
+    const buscarDoc = (orden) => (datos ? datos.documentos.find((d) => d.orden === orden) : null);
+
+    // Guarda un Blob con el nombre bonito: el nombre solo viaja en a.download, nunca en una URL
+    function guardar(blob, nombre) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = nombre;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+    }
+
+    async function descargarUno(doc, boton) {
+        const original = boton.textContent;
+        boton.disabled = true;
+        boton.textContent = 'Descargando…';
+        descargas++;
+        avisar($('errorAccion'), '');
+        try {
+            await asegurarEnlaces();
+            const actual = buscarDoc(doc.orden);
+            if (!actual || !actual.url) throw new Error('sin enlace');
+            const r = await fetch(actual.url);
+            if (!r.ok) throw new Error('descarga');
+            guardar(await r.blob(), doc.nombre);
+        } catch (e) {
+            mostrarErrorDocs(`No hemos podido descargar «${doc.nombre}». Inténtalo de nuevo.`);
+        } finally {
+            descargas--;
+            boton.disabled = false;
+            boton.textContent = original;
+        }
+    }
+
+    function nombreZip() {
+        const titular = String(datos.tramitacion.titular_nombre || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+        return `${datos.tramitacion.ref}${titular ? ' - ' + titular : ''}.zip`;
+    }
+
+    async function descargarZip(boton) {
+        const original = boton.textContent;
+        boton.disabled = true;
+        descargas++;
+        try {
+            await asegurarEnlaces();
+            const { crearZip } = await import('/bandeja-zip.js');
+            const docs = datos.documentos.filter((d) => d.url);
+            const entradas = [];
+            for (let i = 0; i < docs.length; i++) {
+                boton.textContent = `Preparando el ZIP (${i + 1} de ${docs.length})…`;
+                const r = await fetch(docs[i].url);
+                if (!r.ok) throw new Error('descarga');
+                entradas.push({ nombre: `${dosCifras(docs[i].orden)}-${docs[i].nombre}`, datos: new Uint8Array(await r.arrayBuffer()) });
+            }
+            guardar(new Blob([crearZip(entradas)], { type: 'application/zip' }), nombreZip());
+        } catch (e) {
+            mostrarErrorDocs('No hemos podido preparar el ZIP. Inténtalo de nuevo o descarga los documentos uno a uno.');
+        } finally {
+            descargas--;
+            boton.disabled = false;
+            boton.textContent = original;
+        }
+    }
+
+    function mostrarErrorDocs(texto) {
+        const caja = $('errorDocs');
+        if (!caja) return;
+        caja.textContent = texto;
+        caja.hidden = false;
+    }
+
+    function pintarDocumentos() {
+        const cont = $('bloqueDocs');
+        cont.textContent = '';
+        const docs = datos.documentos;
+        cont.appendChild(el('h2', null, `Documentos (${docs.length})`));
+        if (docs.length === 0) {
+            cont.appendChild(el('p', 'nota', 'Este envío no tiene documentos.'));
+            return;
+        }
+        const ul = el('ul', 'docs');
+        for (const doc of docs) {
+            const li = el('li', 'doc');
+            const info = el('div', 'doc-info');
+            const ext = extensionDe(doc.nombre);
+            info.appendChild(el('span', 'doc-icono ' + claseIcono(ext), (ext || 'doc').toUpperCase().slice(0, 4)));
+            const textos = el('div');
+            textos.appendChild(el('div', 'doc-nombre', doc.nombre));
+            const meta = [tamano(doc.tamano), doc.es_firma ? 'Firma del comercial' : '', doc.subido ? '' : 'Todavía sin subir'].filter(Boolean).join(' · ');
+            textos.appendChild(el('div', 'doc-meta', meta));
+            info.appendChild(textos);
+            li.appendChild(info);
+
+            const acciones = el('div', 'doc-acciones');
+            if (doc.url && /^https?:\/\//i.test(doc.url)) {
+                const ver = el('a', 'btn peq', 'Ver');
+                ver.href = doc.url;
+                ver.target = '_blank';
+                ver.rel = 'noopener noreferrer';
+                ver.addEventListener('click', (ev) => {
+                    if (!enlacesCaducados()) return;
+                    // El enlace ha caducado: se abre ya la pestaña (dentro del gesto) y se rellena cuando haya enlace nuevo
+                    ev.preventDefault();
+                    const ventana = window.open('about:blank', '_blank');
+                    cargar(true).then(() => {
+                        const nuevo = buscarDoc(doc.orden);
+                        if (ventana && nuevo && nuevo.url) { ventana.opener = null; ventana.location.href = nuevo.url; } else if (ventana) ventana.close();
+                    });
+                });
+                acciones.appendChild(ver);
+                const bajar = el('button', 'btn peq suave', 'Descargar');
+                bajar.type = 'button';
+                bajar.addEventListener('click', () => descargarUno(doc, bajar));
+                acciones.appendChild(bajar);
+            } else {
+                acciones.appendChild(el('span', 'doc-meta', doc.subido ? 'No disponible ahora' : ''));
+            }
+            li.appendChild(acciones);
+            ul.appendChild(li);
+        }
+        cont.appendChild(ul);
+
+        if (docs.some((d) => d.url)) {
+            const zip = el('button', 'btn ancho zip', 'Descargar todo (ZIP)');
+            zip.type = 'button';
+            zip.addEventListener('click', () => descargarZip(zip));
+            cont.appendChild(zip);
+        }
+        const error = el('p', 'error-linea');
+        error.id = 'errorDocs';
+        error.setAttribute('role', 'alert');
+        error.hidden = true;
+        cont.appendChild(error);
+    }
+
+    // ----- correos -----
+    const CORREOS = [['aviso', 'Aviso a tramitación'], ['acuse', 'Acuse al comercial']];
+
+    function textoCorreo(c) {
+        if (!c) return { texto: 'pendiente (se creará en unos minutos)', mal: false };
+        switch (c.estado) {
+            case 'enviado': return { texto: `enviado ${c.enviado_en ? cuando(c.enviado_en) : ''}`.trim(), mal: false };
+            case 'pendiente':
+            case 'enviando': return { texto: 'pendiente (se reintenta solo)', mal: false };
+            case 'suprimido': return { texto: 'no se ha podido enviar: la dirección de destino está bloqueada', mal: true };
+            case 'incierto': return { texto: 'no se sabe si ha salido; compruébalo antes de volver a enviar', mal: true };
+            case 'error_configuracion': return { texto: 'no se ha podido enviar: hay un problema con la configuración del correo', mal: true };
+            default: return { texto: 'no se ha podido enviar', mal: true };
+        }
+    }
+
+    const resultadoCorreo = {}; // lo último que pasó al pulsar «Volver a enviar», por tipo: {texto, mal}
+
+    async function reenviar(tipo, boton) {
+        boton.disabled = true;
+        boton.textContent = 'Enviando…';
+        const r = await api('/api/bandeja/reenviar', { ref, tipo });
+        if (!r.red && r.status === 401) { irALogin(); return; }
+        if (r.red) resultadoCorreo[tipo] = { texto: FRASE_RED, mal: true };
+        else if (r.status === 200 && r.json && r.json.estado === 'enviado') resultadoCorreo[tipo] = { texto: 'Correo enviado.', mal: false };
+        else if (r.status === 200 && r.json && r.json.ocupado) resultadoCorreo[tipo] = { texto: 'Se está enviando ahora mismo. Recarga la ficha en unos segundos.', mal: false };
+        else if (r.status === 200) resultadoCorreo[tipo] = { texto: 'El correo no ha podido salir ahora; se reintentará solo.', mal: true };
+        else resultadoCorreo[tipo] = { texto: mensajeDe(r, 'No hemos podido volver a enviar el correo. Inténtalo de nuevo en un momento.'), mal: true };
+        await cargar(true); // vuelve a pintar los correos con su estado nuevo
+    }
+
+    function pintarCorreos() {
+        const cont = $('bloqueCorreos');
+        cont.textContent = '';
+        cont.appendChild(el('h2', null, 'Correos'));
+        const t = datos.tramitacion;
+        if (t.estado !== 'recibida' && t.estado !== 'tramitada') {
+            cont.appendChild(el('p', 'nota', 'Todavía no se han enviado correos: el envío no está completo.'));
+            return;
+        }
+        for (const [tipo, titulo] of CORREOS) {
+            const c = datos.correos.find((x) => x.tipo === tipo);
+            const estado = textoCorreo(c);
+            const bloque = el('div', 'correo');
+            const linea = el('div', 'correo-estado' + (estado.mal ? ' mal' : ''));
+            linea.appendChild(el('strong', null, `${titulo}: `));
+            linea.appendChild(document.createTextNode(estado.texto));
+            bloque.appendChild(linea);
+            const b = el('button', 'btn peq suave', 'Volver a enviar');
+            b.type = 'button';
+            b.addEventListener('click', () => reenviar(tipo, b));
+            bloque.appendChild(b);
+            const resultado = resultadoCorreo[tipo];
+            if (resultado) {
+                const r = el('p', 'correo-resultado' + (resultado.mal ? ' mal' : ''), resultado.texto);
+                r.setAttribute('role', 'status');
+                bloque.appendChild(r);
+            }
+            cont.appendChild(bloque);
+        }
+    }
+
+    // ----- historial -----
+    function textoEvento(ev) {
+        const d = ev.detalle && typeof ev.detalle === 'object' ? ev.detalle : {};
+        const por = typeof ev.actor === 'string' && ev.actor.includes('@') ? ` por ${ev.actor}` : '';
+        const n = Number(d.n_documentos);
+        switch (ev.tipo) {
+            case 'creada': return 'El comercial ha empezado el envío';
+            case 'datos_actualizados': return 'El comercial ha corregido datos del contrato';
+            case 'reanudada': return 'El comercial ha retomado el envío';
+            case 'firma_guardada': return 'Firma guardada';
+            case 'recibida': return `Recibida${n > 0 ? ` · ${n} ${n === 1 ? 'documento' : 'documentos'}` : ''}`;
+            case 'aviso_enviado': return 'Aviso enviado a tramitación';
+            case 'acuse_enviado': return 'Acuse enviado al comercial';
+            case 'correo_fallo': {
+                const cual = d.tipo === 'acuse' ? 'El acuse' : 'El aviso';
+                return d.estado === 'pendiente' ? `${cual} no ha podido salir ahora (se reintenta solo)` : `${cual} no se ha podido enviar`;
+            }
+            case 'correos_conciliados': return 'Se han preparado de nuevo los correos que faltaban';
+            case 'tramitada': return `Marcada como tramitada${por}`;
+            case 'reabierta': return `Vuelta a pendiente${por}`;
+            case 'abandonada': return d.motivo === 'lista_cambiada'
+                ? 'El comercial cambió los documentos y empezó un envío nuevo'
+                : 'Envío dejado incompleto: la documentación no terminó de subir';
+            case 'descartada': return 'Descartada por el filtro antibots';
+            case 'aviso_reenviado': return `Aviso reenviado${por}`;
+            case 'acuse_reenviado': return `Acuse reenviado${por}`;
+            default: return 'Cambio registrado';
+        }
+    }
+
+    function pintarHistorial() {
+        const cont = $('bloqueHistorial');
+        cont.textContent = '';
+        cont.appendChild(el('h2', null, 'Historial'));
+        if (datos.eventos.length === 0) {
+            cont.appendChild(el('p', 'nota', 'Todavía no hay nada que contar.'));
+            return;
+        }
+        const ul = el('ul', 'hist');
+        for (const ev of datos.eventos) {
+            const li = el('li');
+            const p = partes(ev.creado_en);
+            const c = el('span', 'cuando');
+            if (p) {
+                c.appendChild(el('b', null, p.hora));
+                c.appendChild(document.createTextNode(p.dia));
+            }
+            li.appendChild(c);
+            li.appendChild(el('span', 'texto', textoEvento(ev)));
+            ul.appendChild(li);
+        }
+        cont.appendChild(ul);
+    }
+
+    // ---------- arranque ----------
+    $('btnSalir').addEventListener('click', async () => {
+        const b = $('btnSalir');
+        b.disabled = true;
+        const r = await api('/api/bandeja/salir', {});
+        if (!r.red && r.status === 200) { location.replace('/bandeja/entrar'); return; }
+        // Si no se ha podido cerrar la sesión, no se hace como que sí: en un ordenador compartido sería un riesgo
+        b.disabled = false;
+        b.textContent = 'No se pudo salir. Reintentar';
+    });
+
+    if (!/^(GNE|MEGA)-\d{8}-[A-Z0-9]{4,10}$/.test(ref)) {
+        mostrarCarga('No encontramos esta tramitación. Puede que la referencia no sea correcta.', false, true);
+    } else {
+        cargar(false);
+    }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,959 @@
+#!/usr/bin/env python3
+"""tests/e2e/bandeja.py · La bandeja de backoffice con navegador real (orden 4): acceso con código, lista, ficha,
+descargas (una a una y en ZIP), cambio de estado, volver a enviar y las capturas a 390 y 1440 px.
+
+Uso (lo normal es `bash tests/e2e/run.sh bandeja`, que arranca el servidor y limpia después):
+    python tests/e2e/bandeja.py              todos los casos, en serie
+    python tests/e2e/bandeja.py 3 4          solo esos casos
+
+Un solo Chromium, viewport 390×844, `pageerror` y consola vigilados (0 errores inesperados es parte del criterio:
+los 401 y 404 que un caso provoca a propósito se anotan con `c.rota(...)`). Altavoz está SIMULADO: el código de acceso
+se lee del correo simulado (/__pruebas/correos) y la base se lee por /__pruebas/tramitacion. Las tramitaciones de
+partida se crean por HTTP contra el servidor local (iniciar → subir al almacén → confirmar), siempre con prueba=true
+y bajo pruebas/. Solo alias de Victor (victor.molins.10+algo@gmail.com).
+"""
+import base64
+import json
+import re
+import secrets
+import subprocess
+import sys
+import tempfile
+import time
+import traceback
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from datetime import date
+from pathlib import Path
+
+from playwright.sync_api import sync_playwright
+
+from comun import BASE, FIXTURES, RAIZ, SALIDAS, Caso, datos_formulario, estado_de, esperar_estado
+
+PDF = FIXTURES / 'documento-5-5mb.pdf'
+JPG = FIXTURES / 'foto-pequena.jpg'
+PNG = FIXTURES / 'firma-pequena.png'
+
+TOKENS = {'gnew': 'GNE-2026-w7k4q9x2', 'mega': 'MEGA-2026-h3p8k5z1q6'}  # los FORM_TOKEN de los html (no son secretos)
+ALIAS = re.compile(r'victor\.molins\.10\+[a-z0-9._-]+@gmail\.com')
+FUERA = 'victor.molins.10+fuera@gmail.com'  # alias SIN acceso a la bandeja
+
+FRASE_CODIGO = 'Si tu correo tiene acceso, te hemos enviado un código de 6 cifras. Caduca en 10 minutos. Revisa también el spam.'
+FRASE_CODIGO_MALO = 'El código no es correcto o ha caducado. Pide uno nuevo.'
+
+# Texto que nunca puede ver backoffice: nada de jerga técnica, de valores vacíos de JavaScript ni de nombres de sistemas
+JERGA = re.compile(
+    r'undefined|\bnull\b|\bNaN\b|\[object|Invalid Date|\bHTTP\b|\bJSON\b|supabase|altavoz|\btoken\b|\bstack\b|exception|codigo_respuesta|error \d{3}',
+    re.I,
+)
+
+XSS_TITULAR = '<img src=x onerror="window.__xss=1"> Titular & Co <script>window.__xss=2</script>'
+XSS_COMERCIAL = '<b onmouseover="window.__xss=3">Comercial</b> "Peligroso"'
+XSS_OBSERVACIONES = '<svg onload="window.__xss=4"> línea uno\n<iframe src="javascript:window.__xss=5"></iframe> línea dos'
+XSS_DIRECCION = "Calle <u>Rara</u> 1 & 'comillas'"
+
+
+# ---------------------------------------------------------------------------
+# HTTP contra el servidor local (como un navegador, pero sin navegador)
+# ---------------------------------------------------------------------------
+
+def http(metodo, ruta, cuerpo=None, cabeceras=None, crudo=None, tipo='application/json', timeout=120):
+    """Devuelve (status, cabeceras, bytes) sin lanzar por un 4xx/5xx."""
+    url = ruta if ruta.startswith('http') else BASE + ruta
+    datos = crudo if crudo is not None else (json.dumps(cuerpo).encode() if cuerpo is not None else None)
+    cab = dict(cabeceras or {})
+    if datos is not None:
+        cab.setdefault('Content-Type', tipo)
+    peticion = urllib.request.Request(url, data=datos, method=metodo, headers=cab)
+    try:
+        with urllib.request.urlopen(peticion, timeout=timeout) as r:
+            return r.status, r.headers, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers, e.read()
+
+
+def como_json(cuerpo):
+    return json.loads(cuerpo.decode('utf-8'))
+
+
+def correo_con_acceso():
+    """El primer correo de BANDEJA_EMAILS en .env.local (un alias de Victor). Nunca se imprime."""
+    for linea in (RAIZ / '.env.local').read_text(encoding='utf-8').splitlines():
+        if linea.startswith('BANDEJA_EMAILS='):
+            correo = linea.split('=', 1)[1].split(',')[0].strip().strip('"\'').lower()
+            assert ALIAS.fullmatch(correo), 'BANDEJA_EMAILS debe empezar por un alias de Victor en las pruebas'
+            return correo
+    raise AssertionError('Falta BANDEJA_EMAILS en .env.local')
+
+
+EMAIL = correo_con_acceso()
+
+
+def ultimo_codigo(email):
+    """El último código enviado a `email`, leído del correo SIMULADO."""
+    st, _, cuerpo = http('GET', '/__pruebas/correos?tipo=codigo_acceso&para=' + urllib.parse.quote(email))
+    assert st == 200, f'El gancho de correos dio {st}'
+    enviados = sorted(
+        (c for c in como_json(cuerpo)['correos'] if c['estado'] == 'enviado' and c.get('cuerpo_texto')),
+        key=lambda c: c['enviado_en'], reverse=True,
+    )
+    assert enviados, 'No hay ningún correo de código simulado para ese alias'
+    return re.search(r'es (\d{6})\.', enviados[0]['cuerpo_texto']).group(1)
+
+
+def codigos_enviados_a(email):
+    st, _, cuerpo = http('GET', '/__pruebas/correos?tipo=codigo_acceso&para=' + urllib.parse.quote(email))
+    assert st == 200
+    return como_json(cuerpo)['correos']
+
+
+def cookie_de_sesion(email=EMAIL):
+    """Entra por la API (pide el código, lo lee del correo simulado y lo teclea) y devuelve el valor de la cookie."""
+    st, _, cuerpo = http('POST', '/api/bandeja/codigo', {'email': email})
+    assert st == 200, cuerpo
+    st, cab, cuerpo = http('POST', '/api/bandeja/entrar', {'email': email, 'codigo': ultimo_codigo(email)})
+    assert st == 200, cuerpo
+    for valor in cab.get_all('Set-Cookie') or []:
+        if valor.startswith('bandeja_sesion='):
+            return valor.split(';')[0].split('=', 1)[1]
+    raise AssertionError('Entrar no ha dado la cookie de sesión')
+
+
+# ---------------------------------------------------------------------------
+# Tramitaciones de partida (por HTTP, como las enviaría el formulario)
+# ---------------------------------------------------------------------------
+
+def nueva_ref(formulario):
+    azar = ''.join(secrets.choice('ABCDEFGHJKMNPQRSTUVWXYZ23456789') for _ in range(6))
+    return f"{'GNE' if formulario == 'gnew' else 'MEGA'}-{date.today():%Y%m%d}-{azar}"
+
+
+def crear(formulario, archivos, extra=None, firma=True, completo=True, hp=''):
+    """iniciar → subir cada archivo al almacén → confirmar. `archivos` = [(orden, nombre, bytes)]. Devuelve la referencia."""
+    ref = nueva_ref(formulario)
+    datos = datos_formulario(formulario, **(extra or {}))
+    datos['terminos'] = True
+    entrada = {
+        'formulario': formulario, 'token': TOKENS[formulario], 'ref': ref, 'ref_anterior': None, 'hp': hp, 'datos': datos,
+        'firma': ('data:image/png;base64,' + base64.b64encode(PNG.read_bytes()).decode()) if firma else '',
+        'archivos': [{'orden': o, 'nombre': n, 'tamano': len(b)} for o, n, b in archivos],
+    }
+    st, _, cuerpo = http('POST', '/api/tramitacion/iniciar', entrada)
+    assert st == 200, f'iniciar dio {st}: {cuerpo[:200]}'
+    if hp or not completo:
+        return ref
+    for subida in como_json(cuerpo)['subidas']:
+        datos_archivo = next(b for o, _, b in archivos if o == subida['orden'])
+        st, _, texto = http('PUT', subida['url'], crudo=datos_archivo,
+                            cabeceras={'Content-Type': subida['tipo_mime'], 'x-upsert': 'true', 'Origin': BASE})
+        assert 200 <= st < 300, f'La subida dio {st}: {texto[:120]}'
+    st, _, cuerpo = http('POST', '/api/tramitacion/confirmar', {'formulario': formulario, 'token': TOKENS[formulario], 'ref': ref})
+    assert st == 200 and como_json(cuerpo)['listo'] is True, cuerpo[:200]
+    return ref
+
+
+SEMILLAS = {}  # referencias de las tramitaciones de partida, rellenadas por preparar()
+
+
+def preparar():
+    """Dos contratos recibidos: A (GNEW, con el PDF de 5,5 MB, una foto y un PNG, más la firma) y B (MEGA)."""
+    SEMILLAS['A'] = crear('gnew', [(1, 'contrato.pdf', PDF.read_bytes()), (2, 'dni.jpg', JPG.read_bytes()), (3, 'factura.png', PNG.read_bytes())])
+    SEMILLAS['B'] = crear('mega', [(1, 'contrato mega.jpg', JPG.read_bytes())])
+
+
+# ---------------------------------------------------------------------------
+# El caso: un contexto de navegador limpio, con ayudas para la bandeja
+# ---------------------------------------------------------------------------
+
+class CasoBandeja(Caso):
+    def __init__(self, navegador, titulo):
+        super().__init__(navegador, titulo)
+        self.permite_5xx = False      # un caso que simula un servidor caído (page.route con 503) lo pone a True
+        self.respuestas_almacen = []  # peticiones a las URLs firmadas del almacén (para comprobar que no llevan datos)
+        self.ctx.on('request', self._peticion_almacen)
+
+    def _peticion_almacen(self, req):
+        if (urllib.parse.urlparse(req.url).hostname or '').endswith('.supabase.co') and '/object/sign/' in req.url:
+            self.respuestas_almacen.append(req.url)
+
+    # -- navegación ----------------------------------------------------------------------------------
+    def con_sesion(self, email=EMAIL):
+        """Mete la cookie de una sesión abierta por la API (los casos que no prueban el acceso no repiten el login)."""
+        self.ctx.add_cookies([{'name': 'bandeja_sesion', 'value': cookie_de_sesion(email), 'url': BASE}])
+
+    def ver(self, ruta, selector=None):
+        self.page.goto(BASE + ruta, wait_until='load')
+        if selector:
+            self.page.wait_for_selector(selector)
+
+    def esperar_lista(self):
+        """Espera a que la lista termine de cargar (tarjetas o el mensaje de «no hay»)."""
+        self.page.wait_for_function("() => { const m = document.getElementById('estadoLista'); return m.hidden || !/Cargando/.test(m.textContent); }")
+
+    def refs_en_lista(self):
+        return [a.get_attribute('href').rsplit('/', 1)[1] for a in self.page.locator('a.tarjeta').all()]
+
+    def elegir_filtro(self, nombre):
+        self.page.get_by_role('button', name=nombre, exact=True).click()
+        self.esperar_lista()
+
+    def buscar(self, texto):
+        self.page.fill('#q', texto)
+        self.page.press('#q', 'Enter')
+        self.esperar_lista()
+
+    def abrir_ficha(self, ref):
+        self.ver(f'/bandeja/c/{ref}', '#ficha:not([hidden])')
+
+    def entrar_por_pantalla(self, email=EMAIL, volver=None):
+        """Teclea el correo y el código en la pantalla de acceso (el código se lee del correo simulado)."""
+        p = self.page
+        p.fill('#email', email)
+        p.click('#btnCodigo')
+        p.wait_for_selector('#formCodigo:not([hidden])')
+        p.fill('#codigo', ultimo_codigo(email))
+        p.click('#btnEntrar')
+
+    # -- comprobaciones ------------------------------------------------------------------------------
+    def sin_jerga(self):
+        cuerpo = self.page.inner_text('body')
+        m = JERGA.search(cuerpo)
+        assert not m, f'Texto técnico a la vista: «{m.group(0)}»'
+
+    def sin_desbordes(self, ancho=390):
+        mayor = self.page.evaluate('() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)')
+        assert mayor <= ancho, f'La página se sale por los lados: {mayor} px en un viewport de {ancho}'
+
+    def comprobar_limpio(self):
+        super().comprobar_limpio()
+        cincos = [r for r in self.respuestas if r['status'] >= 500]
+        assert self.permite_5xx or not cincos, f'Respuestas 5xx de la API: {cincos}'
+
+
+# ---------------------------------------------------------------------------
+# Casos
+# ---------------------------------------------------------------------------
+
+def caso_1(c):
+    """Sin sesión, /bandeja lleva al acceso (con «volver»); el código llega por correo (simulado), uno malo da su frase en llano, el bueno entra; la cookie es HttpOnly."""
+    c.rota('/api/bandeja/')
+    p = c.page
+    respuesta = p.goto(BASE + '/bandeja', wait_until='load')
+    cab = respuesta.headers
+    assert 'noindex' in cab.get('x-robots-tag', '') and cab.get('referrer-policy') == 'no-referrer', cab
+    # El servidor local sirve los html con `Cache-Control: no-cache` (pisa el de vercel.json); en Vercel valen las reglas de vercel.json:
+    reglas = {h['source']: {x['key']: x['value'] for x in h['headers']} for h in json.loads((RAIZ / 'vercel.json').read_text(encoding='utf-8'))['headers']}
+    for ruta in ('/bandeja', '/bandeja/:path*'):
+        assert reglas[ruta] == {'Cache-Control': 'no-store', 'X-Robots-Tag': 'noindex, nofollow', 'Referrer-Policy': 'no-referrer'}, (ruta, reglas.get(ruta))
+    assert reglas['/api/:path*'] == {'Cache-Control': 'no-store'}
+    p.wait_for_url(re.compile(r'/bandeja/entrar\?volver=%2Fbandeja$'))
+    assert 'Acceso a la bandeja de tramitación' in p.inner_text('h1')
+    assert p.is_visible('#formCorreo') and not p.is_visible('#formCodigo')
+    c.sin_desbordes()
+
+    # un correo que no es un correo no llega al servidor
+    p.fill('#email', 'esto-no-es-un-correo')
+    p.click('#btnCodigo')
+    assert p.inner_text('#errorCorreo') == 'Escribe un correo electrónico válido.'
+    assert not [r for r in c.respuestas if r['ruta'].endswith('/codigo')]
+
+    # el correo bueno: la misma frase de siempre y el formulario del código
+    p.fill('#email', EMAIL)
+    p.click('#btnCodigo')
+    p.wait_for_selector('#formCodigo:not([hidden])')
+    assert p.inner_text('#avisoCodigo') == FRASE_CODIGO
+    assert p.is_hidden('#formCorreo')
+    real = ultimo_codigo(EMAIL)
+
+    # un código que no es: su frase, y la pantalla sigue ahí
+    malo = '000000' if real != '000000' else '111111'
+    p.fill('#codigo', malo)
+    p.click('#btnEntrar')
+    p.wait_for_selector('#errorCodigo:not([hidden])')
+    assert p.inner_text('#errorCodigo') == FRASE_CODIGO_MALO
+    assert '/bandeja/entrar' in p.url
+    # lo que no tiene 6 cifras ni sale del navegador
+    antes = len([r for r in c.respuestas if r['ruta'].endswith('/entrar')])
+    p.fill('#codigo', '123')
+    p.click('#btnEntrar')
+    assert p.inner_text('#errorCodigo') == 'El código tiene 6 cifras.'
+    assert len([r for r in c.respuestas if r['ruta'].endswith('/entrar')]) == antes
+
+    # el bueno (con un espacio en medio, como lo agrupan algunos teclados) entra y vuelve a donde iba
+    p.fill('#codigo', real[:3] + ' ' + real[3:])
+    p.click('#btnEntrar')
+    p.wait_for_url(BASE + '/bandeja')
+    p.wait_for_selector('a.tarjeta')
+    p.wait_for_function("() => document.getElementById('correo').textContent.length > 0")
+    assert p.inner_text('#correo') == EMAIL
+
+    # la cookie: HttpOnly (el JavaScript no la ve), SameSite=Lax y para toda la web
+    galletas = [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion']
+    assert len(galletas) == 1, galletas
+    g = galletas[0]
+    assert g['httpOnly'] is True and g['sameSite'] == 'Lax' and g['path'] == '/' and g['secure'] is False, g
+    assert 'bandeja_sesion' not in p.evaluate('() => document.cookie')
+    c.sin_jerga()
+
+
+def caso_2(c):
+    """Un correo SIN acceso ve exactamente lo mismo que uno con acceso, no recibe ningún correo y con ningún código entra; «Usar otro correo» vuelve atrás."""
+    c.rota('/api/bandeja/')
+    p = c.page
+    c.ver('/bandeja/entrar', '#formCorreo')
+    p.fill('#email', FUERA)
+    p.click('#btnCodigo')
+    p.wait_for_selector('#formCodigo:not([hidden])')
+    assert p.inner_text('#avisoCodigo') == FRASE_CODIGO, 'La misma frase que si tuviera acceso'
+    assert codigos_enviados_a(FUERA) == [], 'Y ningún correo sale'
+    p.fill('#codigo', '123456')
+    p.click('#btnEntrar')
+    p.wait_for_selector('#errorCodigo:not([hidden])')
+    assert p.inner_text('#errorCodigo') == FRASE_CODIGO_MALO
+    assert '/bandeja/entrar' in p.url
+    assert not [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion']
+    p.get_by_role('button', name='Usar otro correo', exact=True).click()
+    assert p.is_visible('#formCorreo') and p.is_hidden('#formCodigo')
+    c.sin_jerga()
+
+
+def caso_3(c):
+    """La lista: tarjetas con su contenido, filtros (Pendientes, Tramitadas, Incompletas, Todas, Descartadas bajo «Más»), búsqueda y «Cargar más»."""
+    ref_a, ref_b = SEMILLAS['A'], SEMILLAS['B']
+    ref_c = crear('gnew', [(1, 'pendiente.pdf', b'%PDF-1.4\n' + b'x' * 2048)], extra={'titular': 'Titular Subiendo SL'}, completo=False)  # Incompletas
+    ref_d = crear('gnew', [(1, 'bot.pdf', b'%PDF-1.4\n' + b'x' * 2048)], extra={'titular': 'Titular Bot SL'}, hp='soy un robot')  # Descartadas
+    c.con_sesion()
+    p = c.page
+    c.ver('/bandeja', 'a.tarjeta')
+    c.esperar_lista()
+    assert 'Tramitaciones' in p.inner_text('h1')
+    assert p.get_attribute('#q', 'placeholder') == 'Buscar por titular, CUPS, referencia o comercial'
+    assert p.get_by_role('button', name='Pendientes', exact=True).get_attribute('aria-pressed') == 'true'
+
+    # Pendientes (por defecto): A y B, de más reciente a más antigua, sin las incompletas ni las descartadas
+    refs = c.refs_en_lista()
+    assert ref_a in refs and ref_b in refs and ref_c not in refs and ref_d not in refs, refs
+    assert refs.index(ref_b) < refs.index(ref_a), 'Más recientes primero'
+    tarjeta_a = p.locator(f'a.tarjeta[href$="{ref_a}"]')
+    texto = tarjeta_a.inner_text()
+    for esperado in ['Titular de Prueba SL', 'Pendiente', 'GNEW', 'Compañía de Prueba · 2.0TD', 'ES0021000000000001RK', 'Comercial: Comercial de Prueba', '4 documentos']:
+        assert esperado in texto, f'Falta «{esperado}» en la tarjeta: {texto!r}'
+    assert re.search(r'hace (unos segundos|\d+ min)', texto), texto
+    assert tarjeta_a.get_attribute('href') == f'/bandeja/c/{ref_a}'
+    assert 'MEGA' in p.locator(f'a.tarjeta[href$="{ref_b}"]').inner_text() and '2 documentos' in p.locator(f'a.tarjeta[href$="{ref_b}"]').inner_text()
+    c.sin_jerga()
+    c.sin_desbordes()
+
+    # los filtros
+    c.elegir_filtro('Tramitadas')
+    assert ref_a not in c.refs_en_lista()
+    assert p.get_by_role('button', name='Tramitadas', exact=True).get_attribute('aria-pressed') == 'true'
+    assert p.get_by_role('button', name='Pendientes', exact=True).get_attribute('aria-pressed') == 'false'
+    c.elegir_filtro('Incompletas')
+    assert ref_c in c.refs_en_lista() and ref_a not in c.refs_en_lista()
+    assert 'Subiendo' in p.locator(f'a.tarjeta[href$="{ref_c}"]').inner_text()
+    c.elegir_filtro('Todas')
+    todas = c.refs_en_lista()
+    assert ref_a in todas and ref_b in todas and ref_c in todas and ref_d not in todas, 'Todas no incluye las descartadas'
+    assert p.is_hidden('#chipDescartadas')
+    p.get_by_role('button', name='Más', exact=True).click()
+    assert p.is_visible('#chipDescartadas')
+    c.elegir_filtro('Descartadas')
+    assert ref_d in c.refs_en_lista()
+    assert 'Descartada' in p.locator(f'a.tarjeta[href$="{ref_d}"]').inner_text()
+    # el filtro elegido se recuerda al volver desde una ficha
+    p.locator(f'a.tarjeta[href$="{ref_d}"]').click()
+    p.wait_for_selector('#ficha:not([hidden])')
+    p.get_by_role('link', name='Volver a las tramitaciones').click()
+    p.wait_for_url(re.compile(r'/bandeja$'))
+    c.esperar_lista()
+    assert p.get_by_role('button', name='Descartadas', exact=True).get_attribute('aria-pressed') == 'true'
+    c.elegir_filtro('Pendientes')
+
+    # la búsqueda: titular, CUPS, referencia, comercial y compañía; sin tildes ni mayúsculas; varias palabras en cualquier orden
+    for consulta, debe, no_debe in [
+        ('titular mega', [ref_b], [ref_a]),
+        ('ES0021000000000001rk', [ref_a, ref_b], []),
+        (ref_a, [ref_a], [ref_b]),
+        ('prueba titular', [ref_a, ref_b], []),
+        ('comercial de prueba', [ref_a, ref_b], []),
+        ('COMPAÑÍA', [ref_a], [ref_b]),
+        ('mega energia', [ref_b], [ref_a]),
+    ]:
+        c.buscar(consulta)
+        encontradas = c.refs_en_lista()
+        assert all(r in encontradas for r in debe), f'«{consulta}» debería traer {debe}: {encontradas}'
+        assert not any(r in encontradas for r in no_debe), f'«{consulta}» no debería traer {no_debe}: {encontradas}'
+    c.buscar('zzzinexistente')
+    assert p.inner_text('#estadoLista') == 'No hay tramitaciones que coincidan.'
+    assert p.locator('a.tarjeta').count() == 0
+    c.buscar('')
+    assert ref_a in c.refs_en_lista()
+
+    # «Cargar más»: con una respuesta con `siguiente` y una página más (sin tener 31 contratos de verdad en la base)
+    visto = {'antes': None}
+
+    def paginar(route, request):
+        url = urllib.parse.urlparse(request.url)
+        consulta = urllib.parse.parse_qs(url.query)
+        if 'antes' in consulta:
+            visto['antes'] = consulta['antes'][0]
+            falsa = {'ref': 'GNE-20260101-PAGINA', 'formulario': 'gnew', 'estado': 'recibida', 'compania': 'Compañía de otra página', 'titular_nombre': 'Titular de la segunda página',
+                     'cups': 'ES0021000000000001RK', 'comercial_nombre': 'Comercial', 'tarifa': '2.0TD', 'creada_en': '2026-01-01T10:00:00.000000+00:00',
+                     'recibida_en': '2026-01-01T10:00:00.000000+00:00', 'n_documentos': 1}
+            route.fulfill(status=200, content_type='application/json', body=json.dumps({'ok': True, 'items': [falsa], 'siguiente': None}))
+        else:
+            real = route.fetch()
+            cuerpo = real.json()
+            cuerpo['siguiente'] = '2026-10-09T20:11:12.123456+00:00'
+            route.fulfill(response=real, json=cuerpo)
+
+    p.route('**/api/bandeja/lista**', paginar)
+    c.elegir_filtro('Todas')
+    assert p.is_visible('#mas'), '«Cargar más» aparece cuando hay página siguiente'
+    antes_n = p.locator('a.tarjeta').count()
+    p.get_by_role('button', name='Cargar más', exact=True).click()
+    p.wait_for_function(f"() => document.querySelectorAll('a.tarjeta').length === {antes_n + 1}")
+    assert visto['antes'] == '2026-10-09T20:11:12.123456+00:00', f'El cursor viaja entero (con el +): {visto["antes"]!r}'
+    assert 'Titular de la segunda página' in p.inner_text('#lista')
+    assert p.is_hidden('#mas'), 'Sin siguiente, el botón desaparece'
+    p.unroute('**/api/bandeja/lista**')
+    c.sin_jerga()
+
+
+def caso_4(c):
+    """La ficha de A: todos los datos (IBAN completo), documentos; «Ver» abre 200, «Descargar» baja el archivo con su nombre y «Descargar todo (ZIP)» da un ZIP válido."""
+    ref = SEMILLAS['A']
+    c.con_sesion()
+    p = c.page
+    c.ver('/bandeja', 'a.tarjeta')
+    p.locator(f'a.tarjeta[href$="{ref}"]').click()  # se llega a la ficha desde la lista
+    p.wait_for_selector('#ficha:not([hidden])')
+    assert p.url == f'{BASE}/bandeja/c/{ref}'
+    assert p.inner_text('#ref') == ref
+    assert 'Pendiente' in p.inner_text('#insignias') and 'GNEW' in p.inner_text('#insignias')
+    cuerpo = p.inner_text('#ficha')
+    for esperado in ['COMERCIAL', 'CONTRATO', 'TITULAR', 'SUMINISTRO', 'CONTACTO', 'CAMBIO DE TITULAR', 'OBSERVACIONES', 'DOCUMENTOS (4)', 'CORREOS', 'HISTORIAL',
+                     'Comercial de Prueba', 'victor.molins.10+comercial@gmail.com', 'Compañía de Prueba', 'ES0021000000000001RK', 'Fijo 12 meses', '2.0TD',
+                     'P1: 4.6 kW · P2: 4.6 kW', 'Titular de Prueba SL', '00000000T', 'Firmante de Prueba', '12345678Z',
+                     'ES91 2100 0418 4502 0005 1332',  # el IBAN COMPLETO (para backoffice), en grupos de cuatro
+                     'Calle de Prueba 1, 2.º A', '28001', 'Madrid', '600000000', 'victor.molins.10+cliente@gmail.com', 'Prueba automática de Tramitación v2']:
+        assert esperado in cuerpo, f'Falta «{esperado}» en la ficha'
+    assert 'ES9121000418450200051332' not in p.url
+    assert p.get_attribute('#irDocs', 'href') == '#bloqueDocs'
+    nombres = [x.inner_text() for x in p.locator('.doc-nombre').all()]
+    assert nombres == ['firma.png', 'contrato.pdf', 'dni.jpg', 'factura.png'], nombres
+    c.sin_jerga()
+    c.sin_desbordes()
+
+    # «Ver»: se abre en una pestaña nueva y la URL firmada responde 200 (con una imagen que se ve de verdad)
+    fila_foto = p.locator('li.doc', has_text='dni.jpg')
+    enlace_ver = fila_foto.get_by_role('link', name='Ver', exact=True)
+    assert enlace_ver.get_attribute('target') == '_blank' and 'noopener' in enlace_ver.get_attribute('rel')
+    href = enlace_ver.get_attribute('href')
+    with c.ctx.expect_page() as nueva:
+        enlace_ver.click()
+    popup = nueva.value
+    popup.wait_for_load_state('load')
+    assert '/storage/v1/object/sign/tramitaciones/pruebas/gnew/' in popup.url, popup.url
+    assert popup.evaluate('() => document.images.length > 0 && document.images[0].naturalWidth > 0'), 'La imagen no se ve en la pestaña nueva'
+    popup.close()
+    for fila, etiqueta, tipo_esperado, bytes_esperados in [(fila_foto, 'dni.jpg', 'image/jpeg', JPG.stat().st_size),
+                                                           (p.locator('li.doc', has_text='contrato.pdf'), 'contrato.pdf', 'application/pdf', PDF.stat().st_size)]:
+        url = fila.get_by_role('link', name='Ver', exact=True).get_attribute('href')
+        r = c.ctx.request.get(url)
+        assert r.status == 200, f'«Ver» {etiqueta}: {r.status}'
+        assert r.headers['content-type'].startswith(tipo_esperado), r.headers['content-type']
+        assert len(r.body()) == bytes_esperados, f'«Ver» {etiqueta}: {len(r.body())} bytes'
+    # el nombre del archivo y el IBAN no viajan en ninguna URL: ni en los enlaces de la página ni en la barra de direcciones
+    enlaces = p.locator('li.doc a').evaluate_all('els => els.map(e => e.href)')
+    assert len(enlaces) == 4 and all('/object/sign/tramitaciones/pruebas/gnew/' in u and re.search(r'/0\d\.(png|pdf|jpg)\?token=', u) for u in enlaces), enlaces
+    assert href in enlaces
+    for url in enlaces + [p.url]:
+        assert not re.search(r'contrato|dni|factura|firma\.png|ES91|victor\.molins', url, re.I), f'Datos en una URL: {url[:90]}'
+
+    with tempfile.TemporaryDirectory() as carpeta:
+        # «Descargar» uno a uno, con su nombre bonito
+        for nombre, original in [('dni.jpg', JPG), ('contrato.pdf', PDF), ('factura.png', PNG)]:
+            boton = p.locator('li.doc', has_text=nombre).get_by_role('button', name='Descargar', exact=True)
+            with p.expect_download(timeout=90_000) as bajada:
+                boton.click()
+            descarga = bajada.value
+            assert descarga.suggested_filename == nombre, descarga.suggested_filename
+            destino = Path(carpeta) / nombre
+            descarga.save_as(str(destino))
+            assert destino.read_bytes() == original.read_bytes(), f'{nombre}: el archivo bajado no es el original'
+
+        # «Descargar todo (ZIP)»
+        with p.expect_download(timeout=120_000) as bajada:
+            p.get_by_role('button', name='Descargar todo (ZIP)', exact=True).click()
+        descarga = bajada.value
+        assert descarga.suggested_filename == f'{ref} - Titular de Prueba SL.zip', descarga.suggested_filename
+        zip_ruta = Path(carpeta) / 'bandeja.zip'
+        descarga.save_as(str(zip_ruta))
+        prueba = subprocess.run(['python3', '-m', 'zipfile', '-t', str(zip_ruta)], capture_output=True, text=True)
+        assert prueba.returncode == 0 and 'Done testing' in prueba.stdout, prueba.stdout + prueba.stderr
+        with zipfile.ZipFile(zip_ruta) as z:
+            assert z.testzip() is None
+            assert z.namelist() == ['00-firma.png', '01-contrato.pdf', '02-dni.jpg', '03-factura.png'], z.namelist()
+            assert all(i.compress_type == zipfile.ZIP_STORED for i in z.infolist()), 'El ZIP es «stored»'
+            assert z.read('00-firma.png') == PNG.read_bytes() and z.read('03-factura.png') == PNG.read_bytes()
+            assert z.read('02-dni.jpg') == JPG.read_bytes()
+            assert z.read('01-contrato.pdf') == PDF.read_bytes()
+    assert p.get_by_role('button', name='Descargar todo (ZIP)', exact=True).is_enabled(), 'El botón vuelve a su texto'
+    for url in c.respuestas_almacen:
+        assert not re.search(r'contrato|dni|factura|firma\.png|ES91|victor\.molins', url, re.I), 'Ninguna descarga lleva el nombre del archivo en la URL'
+    c.sin_jerga()
+
+
+def caso_5(c):
+    """Marcar como tramitada (con confirmación) y Volver a pendiente: insignia, línea «Tramitada por …», botón, base y lista."""
+    ref = SEMILLAS['B']
+    c.con_sesion()
+    p = c.page
+    c.abrir_ficha(ref)
+    assert 'Pendiente' in p.inner_text('#insignias')
+    assert p.is_hidden('#tramitadaPor') and p.is_hidden('#confirmar')
+
+    # cancelar no cambia nada
+    p.get_by_role('button', name='Marcar como tramitada', exact=True).click()
+    assert p.is_visible('#confirmar') and p.inner_text('#confirmarTexto') == '¿Marcar esta tramitación como tramitada?'
+    p.get_by_role('button', name='Cancelar', exact=True).click()
+    assert p.is_hidden('#confirmar') and p.get_by_role('button', name='Marcar como tramitada', exact=True).is_visible()
+    assert estado_de(ref)['tramitacion']['estado'] == 'recibida'
+
+    # confirmar: la insignia, la línea de quién y cuándo, y el botón contrario
+    p.get_by_role('button', name='Marcar como tramitada', exact=True).click()
+    p.screenshot(path=str(SALIDAS / 'bandeja-ficha-confirmar-390.png'), full_page=False)
+    p.get_by_role('button', name='Sí, marcar como tramitada', exact=True).click()
+    p.wait_for_function("() => /Tramitada/.test(document.getElementById('insignias').textContent)")
+    p.wait_for_selector('#tramitadaPor:not([hidden])')
+    linea = p.inner_text('#tramitadaPor')
+    assert re.fullmatch(rf'Tramitada por {re.escape(EMAIL)} el \d{{1,2}}-\d{{1,2}}-\d{{4}} a las \d{{2}}:\d{{2}}', linea), linea
+    assert p.inner_text('#okAccion') == 'Marcada como tramitada.'
+    assert p.get_by_role('button', name='Volver a pendiente', exact=True).is_visible()
+    assert p.get_by_role('button', name='Marcar como tramitada', exact=True).count() == 0
+    e = estado_de(ref)
+    assert e['tramitacion']['estado'] == 'tramitada' and e['tramitacion']['tramitada_por'] == EMAIL and e['tramitacion']['tramitada_en']
+    assert [x['actor'] for x in e['eventos'] if x['tipo'] == 'tramitada'] == [EMAIL]
+    assert 'Marcada como tramitada por ' + EMAIL in p.inner_text('#bloqueHistorial')
+
+    # la lista lo refleja: ya no está en Pendientes y sí en Tramitadas
+    c.ver('/bandeja', 'a.tarjeta')
+    c.esperar_lista()
+    c.elegir_filtro('Pendientes')
+    assert ref not in c.refs_en_lista()
+    c.elegir_filtro('Tramitadas')
+    assert ref in c.refs_en_lista() and 'Tramitada' in p.locator(f'a.tarjeta[href$="{ref}"]').inner_text()
+
+    # volver a pendiente
+    c.abrir_ficha(ref)
+    p.get_by_role('button', name='Volver a pendiente', exact=True).click()
+    assert p.inner_text('#confirmarTexto') == '¿Volver a poner esta tramitación como pendiente?'
+    p.get_by_role('button', name='Sí, volver a pendiente', exact=True).click()
+    p.wait_for_function("() => /Pendiente/.test(document.getElementById('insignias').textContent)")
+    assert p.is_hidden('#tramitadaPor')
+    assert p.get_by_role('button', name='Marcar como tramitada', exact=True).is_visible()
+    assert p.inner_text('#okAccion') == 'Vuelve a estar pendiente.'
+    e = estado_de(ref)
+    assert e['tramitacion']['estado'] == 'recibida' and e['tramitacion']['tramitada_por'] is None and e['tramitacion']['tramitada_en'] is None
+    assert [x['actor'] for x in e['eventos'] if x['tipo'] == 'reabierta'] == [EMAIL]
+
+    # alguien se adelantó (la tramitó desde otra pestaña): la página lo dice en llano y se pone al día
+    http_estado = lambda accion: http('POST', '/api/bandeja/estado', {'ref': ref, 'accion': accion}, cabeceras={'Cookie': f'bandeja_sesion={cookie_de_sesion()}'})
+    p.get_by_role('button', name='Marcar como tramitada', exact=True).click()
+    st, _, _ = http_estado('tramitar')
+    assert st == 200
+    c.rota('/api/bandeja/estado')
+    p.get_by_role('button', name='Sí, marcar como tramitada', exact=True).click()
+    p.wait_for_selector('#errorAccion:not([hidden])')
+    assert p.inner_text('#errorAccion') == 'Esta tramitación ya no está como creías. Recarga la página para ver cómo está ahora.'
+    p.wait_for_function("() => /Tramitada/.test(document.getElementById('insignias').textContent)")
+    assert p.get_by_role('button', name='Volver a pendiente', exact=True).is_visible()
+    http_estado('reabrir')
+    c.sin_jerga()
+
+
+def caso_6(c):
+    """Correos de la ficha: «enviado a las HH:MM», «Volver a enviar» (con su evento) y, con Altavoz caído, «pendiente (se reintenta solo)»."""
+    ref = SEMILLAS['A']
+    c.con_sesion()
+    p = c.page
+    c.abrir_ficha(ref)
+    bloque = p.locator('#bloqueCorreos')
+    texto = bloque.inner_text()
+    assert re.search(r'Aviso a tramitación: enviado a las \d{2}:\d{2}', texto), texto
+    assert re.search(r'Acuse al comercial: enviado a las \d{2}:\d{2}', texto), texto
+    antes = estado_de(ref)
+    aviso_antes = [x for x in antes['correos'] if x['tipo'] == 'aviso'][0]
+    bloque.locator('.correo').nth(0).get_by_role('button', name='Volver a enviar', exact=True).click()
+    p.wait_for_selector('.correo-resultado')
+    assert p.inner_text('.correo-resultado') == 'Correo enviado.'
+    despues = estado_de(ref)
+    aviso = [x for x in despues['correos'] if x['tipo'] == 'aviso'][0]
+    assert aviso['estado'] == 'enviado' and aviso['intentos'] == 1 and aviso['altavoz_id'] != aviso_antes['altavoz_id']
+    nuevos = despues['eventos'][len(antes['eventos']):]
+    assert [(x['tipo'], x['actor']) for x in nuevos] == [('aviso_reenviado', EMAIL), ('aviso_enviado', EMAIL)], nuevos
+    assert 'Aviso reenviado por ' + EMAIL in p.inner_text('#bloqueHistorial')
+
+    # con Altavoz caído el acuse no sale: pendiente, con su explicación, y sin ningún mensaje técnico
+    http('POST', '/__pruebas/altavoz', {'caido': True})
+    try:
+        bloque.locator('.correo').nth(1).get_by_role('button', name='Volver a enviar', exact=True).click()
+        p.wait_for_function("() => /pendiente \\(se reintenta solo\\)/.test(document.getElementById('bloqueCorreos').textContent)")
+    finally:
+        http('POST', '/__pruebas/altavoz', {'caido': False})
+    texto = bloque.inner_text()
+    assert 'Acuse al comercial: pendiente (se reintenta solo)' in texto, texto
+    assert 'El correo no ha podido salir ahora; se reintentará solo.' in texto
+    acuse = [x for x in estado_de(ref)['correos'] if x['tipo'] == 'acuse'][0]
+    assert acuse['estado'] == 'pendiente' and acuse['intentos'] == 1
+    # y al volver Altavoz, otro «Volver a enviar» lo deja enviado
+    bloque.locator('.correo').nth(1).get_by_role('button', name='Volver a enviar', exact=True).click()
+    p.wait_for_function("() => /Acuse al comercial: enviado a las/.test(document.getElementById('bloqueCorreos').textContent)")
+    c.sin_jerga()
+
+
+def caso_7(c):
+    """Un enlace directo a una ficha, sin sesión, lleva al acceso; tras entrar se vuelve a ESA ficha. Un «volver» que no es de la bandeja se ignora."""
+    ref = SEMILLAS['A']
+    c.rota('/api/bandeja/')
+    p = c.page
+    p.goto(BASE + f'/bandeja/c/{ref}', wait_until='load')
+    p.wait_for_url(re.compile(r'/bandeja/entrar\?volver=%2Fbandeja%2Fc%2F' + re.escape(ref) + '$'))
+    c.entrar_por_pantalla()
+    p.wait_for_url(f'{BASE}/bandeja/c/{ref}')
+    p.wait_for_selector('#ficha:not([hidden])')
+    assert p.inner_text('#ref') == ref
+    c.sin_jerga()
+
+    # «volver» solo vale si es una página de la bandeja: nunca otra web ni una dirección sin esquema
+    for peligro in ['https://evil.example/robo', '//evil.example/robo', '/otra-cosa', '/bandejaX', '/bandeja/../gnew', 'javascript:alert(1)']:
+        c.ctx.clear_cookies()
+        p.goto(BASE + '/bandeja/entrar?volver=' + urllib.parse.quote(peligro, safe=''), wait_until='load')
+        c.entrar_por_pantalla()
+        p.wait_for_url(BASE + '/bandeja')
+        assert p.url == BASE + '/bandeja', f'«{peligro}» no puede sacar de la bandeja'
+    # y uno bueno con parámetros sí se respeta
+    c.ctx.clear_cookies()
+    p.goto(BASE + '/bandeja/entrar?volver=' + urllib.parse.quote('/bandeja?estado=tramitadas', safe=''), wait_until='load')
+    c.entrar_por_pantalla()
+    p.wait_for_url(BASE + '/bandeja?estado=tramitadas')
+    c.esperar_lista()
+    assert p.get_by_role('button', name='Tramitadas', exact=True).get_attribute('aria-pressed') == 'true'
+
+
+def caso_8(c):
+    """Capturas a 390 y 1440 px de las tres pantallas (acceso, lista y ficha), sin desbordes y con 0 errores de consola."""
+    ref = SEMILLAS['A']
+    SALIDAS.mkdir(parents=True, exist_ok=True)
+    p = c.page
+
+    def capturar(nombre):
+        for ancho, alto in ((390, 844), (1440, 900)):
+            p.set_viewport_size({'width': ancho, 'height': alto})
+            p.wait_for_timeout(300)
+            assert p.evaluate('() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)') <= ancho, f'{nombre}: desborde a {ancho} px'
+            p.screenshot(path=str(SALIDAS / f'bandeja-{nombre}-{ancho}.png'), full_page=True, animations='disabled')
+        p.set_viewport_size({'width': 390, 'height': 844})
+
+    c.ver('/bandeja/entrar', '#formCorreo')
+    capturar('entrar')
+    p.fill('#email', FUERA)  # el paso del código (con una dirección sin acceso: no sale ningún correo)
+    p.click('#btnCodigo')
+    p.wait_for_selector('#formCodigo:not([hidden])')
+    capturar('entrar-codigo')
+
+    c.con_sesion()
+    c.ver('/bandeja', 'a.tarjeta')
+    c.esperar_lista()
+    p.wait_for_function("() => document.getElementById('correo').textContent.length > 0")
+    capturar('lista')
+
+    c.abrir_ficha(ref)
+    capturar('ficha')
+    c.sin_jerga()
+
+
+def caso_9(c):
+    """Todo lo que escribe el comercial se ve como TEXTO: ni HTML, ni scripts, ni manejadores de eventos, en la lista y en la ficha."""
+    ref = crear('gnew', [(1, 'escaneo.jpg', JPG.read_bytes())], extra={
+        'titular': XSS_TITULAR, 'quien_eres': XSS_COMERCIAL, 'observaciones': XSS_OBSERVACIONES, 'dir_suministro': XSS_DIRECCION,
+        'cambio_titular': 'Si', 'nuevo_titular': '<script>window.__xss=6</script> Nuevo SL'})
+    c.con_sesion()
+    p = c.page
+    c.ver('/bandeja', 'a.tarjeta')
+    c.buscar('titular co')
+    tarjeta = p.locator(f'a.tarjeta[href$="{ref}"]')
+    assert XSS_TITULAR in tarjeta.inner_text(), tarjeta.inner_text()
+    assert XSS_COMERCIAL in tarjeta.inner_text()
+    assert p.locator('#lista img, #lista script, #lista svg, #lista iframe, #lista b, #lista u').count() == 0, 'La lista no ha creado ningún elemento con lo que escribió el comercial'
+    c.sin_desbordes()
+    tarjeta.click()
+    p.wait_for_selector('#ficha:not([hidden])')
+    c.sin_desbordes()
+    ficha = p.inner_text('#ficha')
+    for texto in [XSS_TITULAR, XSS_COMERCIAL, XSS_DIRECCION, 'línea uno', '<iframe src="javascript:window.__xss=5"></iframe> línea dos', '<script>window.__xss=6</script> Nuevo SL']:
+        assert texto in ficha, f'La ficha debe enseñar «{texto[:40]}» como texto'
+    assert p.locator('#ficha img[src="x"], #ficha iframe, #ficha svg[onload], #ficha b[onmouseover], #ficha u').count() == 0
+    assert p.evaluate("() => typeof window.__xss") == 'undefined', 'Se ha ejecutado algo del contenido del comercial'
+    assert p.evaluate("() => document.querySelectorAll('script').length") == 1, 'La página tiene su único script y ninguno colado'
+    assert p.title().startswith(ref)
+    c.sin_jerga()
+
+
+def caso_10(c):
+    """Fichas especiales: incompleta (sin «Marcar como tramitada», documentos sin subir), descartada, una que no existe y una referencia que no es referencia."""
+    ref_c = crear('gnew', [(1, 'pendiente.pdf', b'%PDF-1.4\n' + b'x' * 2048), (2, 'otro.png', PNG.read_bytes())], extra={'titular': 'Titular Subiendo SL'}, completo=False)
+    ref_d = crear('gnew', [(1, 'bot.pdf', b'%PDF-1.4\n' + b'x' * 2048)], extra={'titular': 'Titular Bot SL'}, hp='soy un robot')
+    c.con_sesion()
+    p = c.page
+    c.abrir_ficha(ref_c)
+    assert 'Subiendo' in p.inner_text('#insignias')
+    assert 'El comercial todavía está subiendo la documentación.' in p.inner_text('#banner')
+    assert p.get_by_role('button', name='Marcar como tramitada', exact=True).count() == 0 and p.get_by_role('button', name='Volver a pendiente', exact=True).count() == 0
+    docs = p.inner_text('#bloqueDocs')
+    assert 'firma.png' in docs and 'pendiente.pdf' in docs and 'Todavía sin subir' in docs
+    assert p.locator('li.doc', has_text='pendiente.pdf').get_by_role('link', name='Ver').count() == 0, 'Lo que no ha subido no tiene enlaces'
+    assert p.locator('li.doc', has_text='firma.png').get_by_role('link', name='Ver').count() == 1
+    assert 'Todavía no se han enviado correos: el envío no está completo.' in p.inner_text('#bloqueCorreos')
+    c.sin_jerga()
+
+    c.abrir_ficha(ref_d)
+    assert 'Descartada' in p.inner_text('#insignias')
+    assert 'filtro antibots' in p.inner_text('#banner') and 'rojo' in p.get_attribute('#banner', 'class')
+    assert 'Este envío no tiene documentos.' in p.inner_text('#bloqueDocs')
+    assert p.get_by_role('button', name='Descargar todo (ZIP)').count() == 0
+    c.sin_jerga()
+
+    # una referencia con forma de referencia pero que no existe: el servidor dice 404 y la página lo cuenta en llano
+    c.rota('/api/bandeja/ficha')
+    p.goto(BASE + '/bandeja/c/GNE-20261009-ZZZZZZ', wait_until='load')
+    p.wait_for_selector('#estadoCarga.error')
+    assert 'No encontramos esta tramitación.' in p.inner_text('#estadoCarga')
+    assert p.is_hidden('#ficha')
+    # y una que ni lo parece: ni siquiera se pregunta al servidor
+    antes = len([r for r in c.respuestas if r['ruta'].endswith('/ficha')])
+    p.goto(BASE + '/bandeja/c/esto-no-es-una-referencia', wait_until='load')
+    p.wait_for_selector('#estadoCarga.error')
+    assert 'No encontramos esta tramitación.' in p.inner_text('#estadoCarga')
+    assert len([r for r in c.respuestas if r['ruta'].endswith('/ficha')]) == antes
+    c.sin_jerga()
+
+
+def caso_11(c):
+    """«Salir» cierra la sesión: se borra la cookie y la bandeja vuelve a pedir el acceso."""
+    c.rota('/api/bandeja/')
+    c.con_sesion()
+    p = c.page
+    c.ver('/bandeja', 'a.tarjeta')
+    assert [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion']
+    p.get_by_role('button', name='Salir', exact=True).click()
+    p.wait_for_url(BASE + '/bandeja/entrar')
+    assert not [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion'], 'La cookie debe borrarse'
+    p.goto(BASE + '/bandeja', wait_until='load')
+    p.wait_for_url(re.compile(r'/bandeja/entrar\?volver='))
+    # desde la ficha también
+    c.con_sesion()
+    c.abrir_ficha(SEMILLAS['A'])
+    p.get_by_role('button', name='Salir', exact=True).click()
+    p.wait_for_url(BASE + '/bandeja/entrar')
+    assert not [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion']
+
+
+def caso_12(c):
+    """Los enlaces valen 10 minutos: la ficha los renueva sola antes de que caduquen, y también justo al pulsar «Descargar» o «Ver» si se le pasó."""
+    ref = SEMILLAS['A']
+    c.con_sesion()
+    p = c.page
+    p.clock.install()  # reloj falso: se instala ANTES de cargar la página para poder adelantar minutos sin esperarlos
+    c.abrir_ficha(ref)
+    fichas = lambda: len([r for r in c.respuestas if r['ruta'].endswith('/ficha')])
+    assert fichas() == 1
+    enlaces = lambda: p.locator('li.doc a').evaluate_all('els => els.map(e => e.href)')
+    primeros = enlaces()
+    assert len(primeros) == 4
+
+    def esperar_fichas(n, segundos=15):
+        fin = time.time() + segundos
+        while time.time() < fin and fichas() < n:
+            p.wait_for_timeout(200)  # (no time.sleep: la API síncrona solo entrega los eventos de red mientras Playwright espera)
+        assert fichas() >= n, f'La página debía haber vuelto a pedir la ficha ({fichas()} peticiones, se esperaban {n})'
+
+    # 1) a los 8 minutos, antes de que caduquen, la página pide la ficha sola y los enlaces cambian
+    p.wait_for_timeout(1300)  # para que el segundo de caducidad de la firma nueva sea otro
+    p.clock.fast_forward('08:10')
+    esperar_fichas(2)
+    p.wait_for_function('(antes) => document.querySelector("li.doc a").href !== antes', arg=primeros[0], polling=250)  # con reloj falso, sin rAF
+    segundos = enlaces()
+    assert segundos != primeros and len(segundos) == 4
+
+    # 2) se le pasa el tiempo (11 minutos de golpe, sin que salte ningún temporizador): al pulsar «Descargar» renueva y baja bien
+    adelantar = lambda minutos: p.clock.set_system_time((p.evaluate('() => Date.now()') + minutos * 60 * 1000) / 1000)  # (la API de Python pide SEGUNDOS)
+    adelantar(11)
+    with p.expect_download(timeout=60_000) as bajada:
+        p.locator('li.doc', has_text='dni.jpg').get_by_role('button', name='Descargar', exact=True).click()
+    descarga = bajada.value
+    assert descarga.suggested_filename == 'dni.jpg'
+    with tempfile.TemporaryDirectory() as carpeta:
+        destino = Path(carpeta) / 'dni.jpg'
+        descarga.save_as(str(destino))
+        assert destino.read_bytes() == JPG.read_bytes()
+    esperar_fichas(3)
+
+    # 3) y lo mismo con «Ver»: se abre la pestaña al momento y se rellena con el enlace nuevo
+    p.wait_for_timeout(1300)
+    adelantar(11)
+    with c.ctx.expect_page() as nueva:
+        p.locator('li.doc', has_text='dni.jpg').get_by_role('link', name='Ver', exact=True).click()
+    popup = nueva.value
+    popup.wait_for_url(re.compile(r'/storage/v1/object/sign/tramitaciones/pruebas/gnew/'), timeout=30_000)
+    popup.wait_for_load_state('load')
+    assert popup.evaluate('() => document.images.length > 0 && document.images[0].naturalWidth > 0'), 'La imagen no se ve'
+    popup.close()
+    esperar_fichas(4)
+    c.sin_jerga()
+
+
+def caso_13(c):
+    """Cuando algo falla, la página lo cuenta en llano (sin códigos) y deja reintentar: lista, ficha, cambio de estado, volver a enviar y descargas."""
+    ref = SEMILLAS['A']
+    c.rota('/api/bandeja/', '.supabase.co/storage')
+    c.permite_5xx = True  # los 503 de este caso los fabrica el propio caso con page.route
+    c.con_sesion()
+    p = c.page
+    sin_red = lambda route, request: route.abort('connectionreset')
+    caido = lambda route, request: route.fulfill(
+        status=503, content_type='application/json',
+        body=json.dumps({'ok': False, 'codigo': 'temporal', 'mensaje': 'No hemos podido completar la operación ahora mismo. Inténtalo de nuevo en un momento.', 'retryable': True}))
+    FRASE_RED = 'No hemos podido conectar. Comprueba tu conexión e inténtalo de nuevo.'
+    FRASE_503 = 'No hemos podido completar la operación ahora mismo. Inténtalo de nuevo en un momento.'
+
+    # la lista sin red → frase + «Reintentar»; con el servidor caído → su frase en llano
+    p.route('**/api/bandeja/lista**', sin_red)
+    c.ver('/bandeja')
+    p.wait_for_function("() => /No hemos podido conectar/.test(document.getElementById('estadoLista').textContent)")
+    assert FRASE_RED in p.inner_text('#estadoLista')
+    p.unroute('**/api/bandeja/lista**')
+    p.get_by_role('button', name='Reintentar', exact=True).click()
+    p.wait_for_selector('a.tarjeta')
+    p.route('**/api/bandeja/lista**', caido)
+    p.get_by_role('button', name='Actualizar la lista').click()
+    p.wait_for_function("() => /Inténtalo de nuevo en un momento/.test(document.getElementById('estadoLista').textContent)")
+    assert FRASE_503 in p.inner_text('#estadoLista') and p.get_by_role('button', name='Reintentar', exact=True).is_visible()
+    p.unroute('**/api/bandeja/lista**')
+    p.get_by_role('button', name='Reintentar', exact=True).click()
+    p.wait_for_selector('a.tarjeta')
+    c.sin_jerga()
+
+    # la ficha sin red → frase + «Reintentar»
+    p.route('**/api/bandeja/ficha**', sin_red)
+    c.ver(f'/bandeja/c/{ref}')
+    p.wait_for_function("() => /No hemos podido conectar/.test(document.getElementById('estadoCarga').textContent)")
+    assert p.is_hidden('#ficha')
+    p.unroute('**/api/bandeja/ficha**')
+    p.get_by_role('button', name='Reintentar', exact=True).click()
+    p.wait_for_selector('#ficha:not([hidden])')
+    assert p.inner_text('#ref') == ref
+
+    # marcar como tramitada sin red: lo dice, no cambia nada y deja volver a intentarlo
+    p.route('**/api/bandeja/estado', sin_red)
+    p.get_by_role('button', name='Marcar como tramitada', exact=True).click()
+    p.get_by_role('button', name='Sí, marcar como tramitada', exact=True).click()
+    p.wait_for_selector('#errorAccion:not([hidden])')
+    assert p.inner_text('#errorAccion') == FRASE_RED
+    assert p.get_by_role('button', name='Marcar como tramitada', exact=True).is_visible() and p.is_hidden('#confirmar')
+    assert estado_de(ref)['tramitacion']['estado'] == 'recibida'
+    p.unroute('**/api/bandeja/estado')
+
+    # volver a enviar con el servidor caído: su frase, junto al botón
+    p.route('**/api/bandeja/reenviar', caido)
+    p.locator('#bloqueCorreos .correo').nth(0).get_by_role('button', name='Volver a enviar', exact=True).click()
+    p.wait_for_selector('.correo-resultado')
+    assert p.inner_text('.correo-resultado') == FRASE_503
+    p.unroute('**/api/bandeja/reenviar')
+
+    # descargas que fallan: «No hemos podido descargar «dni.jpg»…» y el botón vuelve a servir; igual con el ZIP
+    almacen = lambda url: '.supabase.co/storage/' in url
+    p.route(almacen, sin_red)
+    boton = p.locator('li.doc', has_text='dni.jpg').get_by_role('button', name='Descargar', exact=True)
+    boton.click()
+    p.wait_for_selector('#errorDocs:not([hidden])')
+    assert p.inner_text('#errorDocs') == 'No hemos podido descargar «dni.jpg». Inténtalo de nuevo.'
+    assert boton.is_enabled()
+    p.get_by_role('button', name='Descargar todo (ZIP)', exact=True).click()
+    p.wait_for_function("() => /No hemos podido preparar el ZIP/.test(document.getElementById('errorDocs').textContent)")
+    assert p.get_by_role('button', name='Descargar todo (ZIP)', exact=True).is_enabled()
+    p.unroute(almacen, sin_red)
+    c.sin_jerga()
+
+
+CASOS = [
+    (1, 'Acceso: de /bandeja al login con «volver», código por correo simulado, código malo, código bueno y cookie HttpOnly', caso_1),
+    (2, 'Un correo sin acceso ve lo mismo que uno con acceso, sin correo y sin entrar', caso_2),
+    (3, 'Lista: tarjetas, filtros, búsqueda y «Cargar más»', caso_3),
+    (4, 'Ficha: datos con IBAN completo, «Ver» da 200, «Descargar» y ZIP válido', caso_4),
+    (5, 'Marcar como tramitada / Volver a pendiente, con confirmación y quién lo hizo', caso_5),
+    (6, 'Correos: «Volver a enviar» (también con Altavoz caído)', caso_6),
+    (7, 'Enlace directo a una ficha sin sesión → login → vuelve a la ficha; «volver» ajeno ignorado', caso_7),
+    (8, 'Capturas a 390 y 1440 px de acceso, lista y ficha', caso_8),
+    (9, 'Lo que escribe el comercial se pinta como texto (nada de HTML)', caso_9),
+    (10, 'Fichas incompleta, descartada, inexistente y mal escrita', caso_10),
+    (11, 'Salir cierra la sesión', caso_11),
+    (12, 'Enlaces de 10 minutos: se renuevan solos y al pulsar «Descargar» / «Ver» si se pasaron', caso_12),
+    (13, 'Cuando algo falla: frases en llano y reintentar (lista, ficha, estado, correos, descargas)', caso_13),
+]
+
+
+def correr(numeros):
+    SALIDAS.mkdir(parents=True, exist_ok=True)
+    elegidos = [c for c in CASOS if not numeros or c[0] in numeros]
+    print('Preparando las tramitaciones de partida (por HTTP, en modo prueba)…')
+    preparar()
+    ok = 0
+    inesperados_total = 0
+    esperados_total = 0
+    with sync_playwright() as pw:
+        navegador = pw.chromium.launch(headless=True)
+        for numero, titulo, funcion in elegidos:
+            caso = CasoBandeja(navegador, titulo)
+            inicio = time.time()
+            try:
+                funcion(caso)
+                caso.comprobar_limpio()
+                ok += 1
+                extra = len(caso.errores_consola)
+                esperados_total += extra
+                print(f'  OK   caso {numero}: {titulo}  ({time.time() - inicio:.1f} s; consola: 0 errores inesperados'
+                      f'{f", {extra} «Failed to load resource» de los 401/404 provocados" if extra else ""})')
+            except Exception as error:  # un caso que falla no impide correr los demás
+                print(f'  FALLO caso {numero}: {titulo}')
+                print(f'       {type(error).__name__}: {str(error)[:700]}')
+                tb = traceback.extract_tb(error.__traceback__)
+                if tb:
+                    print(f'       en {tb[-1].filename.split("/")[-1]}:{tb[-1].lineno}: {tb[-1].line}')
+                if caso.errores_pagina:
+                    print(f'       errores de página: {caso.errores_pagina[:3]}')
+                inesperados = caso.consola_inesperada()
+                if inesperados:
+                    print(f'       consola: {[e["texto"][:150] for e in inesperados[:3]]}')
+                if caso.violaciones:
+                    print(f'       violaciones: {caso.violaciones}')
+                try:
+                    caso.page.screenshot(path=str(SALIDAS / f'fallo-bandeja-{numero}.png'), full_page=True)
+                except Exception:
+                    pass
+            finally:
+                inesperados_total += len(caso.consola_inesperada())
+                caso.cerrar()
+        navegador.close()
+    print(f'\n{ok}/{len(elegidos)} OK · errores de consola inesperados: {inesperados_total} · '
+          f'«Failed to load resource» esperados por los 401/404 provocados: {esperados_total}')
+    return ok == len(elegidos)
+
+
+if __name__ == '__main__':
+    numeros = {int(a) for a in sys.argv[1:] if a.isdigit()}
+    sys.exit(0 if correr(numeros) else 1)

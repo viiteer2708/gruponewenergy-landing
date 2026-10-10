@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex, nofollow">
+    <meta name="referrer" content="no-referrer">
+    <link rel="icon" type="image/png" href="/favicon-gnew.png">
+    <title>Tramitaciones | Grupo New Energy</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        :root {
+            --primary: #0B6E4F;
+            --primary-dark: #094D38;
+            --primary-light: #0D8A63;
+            --accent: #F9A825;
+            --bg: #F5F7FA;
+            --card-bg: #FFFFFF;
+            --text: #1A1A2E;
+            --text-muted: #6B7280;
+            --border: #E2E8F0;
+            --error: #DC2626;
+            --shadow: 0 4px 6px -1px rgba(0,0,0,.07), 0 2px 4px -2px rgba(0,0,0,.05);
+            --shadow-lg: 0 10px 25px -5px rgba(0,0,0,.1), 0 8px 10px -6px rgba(0,0,0,.07);
+            --radius: 12px;
+            --radius-sm: 8px;
+        }
+
+        html {
+            -webkit-text-size-adjust: 100%;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+            -webkit-font-smoothing: antialiased;
+            min-height: 100vh;
+        }
+
+        button, input {
+            font: inherit;
+            color: inherit;
+        }
+
+        :focus-visible {
+            outline: 3px solid rgba(249, 168, 37, .75);
+            outline-offset: 2px;
+        }
+
+        /* ===== CABECERA ===== */
+        .cabecera {
+            position: sticky;
+            top: 0;
+            z-index: 20;
+            background: #fff;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .cabecera-in {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: .6rem 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: .75rem;
+        }
+
+        .marca {
+            display: flex;
+            align-items: center;
+            gap: .7rem;
+            min-width: 0;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .marca img {
+            height: 36px;
+            width: auto;
+            flex: none;
+        }
+
+        .marca-texto {
+            min-width: 0;
+            line-height: 1.2;
+        }
+
+        .marca-texto h1 {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: var(--primary-dark);
+        }
+
+        .correo {
+            display: block;
+            font-size: .75rem;
+            color: var(--text-muted);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .acciones-cabecera {
+            display: flex;
+            align-items: center;
+            gap: .5rem;
+            flex: none;
+        }
+
+        .btn-icono {
+            width: 40px;
+            height: 40px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1.5px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: #fff;
+            color: var(--primary-dark);
+            cursor: pointer;
+        }
+
+        .btn-icono:hover:not(:disabled) {
+            border-color: var(--primary);
+            background: #F0FAF6;
+        }
+
+        .btn-icono:disabled {
+            opacity: .5;
+            cursor: default;
+        }
+
+        .btn-salir {
+            flex: none;
+            min-height: 40px;
+            padding: .4rem .9rem;
+            border: 1.5px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: #fff;
+            font-size: .875rem;
+            font-weight: 600;
+            color: var(--primary-dark);
+            cursor: pointer;
+        }
+
+        .btn-salir:hover {
+            border-color: var(--primary);
+            background: #F0FAF6;
+        }
+
+        /* ===== CONTENIDO ===== */
+        .contenedor {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1rem 1rem 3rem;
+        }
+
+        .buscador input {
+            width: 100%;
+            min-height: 48px;
+            padding: .6rem .9rem;
+            border: 1.5px solid var(--border);
+            border-radius: var(--radius);
+            background: #fff;
+            font-size: 1rem; /* 16 px: el móvil no hace zoom al escribir */
+            box-shadow: var(--shadow);
+        }
+
+        .buscador input::placeholder {
+            color: #9CA3AF;
+            font-size: .8125rem;
+        }
+
+        .buscador input:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(11, 110, 79, .18);
+        }
+
+        .filtros {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: .5rem;
+            margin: .85rem 0 1rem;
+        }
+
+        .chip {
+            min-height: 38px;
+            padding: .3rem .95rem;
+            border: 1.5px solid var(--border);
+            border-radius: 999px;
+            background: #fff;
+            font-size: .875rem;
+            font-weight: 600;
+            color: var(--text);
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .chip:hover {
+            border-color: var(--primary-light);
+        }
+
+        .chip[aria-pressed="true"] {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: #fff;
+        }
+
+        .chip[hidden] {
+            display: none;
+        }
+
+        .chip-mas {
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+
+        /* ===== LISTA ===== */
+        .lista {
+            list-style: none;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: .75rem;
+        }
+
+        .tarjeta {
+            display: block;
+            height: 100%;
+            padding: .95rem 1rem;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            text-decoration: none;
+            color: inherit;
+            transition: border-color .15s, box-shadow .15s, transform .15s;
+        }
+
+        .tarjeta:hover {
+            border-color: var(--primary-light);
+            box-shadow: var(--shadow-lg);
+        }
+
+        .t-cabeza {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: .6rem;
+        }
+
+        .t-titular {
+            min-width: 0;
+            font-size: 1rem;
+            font-weight: 700;
+            line-height: 1.3;
+            overflow-wrap: anywhere;
+        }
+
+        .ins {
+            display: inline-block;
+            flex: none;
+            padding: .12rem .6rem;
+            border-radius: 999px;
+            font-size: .72rem;
+            font-weight: 700;
+            letter-spacing: .02em;
+            line-height: 1.5;
+            white-space: nowrap;
+        }
+
+        .estado-recibida { background: #FEF3C7; color: #92400E; }
+        .estado-tramitada { background: #DCFCE7; color: #166534; }
+        .estado-subiendo { background: #DBEAFE; color: #1E40AF; }
+        .estado-abandonada { background: #FFEDD5; color: #9A3412; }
+        .estado-descartada { background: #FEE2E2; color: #991B1B; }
+        .marca-gnew { background: #E7F5EF; color: #094D38; }
+        .marca-mega { background: #CCFBF1; color: #0F766E; }
+
+        .t-linea {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: .4rem;
+            margin-top: .4rem;
+            font-size: .875rem;
+            color: #374151;
+            overflow-wrap: anywhere;
+        }
+
+        .t-cups {
+            margin-top: .25rem;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: .8rem;
+            color: var(--text-muted);
+            letter-spacing: .02em;
+            overflow-wrap: anywhere;
+        }
+
+        .t-comercial {
+            margin-top: .25rem;
+            font-size: .8125rem;
+            color: var(--text-muted);
+            overflow-wrap: anywhere;
+        }
+
+        .t-pie {
+            display: flex;
+            flex-wrap: wrap;
+            gap: .25rem .9rem;
+            margin-top: .6rem;
+            padding-top: .55rem;
+            border-top: 1px solid #EEF2F6;
+            font-size: .8rem;
+            color: var(--text-muted);
+        }
+
+        .mensaje {
+            padding: 2rem 1rem;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: .95rem;
+        }
+
+        .mensaje.error {
+            color: #991B1B;
+            background: #FEF2F2;
+            border: 1px solid #FECACA;
+            border-radius: var(--radius);
+        }
+
+        .mensaje button {
+            margin-top: .75rem;
+        }
+
+        .btn {
+            min-height: 44px;
+            padding: .55rem 1.4rem;
+            border: 1.5px solid var(--primary);
+            border-radius: var(--radius-sm);
+            background: #fff;
+            font-weight: 600;
+            font-size: .95rem;
+            color: var(--primary);
+            cursor: pointer;
+        }
+
+        .btn:hover:not(:disabled) {
+            background: #F0FAF6;
+        }
+
+        .btn:disabled {
+            opacity: .6;
+            cursor: default;
+        }
+
+        .mas {
+            display: flex;
+            justify-content: center;
+            margin-top: 1.25rem;
+        }
+
+        .mas[hidden] {
+            display: none;
+        }
+
+        @media (min-width: 700px) {
+            .lista { grid-template-columns: repeat(2, 1fr); }
+            .cabecera-in, .contenedor { padding-left: 1.5rem; padding-right: 1.5rem; }
+        }
+
+        @media (min-width: 1100px) {
+            .lista { grid-template-columns: repeat(3, 1fr); }
+            .buscador { max-width: 560px; }
+        }
+    </style>
+</head>
+<body>
+
+<header class="cabecera">
+    <div class="cabecera-in">
+        <a class="marca" href="/bandeja">
+            <img src="/logo-gnew.png" alt="Grupo New Energy">
+            <div class="marca-texto">
+                <h1>Tramitaciones</h1>
+                <span class="correo" id="correo"></span>
+            </div>
+        </a>
+        <div class="acciones-cabecera">
+            <button class="btn-icono" id="btnActualizar" type="button" aria-label="Actualizar la lista" title="Actualizar la lista">
+                <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+            </button>
+            <button class="btn-salir" id="btnSalir" type="button">Salir</button>
+        </div>
+    </div>
+</header>
+
+<main class="contenedor">
+    <div class="buscador">
+        <input id="q" type="search" placeholder="Buscar por titular, CUPS, referencia o comercial" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="Buscar por titular, CUPS, referencia o comercial">
+    </div>
+
+    <div class="filtros" id="filtros" role="group" aria-label="Filtrar por estado">
+        <button class="chip" type="button" data-estado="pendientes" aria-pressed="true">Pendientes</button>
+        <button class="chip" type="button" data-estado="tramitadas" aria-pressed="false">Tramitadas</button>
+        <button class="chip" type="button" data-estado="incompletas" aria-pressed="false">Incompletas</button>
+        <button class="chip" type="button" data-estado="todas" aria-pressed="false">Todas</button>
+        <button class="chip chip-mas" type="button" id="chipMas" aria-expanded="false">Más</button>
+        <button class="chip" type="button" data-estado="descartadas" aria-pressed="false" id="chipDescartadas" hidden>Descartadas</button>
+    </div>
+
+    <p class="mensaje" id="estadoLista" role="status" aria-live="polite">Cargando…</p>
+    <ul class="lista" id="lista"></ul>
+    <div class="mas" id="mas" hidden>
+        <button class="btn" type="button" id="btnMas">Cargar más</button>
+    </div>
+</main>
+
+<script>
+(function () {
+    'use strict';
+
+    var ETIQUETA_ESTADO = { recibida: 'Pendiente', tramitada: 'Tramitada', subiendo: 'Subiendo', abandonada: 'Incompleta', descartada: 'Descartada' };
+    var ETIQUETA_MARCA = { gnew: 'GNEW', mega: 'MEGA' };
+    var FILTROS = ['pendientes', 'tramitadas', 'incompletas', 'todas', 'descartadas'];
+
+    var inputQ = document.getElementById('q');
+    var cajaFiltros = document.getElementById('filtros');
+    var chips = cajaFiltros.querySelectorAll('.chip[data-estado]');
+    var chipMas = document.getElementById('chipMas');
+    var chipDescartadas = document.getElementById('chipDescartadas');
+    var btnActualizar = document.getElementById('btnActualizar');
+    var listaEl = document.getElementById('lista');
+    var estadoLista = document.getElementById('estadoLista');
+    var cajaMas = document.getElementById('mas');
+    var btnMas = document.getElementById('btnMas');
+
+    var estado = 'pendientes';
+    var siguiente = null;
+    var ticket = 0;          // para ignorar respuestas viejas si el usuario cambia de filtro mientras se carga
+    var ultimaCarga = 0;
+    var temporizador = null;
+
+    // ---------- utilidades ----------
+    function el(etiqueta, clase, texto) {
+        var e = document.createElement(etiqueta);
+        if (clase) e.className = clase;
+        if (texto !== undefined && texto !== null) e.textContent = texto;
+        return e;
+    }
+
+    var FORMATO_FECHA = new Intl.DateTimeFormat('es-ES', { timeZone: 'Europe/Madrid', day: 'numeric', month: 'numeric', year: 'numeric' });
+    function fechaCorta(iso) {
+        var t = Date.parse(iso);
+        if (!isFinite(t)) return '';
+        var p = {};
+        FORMATO_FECHA.formatToParts(new Date(t)).forEach(function (x) { p[x.type] = x.value; });
+        return p.day + '-' + p.month + '-' + p.year;
+    }
+
+    // «hace 12 min» (hasta una semana) y, a partir de ahí, la fecha
+    function hace(iso) {
+        var t = Date.parse(iso);
+        if (!isFinite(t)) return '';
+        var seg = Math.max(0, Math.round((Date.now() - t) / 1000));
+        if (seg < 45) return 'hace unos segundos';
+        var min = Math.round(seg / 60);
+        if (min < 60) return 'hace ' + min + ' min';
+        var h = Math.round(min / 60);
+        if (h < 24) return 'hace ' + h + ' h';
+        var d = Math.round(h / 24);
+        if (d < 7) return 'hace ' + d + (d === 1 ? ' día' : ' días');
+        return fechaCorta(iso);
+    }
+
+    // Una sola vez: la lista y «quién soy» pueden recibir el 401 a la vez y la segunda navegación abortaría la primera
+    var redirigiendo = false;
+    function irALogin() {
+        if (redirigiendo) return;
+        redirigiendo = true;
+        location.replace('/bandeja/entrar?volver=' + encodeURIComponent(location.pathname + location.search));
+    }
+
+    // GET/POST con la cookie. Devuelve {status, json}; sin red, {red: true}. Nunca lanza.
+    function api(ruta, cuerpo) {
+        var opciones = { method: cuerpo === undefined ? 'GET' : 'POST', credentials: 'same-origin', headers: {} };
+        if (cuerpo !== undefined) {
+            opciones.headers['Content-Type'] = 'application/json';
+            opciones.body = JSON.stringify(cuerpo);
+        }
+        return fetch(ruta, opciones).then(function (r) {
+            return r.json().catch(function () { return null; }).then(function (json) {
+                return { status: r.status, json: json };
+            });
+        }, function () {
+            return { red: true };
+        });
+    }
+
+    // ---------- tarjetas ----------
+    function tarjeta(it) {
+        var li = el('li');
+        var a = el('a', 'tarjeta');
+        a.href = '/bandeja/c/' + encodeURIComponent(it.ref);
+
+        var cabeza = el('div', 't-cabeza');
+        cabeza.appendChild(el('span', 't-titular', it.titular_nombre || 'Sin titular'));
+        cabeza.appendChild(el('span', 'ins estado-' + it.estado, ETIQUETA_ESTADO[it.estado] || ''));
+        a.appendChild(cabeza);
+
+        var empresa = [it.compania, it.tarifa].filter(Boolean).join(' · ');
+        var linea = el('div', 't-linea');
+        if (ETIQUETA_MARCA[it.formulario]) linea.appendChild(el('span', 'ins marca-' + it.formulario, ETIQUETA_MARCA[it.formulario]));
+        if (empresa) linea.appendChild(el('span', null, empresa));
+        a.appendChild(linea);
+
+        if (it.cups) a.appendChild(el('div', 't-cups', it.cups));
+        if (it.comercial_nombre) a.appendChild(el('div', 't-comercial', 'Comercial: ' + it.comercial_nombre));
+
+        var pie = el('div', 't-pie');
+        var cuando = el('span', 't-cuando', hace(it.recibida_en || it.creada_en));
+        cuando.setAttribute('data-fecha', it.recibida_en || it.creada_en || '');
+        pie.appendChild(cuando);
+        var n = Number(it.n_documentos) || 0;
+        pie.appendChild(el('span', null, n + (n === 1 ? ' documento' : ' documentos')));
+        a.appendChild(pie);
+
+        li.appendChild(a);
+        return li;
+    }
+
+    function actualizarHoras() {
+        var celdas = listaEl.querySelectorAll('.t-cuando');
+        for (var i = 0; i < celdas.length; i++) {
+            var iso = celdas[i].getAttribute('data-fecha');
+            if (iso) celdas[i].textContent = hace(iso);
+        }
+    }
+
+    // ---------- carga ----------
+    function mostrarMensaje(texto, conReintento, esError) {
+        estadoLista.hidden = false;
+        estadoLista.className = 'mensaje' + (esError ? ' error' : '');
+        estadoLista.textContent = texto;
+        if (conReintento) {
+            estadoLista.appendChild(document.createElement('br'));
+            var b = el('button', 'btn', 'Reintentar');
+            b.type = 'button';
+            b.addEventListener('click', function () { cargar(true); });
+            estadoLista.appendChild(b);
+        }
+    }
+
+    // `reiniciar` = true empieza por la primera página; si no, añade la siguiente
+    function cargar(reiniciar) {
+        var mio = ++ticket;
+        var params = new URLSearchParams();
+        params.set('estado', estado);
+        var q = inputQ.value.trim();
+        if (q) params.set('q', q);
+        if (!reiniciar && siguiente) params.set('antes', siguiente);
+
+        if (reiniciar) {
+            listaEl.textContent = '';
+            cajaMas.hidden = true;
+            mostrarMensaje('Cargando…', false, false);
+        }
+        btnActualizar.disabled = true;
+        btnMas.disabled = true;
+
+        return api('/api/bandeja/lista?' + params.toString()).then(function (r) {
+            if (mio !== ticket) return; // ya se pidió otra cosa
+            btnActualizar.disabled = false;
+            btnMas.disabled = false;
+            if (!r.red && r.status === 401) { irALogin(); return; }
+            if (r.red) {
+                mostrarMensaje('No hemos podido conectar. Comprueba tu conexión e inténtalo de nuevo.', true, true);
+                return;
+            }
+            if (r.status !== 200 || !r.json || !Array.isArray(r.json.items)) {
+                mostrarMensaje((r.json && r.json.mensaje) || 'No hemos podido cargar la lista. Inténtalo de nuevo en un momento.', true, true);
+                return;
+            }
+            ultimaCarga = Date.now();
+            var items = r.json.items;
+            for (var i = 0; i < items.length; i++) listaEl.appendChild(tarjeta(items[i]));
+            siguiente = r.json.siguiente || null;
+            cajaMas.hidden = !siguiente;
+            if (listaEl.children.length === 0) mostrarMensaje('No hay tramitaciones que coincidan.', false, false);
+            else estadoLista.hidden = true;
+        });
+    }
+
+    function nuevaBusqueda() {
+        siguiente = null;
+        cargar(true);
+    }
+
+    // ---------- filtros ----------
+    function pintarFiltros() {
+        for (var i = 0; i < chips.length; i++) {
+            chips[i].setAttribute('aria-pressed', chips[i].getAttribute('data-estado') === estado ? 'true' : 'false');
+        }
+    }
+
+    function elegirFiltro(nuevo, guardar) {
+        estado = nuevo;
+        pintarFiltros();
+        if (nuevo === 'descartadas') abrirMas(true);
+        if (guardar) {
+            try { sessionStorage.setItem('bandeja.estado', nuevo); } catch (e) { /* sin almacenamiento: no pasa nada */ }
+            history.replaceState(null, '', nuevo === 'pendientes' ? '/bandeja' : '/bandeja?estado=' + nuevo);
+        }
+        nuevaBusqueda();
+    }
+
+    function abrirMas(abierto) {
+        chipDescartadas.hidden = !abierto;
+        chipMas.setAttribute('aria-expanded', abierto ? 'true' : 'false');
+        chipMas.textContent = abierto ? 'Menos' : 'Más';
+    }
+
+    for (var i = 0; i < chips.length; i++) {
+        chips[i].addEventListener('click', function () {
+            elegirFiltro(this.getAttribute('data-estado'), true);
+        });
+    }
+    chipMas.addEventListener('click', function () {
+        abrirMas(chipDescartadas.hidden);
+    });
+
+    // ---------- búsqueda ----------
+    inputQ.addEventListener('input', function () {
+        clearTimeout(temporizador);
+        temporizador = setTimeout(nuevaBusqueda, 300);
+    });
+    inputQ.addEventListener('search', function () {
+        clearTimeout(temporizador);
+        nuevaBusqueda();
+    });
+    inputQ.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') {
+            clearTimeout(temporizador);
+            nuevaBusqueda();
+        }
+    });
+
+    btnMas.addEventListener('click', function () { cargar(false); });
+    btnActualizar.addEventListener('click', nuevaBusqueda);
+
+    var btnSalir = document.getElementById('btnSalir');
+    btnSalir.addEventListener('click', function () {
+        btnSalir.disabled = true;
+        api('/api/bandeja/salir', {}).then(function (r) {
+            if (!r.red && r.status === 200) { location.replace('/bandeja/entrar'); return; }
+            // Si no se ha podido cerrar la sesión, no se hace como que sí: en un ordenador compartido sería un riesgo
+            btnSalir.disabled = false;
+            btnSalir.textContent = 'No se pudo salir. Reintentar';
+        });
+    });
+
+    // Al volver a la pestaña después de un rato, se refresca solo; y «hace 12 min» se mantiene al día
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden && ultimaCarga && Date.now() - ultimaCarga > 60000 && !inputQ.matches(':focus')) nuevaBusqueda();
+    });
+    setInterval(actualizarHoras, 60000);
+
+    // ---------- arranque ----------
+    api('/api/bandeja/yo').then(function (r) {
+        if (!r.red && r.status === 401) { irALogin(); return; }
+        if (r.json && r.json.email) {
+            var c = document.getElementById('correo');
+            c.textContent = r.json.email;
+            c.title = r.json.email;
+        }
+    });
+
+    var inicial = new URLSearchParams(location.search).get('estado');
+    if (FILTROS.indexOf(inicial) === -1) {
+        inicial = null;
+        try { inicial = sessionStorage.getItem('bandeja.estado'); } catch (e) { /* idem */ }
+        if (FILTROS.indexOf(inicial) === -1) inicial = 'pendientes';
+    }
+    estado = inicial;
+    pintarFiltros();
+    if (estado === 'descartadas') abrirMas(true);
+    cargar(true);
+})();
+</script>
+</body>
+</html>
