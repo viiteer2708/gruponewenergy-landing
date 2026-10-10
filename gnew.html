@@ -1001,11 +1001,19 @@
             const item = document.createElement('div');
             item.className = 'file-item';
             const sizeMB = (file.size / 1024 / 1024).toFixed(2);
-            item.innerHTML = `
-                <span class="file-name">${file.name}</span>
-                <span class="file-size">${sizeMB} MB</span>
-                <button type="button" class="remove-file" data-index="${i}">&times;</button>
-            `;
+            // El nombre del archivo lo pone quien lo adjunta: se pinta como TEXTO (nunca como HTML)
+            const nombre = document.createElement('span');
+            nombre.className = 'file-name';
+            nombre.textContent = file.name;
+            const tamano = document.createElement('span');
+            tamano.className = 'file-size';
+            tamano.textContent = sizeMB + ' MB';
+            const quitar = document.createElement('button');
+            quitar.type = 'button';
+            quitar.className = 'remove-file';
+            quitar.dataset.index = String(i);
+            quitar.textContent = '\u00d7'; // ×
+            item.append(nombre, tamano, quitar);
             fileList.appendChild(item);
         }
 
