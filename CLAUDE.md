@@ -6,7 +6,73 @@
 
 Además, `index.html` es una **landing de captación** independiente (formulario de email → webhook Make) para vender la plataforma; NO es el formulario de tramitación. La raíz `/` redirige a `/gnew` (ver vercel.json).
 
-## Reglas de Oro
+> **Tramitación v2 es el camino principal** (base y almacén propios en Supabase + aviso por Altavoz + bandeja de backoffice + vigilante): lee primero la sección **«Tramitación v2»** de abajo y `docs/tramitacion-v2.md`. **Todo lo de Google Apps Script, Drive, hoja de registro, Gmail y Brevo que aparece más abajo es el RESPALDO TEMPORAL** (se usa solo si la API nueva no contesta, la primera semana; después `RESPALDO_APPS_SCRIPT = false`). Estado: construida y probada en la rama `tramitacion-v2` (órdenes 1-5); en producción cuando se haga la puesta en marcha.
+
+## Tramitación v2
+
+**Documentos:** [`docs/tramitacion-v2.md`](docs/tramitacion-v2.md) (cómo funciona, vigilante, pruebas y **puesta en marcha paso a paso**) · [`docs/diseno-tramitacion-v2.md`](docs/diseno-tramitacion-v2.md) (el diseño cerrado y las alternativas descartadas; si algo difiere, mandan el código y `docs/tramitacion-v2.md`).
+
+### Arquitectura
+1. El navegador (`gnew.html`/`mega.html`) manda los datos y la lista de archivos a **`POST /api/tramitacion/iniciar`**: el servidor apunta el contrato (`tramitaciones`, estado `subiendo`), guarda la firma y devuelve una **URL firmada de subida por archivo**.
+2. El navegador sube **cada archivo directo al almacén** (bucket privado `tramitaciones`), uno a uno, con barra de progreso y 3 intentos por archivo. No pasa por Vercel (corta a 4,5 MB).
+3. **`POST /api/tramitacion/confirmar`** comprueba que cada archivo está en el almacén con el tamaño declarado. Solo entonces la fila pasa a `recibida`, se crean el **aviso** a backoffice y el **acuse** al comercial (cola `tramitacion_correos`) y se intentan por **Altavoz** (tope 6 s). El comercial ve «Contrato enviado» **solo con `listo:true`**.
+4. Si Altavoz no responde, los correos quedan `pendiente` con espera creciente. El **vigilante** (cron del VPS cada 5 min → `POST /api/tramitacion/vigilante` con `Bearer`) concilia, libera cerrojos, reintenta, abandona lo viejo y limpia; y `scripts/vigilante-tramitacion.mjs` avisa a Victor por Telegram, una vez por incidencia.
+5. **Backoffice** entra en `/bandeja` (código de 6 cifras por email, solo para `BANDEJA_EMAILS`), ve lista y ficha (IBAN completo), descarga (uno a uno o ZIP montado en el navegador), marca «tramitada» y puede «volver a enviar» un correo.
+6. Si `iniciar` falla 3 veces por red/tiempo/404/5xx **y** `RESPALDO_APPS_SCRIPT = true`, el formulario usa el camino antiguo (Apps Script) con la **misma referencia**.
+
+Funciones en `api/` (Node 22, **sin dependencias npm**, ESM; `api/_lib/` no se sirve): `tramitacion/{iniciar,confirmar,vigilante}.js`, `bandeja/{codigo,entrar,salir,yo,lista,ficha,estado,reenviar}.js`. Lógica en `api/_lib/{config,http,validadores,nombres,estados,correos,sesion,supabase,cartero,cola,tramitacion,bandeja,vigilante}.js`. SQL en `supabase/tramitacion.sql` (**ya aplicado** en `gnew-plataforma` el 9-oct-2026; idempotente; con `execute_sql`, nunca `apply_migration`).
+
+### Reglas de la v2
+| Regla | Por qué |
+|-------|---------|
+| «Contrato enviado» solo con `listo:true`; la referencia (`GNE-…`/`MEGA-…`, la genera el navegador) es la clave de idempotencia | Un fallo de red no es un envío; repetir `iniciar`/`confirmar` nunca duplica filas ni correos |
+| Un correo nunca se pierde en silencio: cola + cerrojo + vigilante + conciliación + aviso a Telegram | El 7/8-oct se perdieron 31 avisos porque el proveedor aceptaba y no enviaba |
+| El aviso **no lleva adjuntos**: lleva un botón a la ficha de la bandeja. El acuse al comercial no lleva IBAN, DNI ni enlace a la bandeja | Decisión de Victor; los documentos viven en el almacén |
+| El cuerpo de los correos se **regenera** desde la fila; solo en simulación se guarda | No hay datos personales duplicados en la cola |
+| Nada de datos personales en registros, eventos, avisos de Telegram ni en la respuesta del vigilante (`console.*` solo con frases fijas) | IBAN, DNI y correos son datos personales |
+| La web **nunca enseña mensajes técnicos**: frases en llano; el detalle técnico no existe en pantalla | Regla de la casa |
+| **Nunca comisiones** en la web pública | Regla de la casa |
+| Todo lo que toca una tramitación filtra por `prueba = esPrueba()` (cola, vigilante, bandeja) | El servidor de pruebas habla con la base real: jamás ve ni toca producción, y producción nunca ve lo de prueba |
+| El vigilante abandona y mide «subidas a medias» por **`actualizada_en`**, no por `creada_en` | Reanudar una abandonada hace un UPDATE (trigger); con `creada_en` se volvería a abandonar |
+| El vigilante **no empieza envíos pasados 10 s** de la pasada | El script corta a 25 s y la función vive 60 s; con Altavoz colgado 10 envíos × 8 s no caben |
+| Sin dependencias npm; `fetch` a las API REST de Supabase y un ZIP «stored» de ~80 líneas | Menos superficie y despliegue trivial |
+| `.vercelignore` deja fuera `supabase/`, `scripts/`, `tests/`, `docs/`, `.env*`, `CLAUDE.md` y los `Code.gs` | No se publica nada interno |
+
+### Estados
+- **Tramitación:** `subiendo` → `recibida` («Pendiente») ⇄ `tramitada`; `subiendo` → `abandonada` («Incompleta»; 24 h sin movimiento, o `ref_anterior` al cambiar la lista) → `subiendo` (se reanuda con la misma referencia); `descartada` (honeypot: éxito falso, sin documentos ni correos, visible en la bandeja).
+- **Correo:** `pendiente` → `enviando` (cerrojo de 60 s) → `enviado` · `agotado` (8.º fallo) · `suprimido` (409 `destinatario_suprimido`) · `incierto` (502 `envio_incierto`, lo decide una persona) · `error_configuracion` (401/403/422). Esperas tras el fallo n: 1, 3, 10, 30, 60, 120, 240 min. `409 modo_prueba` se reintenta (Altavoz tiene el candado encendido).
+- **Documento:** `pendiente` → `subido`. Claves del almacén: `[pruebas/]<formulario>/<yyyy>/<mm>/<ref>-<nonce>/NN.ext` (`00` = firma). Límites: 15 archivos, 25 MB por archivo, 60 MB en total.
+
+### Variables de entorno
+En Vercel (Production): `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `ALTAVOZ_URL`, `ALTAVOZ_API_KEY`, `ALTAVOZ_SIMULAR` (`0` en producción), `AVISO_DESTINO` (+ `AVISO_DESTINO_MEGA` opcional), `BANDEJA_EMAILS`, `BANDEJA_SECRETO` (≥ 32), `VIGILANTE_SECRETO` (≥ 32), `SITIO_URL`. En el VPS (`/root/.tramitacion-vigilante.env`, 0600): `VIGILANTE_URL`, `VIGILANTE_SECRETO` (+ opcionales `NOTIFICAR`, `ESTADO`, `TESTIGO`). **Solo pruebas, nunca en Vercel:** `TRAMITACION_PRUEBA=1`, `ALTAVOZ_SIMULAR_FALLO`, `CUOTA_*_HORA`, `TRAMITACION_DEBUG`. En local viven en `.env.local` (git-ignorado, 0600): no se imprime ni se lee en voz alta. Valores definitivos y secretos: en `docs/tramitacion-v2.md` §6 y §9 (sin secretos).
+
+### Pruebas (todo contra la base REAL: `prueba = true`, `pruebas/` en el almacén, Altavoz SIMULADO, solo alias `victor.molins.10+algo@gmail.com`)
+```bash
+node --test "tests/unit/*.test.mjs"                           # unitarias, sin internet ni base (incluye el script del vigilante como caja negra)
+node tests/servidor-local.mjs &                               # 127.0.0.1:8765; guarda el PID y párala por PID (nunca pkill -f)
+node --test "tests/api/*.test.mjs"                            # 00 almacén · 10 iniciar/confirmar/cola · 20 bandeja · 30 vigilante
+node scripts/limpiar-pruebas.mjs --todo                       # repetido debe decir 0 tramitaciones, 0 objetos…
+bash tests/e2e/run.sh formulario                              # 9 casos con Playwright (venv de scrapling); también: bandeja (13), extras, capturas
+```
+Los ficheros de `tests/api/` se lanzan a la vez y comparten el servidor y su entorno: `20` y `30` esperan a los de número menor (`tests/api/hermanos.mjs`); un fichero nuevo que toque ese entorno hace lo mismo. Las filas `subiendo` viejas de `30` se **insertan** con su fecha (un UPDATE no sirve: el trigger pone `actualizada_en = now()`). `run.sh` se niega a arrancar si el puerto 8765 está ocupado. Servidor local y Playwright en 127.0.0.1 están autorizados por Victor para este trabajo (en serie, un navegador, `nice -n 10`).
+
+### Puesta en marcha (resumen; el detalle y cada comando, en `docs/tramitacion-v2.md` §9 — cada punto REQUIERE OK DE VICTOR)
+0. Comprobar plan de Vercel (Hobby/Pro, Fluid) y con Altavoz: `responder_a` desplegado, `modo_prueba` apagado, clave «formulario-tramitacion».
+1. Variables en Vercel (`AVISO_DESTINO=escaneos@gruponew.energy` para GNEW y MEGA; `BANDEJA_EMAILS=escaneos@gruponew.energy,victor.molins.10@gmail.com`; `ALTAVOZ_API_KEY` = la clave «formulario-tramitacion»; dos secretos nuevos).
+2. Merge a `master` + push → deploy; comprobar `/api/_lib/config.js` → 404, vigilante sin secreto → 401, `/CLAUDE.md` y `/supabase/…` → 404.
+3. Primer envío real de ensayo con alias de Victor (aviso a un alias); leerlo por Gmail; bandeja de punta a punta.
+4. Valores definitivos de `AVISO_DESTINO` y `BANDEJA_EMAILS` + redeploy.
+5. VPS: `/root/.tramitacion-vigilante.env` (0600), pasada con `--dry`, cron `*/5` con la **ruta ABSOLUTA de node** (`/usr/local/bin/node`).
+6. Testigo `/root/.tramitacion-vigilante-last` en `latido-crons.sh` (CIEGO si falta o > 15 min).
+7. Ensayo de alarma (estropear el secreto del VPS → Telegram avisa a los 10 min).
+8. Una semana de vigilancia con el respaldo activo; 9. `RESPALDO_APPS_SCRIPT = false` (commit + push) y Apps Script como archivo.
+
+### Respaldo temporal (Apps Script)
+`google-apps-script*/Code.gs` + Drive + hoja de registro + Gmail siguen intactos y describen el camino antiguo (secciones marcadas «respaldo temporal» más abajo). Solo se usan con `RESPALDO_APPS_SCRIPT = true` cuando `iniciar` falla 3 veces seguidas; esos contratos **no aparecen en la bandeja**. No se tocan en la v2: su despliegue pendiente (ver «Estado 8-oct-2026» más abajo) queda como estaba.
+
+## Reglas de Oro (formulario y RESPALDO TEMPORAL Apps Script)
+*Las filas que hablan de Drive, Apps Script, hoja de registro, Brevo o Gmail son del **respaldo temporal**; la «triple seguridad» Drive + Email + Sheet la sustituye en la v2 base + almacén + cola de correos (ver «Tramitación v2»). Las de móvil, validaciones y firma valen para los dos caminos.*
+
 | Regla | Por qué |
 |-------|---------|
 | Mobile-first siempre | 70%+ usuarios son comerciales desde móvil |
@@ -23,7 +89,8 @@ Además, `index.html` es una **landing de captación** independiente (formulario
 | Antes de pegar un Code.gs en Apps Script: `node --check` y comprobar que TODAS las funciones que llama `doPost` existen | El commit del 10-sep borró por error `sendMail`, `buildEmailHtml`, `buildAcuseHtml`, `getBrevoKey`, `sendViaBrevo`, `gmailFromAlias`, `sendViaGmail` de los dos Code.gs (y en MEGA descuadró la fila del registro); repuestas el 8-oct. El script publicado seguía con la versión anterior |
 | `.vercelignore` deja fuera de la web CLAUDE.md y los Code.gs | Hasta el 8-oct se servían en tramitatucontrato.energy/CLAUDE.md |
 
-## Rendimiento y reintentos
+## Rendimiento y reintentos (camino antiguo / respaldo Apps Script)
+*Describe el camino antiguo. En la v2 el navegador espera `20 s` por `iniciar`, `45 s + 12 s/MB` por archivo (3 intentos) y `25 s` por `confirmar` (4 intentos); las fotos de más de 1 MB se siguen reduciendo en el navegador.*
 
 - **Fotos reducidas en el navegador (9-oct-2026, aprobado por Victor):** `reducirFoto()` en `gnew.html`/`mega.html` redibuja las JPG/PNG de MÁS de 1 MB (lado largo máx. 2400 px, JPEG al 85 %, fondo blanco) y las manda como `.jpg`; PDF/Word y fotos pequeñas van intactas; ante cualquier fallo (o 30 s colgado) se manda el original. Archivos preparados UNO A UNO (memoria de móviles viejos); estado «Preparando N archivos...». Motivo (medido con «Ejecuciones» + `createdTime` de Drive + eventos de Altavoz): `doPost` tardaba 9-37 s y lo que más pesaba era guardar en Drive las fotos de móvil de 6-8 MB (28 s en un envío con tres); además la subida lenta vencía el tiempo por intento y se volvía a subir todo. Tramitación recibe la foto reducida, no el original (Centinela no está conectado a este formulario).
 Por qué está montado así: la escritura en la hoja de registro (`SpreadsheetApp.appendRow`) puede quedarse colgada minutos, hasta que Apps Script mata la ejecución a los 6 min; con la marca de dedup al FINAL, el reintento del navegador duplicaba el contrato (dos carpetas, dos correos), y con el candado global (`LockService`) abarcando todo el proceso los demás envíos esperaban en cola en «Enviando contrato...». Para diagnosticar un envío lento o duplicado: `createdTime` de carpetas/archivos en Drive (paso Drive), la columna «Errores / notas» del Sheet y el registro del servidor de Altavoz filtrando por la etiqueta `tramitacion-*` (paso correo; Altavoz no guarda cada aviso en su base) y la columna Fecha del Sheet (paso registro).
@@ -37,25 +104,34 @@ Por qué está montado así: la escritura en la hoja de registro (`SpreadsheetAp
 
 ## Stack
 - **Frontend:** HTML/CSS/JS vanilla (single-page, sin framework)
-- **Backend:** Google Apps Script (Code.gs) — almacena en Drive + envía email
+- **Backend:** funciones de Vercel en `api/` (Node 22, sin dependencias) + Supabase (base y almacén, proyecto `gnew-plataforma`) + Altavoz (correo). *Respaldo temporal:* Google Apps Script (Code.gs) — almacena en Drive + envía email
 - **Hosting:** Vercel (archivos estáticos + rewrites)
 - **GNEW:** Inter, Verde #0B6E4F, Accent #F9A825
 - **MEGA:** Plus Jakarta Sans, Turquesa #14B8A6, Accent #EAB308
 
 ## Estructura
 ```
+api/tramitacion/                # iniciar · confirmar · vigilante (funciones de Vercel)
+api/bandeja/                    # codigo · entrar · salir · yo · lista · ficha · estado · reenviar
+api/_lib/                       # lógica compartida (no se sirve): config, supabase, cartero, cola, vigilante…
+bandeja.html · bandeja-entrar.html · bandeja-ficha.html · bandeja-zip.js   # la bandeja de backoffice
+supabase/tramitacion.sql        # tablas, RLS, cuotas y bucket (ya aplicado)
+scripts/                        # vigilante-tramitacion.mjs (cron del VPS) · limpiar-pruebas.mjs
+tests/                          # unit/ · api/ · e2e/ · fixtures/ · servidor-local.mjs
+docs/                           # tramitacion-v2.md (cómo funciona y puesta en marcha) · diseno-tramitacion-v2.md
+package.json                    # solo type:module y node 22.x (sin dependencias)
 gnew.html                       # GNEW: formulario multi-compañía (ruta /gnew)
 gracias.html                    # GNEW: confirmación post-envío
 logo-gnew.png                   # GNEW: logo (local, ya no depende de Dropbox)
 favicon-gnew.png                # GNEW: favicon (64x64)
 google-apps-script/
-  Code.gs                       # GNEW backend: Drive + Email + Sheet (doPost)
+  Code.gs                       # GNEW backend ANTIGUO (respaldo temporal): Drive + Email + Sheet (doPost)
 mega.html                       # MEGA: formulario exclusivo Mega Energía (ruta /mega)
 gracias-mega.html               # MEGA: confirmación post-envío
 logo-mega-energia.png           # MEGA: logo
 favicon-mega.png                # MEGA: favicon
 google-apps-script-mega/
-  Code.gs                       # MEGA backend: Drive + Email (doPost)
+  Code.gs                       # MEGA backend ANTIGUO (respaldo temporal): Drive + Email (doPost)
 index.html                      # Landing de captación (email → webhook Make)
 aviso-legal.html                # Páginas legales (enlazadas desde términos y footer)
 privacidad.html
@@ -64,14 +140,14 @@ vercel.json                     # Redirect / → /gnew · rewrites /gnew, /mega,
 CLAUDE.md
 ```
 
-## Archivos clave — GNEW
+## Archivos clave — GNEW (los `Code.gs` son el respaldo temporal)
 | Archivo | Qué contiene |
 |---------|-------------|
 | `gnew.html` | Hero + formulario multi-sección + validadores españoles + firma canvas + honeypot + JS de envío con confirmación y reintentos idempotentes |
 | `google-apps-script/Code.gs` | doPost → valida token/honeypot/límites → `claimRef` (candado breve) → Drive + email a `escaneos@gruponew.energy` → marca `done` → acuse → registro en Sheet por API REST (cola si falla) |
 | `gracias.html` | Confirmación con animación de check verde |
 
-### GNEW — Config backend
+### GNEW — Config backend (Apps Script · RESPALDO TEMPORAL)
 - **Drive folder ID**: `1bTZhjmR9kPggL40ABS2JoHe3URuLlPim` ("Contratos Grupo New Energy", cuenta victor.molins.10@gmail.com — re-montaje 11/06/2026; la carpeta es PRIVADA, nadie más tiene acceso)
 - **Correos (8-oct-2026, tarde)** — capa `sendMail()` con dos vías: **A) Altavoz** (`sendViaAltavoz`: `POST https://altavoz.gruponewenergy.es/api/v1/avisos`, `Authorization: Bearer <clave>`, JSON con `marca` = `GNEW`, `para`, `asunto`, `html` o `texto` y, si los hay, `responder_a`, `etiqueta` y `adjuntos` en base64; el remitente lo pone Altavoz —el de la marca— y no se manda; un 2xx = Amazon lo aceptó, cualquier otro código = no salió); clave `ALTAVOZ_API_KEY` en Propiedades del script **o** en el fichero privado `config-formulario.json` dentro de la carpeta de Drive (`{"ALTAVOZ_API_KEY": "av_…"}`, cacheada 1 h; solo lo ve la cuenta propietaria, NO compartir; **ya creado el 8-oct-2026 en las dos carpetas**); **B) respaldo GmailApp** desde la cuenta que ejecuta (con `GMAIL_ALIAS = tramitaciones@gruponewenergy.es` si está como "Enviar como"; si no, la cuenta por defecto). Sin clave o si Altavoz no devuelve 2xx → Gmail, y queda anotado en la columna "Errores / notas" del Sheet («vía Gmail (respaldo) porque Altavoz: HTTP 409 modo_prueba …» o «vía Gmail (falta ALTAVOZ_API_KEY)»). Con el «modo prueba» de Altavoz encendido TODOS los avisos salen por Gmail (409 `modo_prueba`): es lo correcto. Etiquetas: `tramitacion-aviso` (al buzón), `tramitacion-acuse` (al comercial), `tramitacion-aviso-texto` (aviso de solo texto) y `tramitacion-error` (último recurso). Aviso a escaneos@ con los documentos ADJUNTOS y **sin enlaces de Drive** (eran privados y solo generaban "solicitudes de acceso"), `Reply-To` = comercial. **Acuse de recibo al comercial** (`buildAcuseHtml`, sin IBAN/DNI) con `Reply-To` = escaneos@ y el aviso de dónde enviar la factura. Topes de adjuntos (los de Altavoz): `ATTACH_BUDGET_RAW` = 3.000.000 bytes reales ENTRE TODOS (Vercel corta las peticiones a ~4,5 MB) y `ATTACH_MAX_COUNT` = 10 adjuntos EN TOTAL, firma incluida; un documento o la firma solo va adjunto si cabe en bytes Y quedan plazas, por orden de llegada (documentos primero, firma después). Lo que no va adjunto se queda solo en Drive: la carpeta se comparte con escaneos@ (`shareFolderWithReceiver`) y el correo lleva el enlace (decisión de Victor, 8-oct-2026: «si es demasiado grande, el enlace de Drive»). Acuse al comercial a una dirección BLOQUEADA en Altavoz (409 `destinatario_suprimido`): NO se reintenta por Gmail y queda anotado como «Acuse al comercial: Altavoz: dirección bloqueada (…)» (el contrato sigue siendo success); el aviso al buzón, el aviso de texto y el correo de error sí caen a Gmail. Una sola clave de Altavoz, «formulario-tramitacion», sirve a los dos formularios (su dueño tiene remitente para GNEW y MEGA, probado en producción; si no lo tuviera, 422 `marca_sin_remitente` → Gmail). `diagnosticoAltavoz()` (editor) comprueba clave + permiso y manda una prueba con adjunto a `victor.molins.10+formulario@gmail.com`. Historia: hasta el 8-oct-2026 la vía A era Brevo (`BREVO_API_KEY`, remitente `escaneos@gruponew.energy`). ⚠️ `UrlFetchApp` necesita el scope `script.external_request`. El 17/08/2026 el script fallaba con «You do not have permission to call UrlFetchApp.fetch» aunque el editor NO pedía autorización (ni con Nueva versión, ni con implementación nueva, ni con `oauthScopes` explícitos): la cuenta tenía un permiso ANTIGUO guardado para el proyecto y Google no volvía a mostrar la pantalla de consentimiento. **Fix que funcionó:** myaccount.google.com/connections → «Grupo New Energy - Formulario» / «Mega Energia - Formulario» → Eliminar acceso → en el editor ejecutar cualquier función (`diagnosticoAltavoz` o `doGet`) → aparece el consentimiento con TODAS las casillas → Permitir. No hizo falta nueva versión: la implementación usa el permiso vivo de la cuenta. Los `appsscript.json` del repo declaran los `oauthScopes` explícitos (external_request, drive, mail.google.com, spreadsheets) para que la lista de permisos sea determinista.
 - **Estado 8-oct-2026 — Brevo se da de baja** (Victor: el correo del grupo pasa a Altavoz). Brevo se quedó sin créditos el 7-oct 11:32 y desde entonces aceptaba y no enviaba: 31 avisos perdidos (29 GNEW + 2 MEGA), **reenviados el 8-oct desde el VPS por Amazon SES con la cuenta de Altavoz** (remitentes `info@gruponewenergy.es` / `administracion@megaenergia.es`, Reply-To = comercial, copia oculta a Victor; script y registro privados en `/root/datos-privados/reenvio-tramitacion-2026-10-08/`, `hechos.json`). Sin adjuntar por límites del conector: las 8 `firma.png` y la escritura de VELOCITY (13 MB), siguen en Drive. `config-formulario.json` se **renombró** a `config-formulario.DESACTIVADO-brevo-de-baja-2026-10-08.json` en las dos carpetas: sin clave, los avisos salen por la vía B (Gmail de Victor) con nota «vía Gmail (falta BREVO_API_KEY…)». **Migración a Altavoz (8-oct, tarde): hecha en los dos `Code.gs` del repo** (la API de avisos ya admite adjuntos y `responder_a`), probada con una simulación local sin red; **aún NO está desplegada en Apps Script**. La clave ya está dada: una sola, «formulario-tramitacion», para los dos formularios, y ya hay un `config-formulario.json` nuevo con `ALTAVOZ_API_KEY` en cada carpeta de Drive (su dueño tiene remitente para GNEW y MEGA: probado en producción); el fichero renombrado `config-formulario.DESACTIVADO-…` solo lleva la clave vieja de Brevo. **Pendiente (Victor):** (1) pegar los dos Code.gs en sus Apps Script y publicar «Nueva versión»; (2) ejecutar `diagnosticoAltavoz()` en cada proyecto (manda una prueba con adjunto a `victor.molins.10+formulario@gmail.com`; la primera vez Google puede pedir permiso); (3) mientras el «modo prueba» de Altavoz siga encendido los avisos seguirán saliendo por Gmail (409 `modo_prueba`).
@@ -82,14 +158,14 @@ CLAUDE.md
 - **⚠️ Orden de despliegue** si cambian front y back: primero Vercel (gnew.html), DESPUÉS la nueva versión del Apps Script (el back nuevo rechaza envíos sin token; el back viejo ignora los campos nuevos)
 - **Prefill DPC**: el comparador DPC abre `/gnew?quien_eres=...&cups=...` con los `name` de los inputs (`dpc-comparador/src/lib/contracting/build-contract-url.ts`). El prefill NUNCA acepta `cuenta_bancaria` ni `dni_firmante` por URL (PII en historiales/logs)
 
-## Archivos clave — MEGA
+## Archivos clave — MEGA (los `Code.gs` son el respaldo temporal)
 | Archivo | Qué contiene |
 |---------|-------------|
 | `mega.html` | Formulario branding turquesa Mega, tarifa desplegable, tipo suministro auto, validadores españoles, honeypot, envío con confirmación y reintentos idempotentes |
 | `google-apps-script-mega/Code.gs` | doPost → valida token/honeypot/límites → `claimRef` (candado breve) → Drive + email a `escaneos@gruponew.energy` → marca `done` → acuse → registro en Sheet por API REST (cola si falla) |
 | `gracias-mega.html` | Confirmación con branding Mega |
 
-### MEGA — Config backend
+### MEGA — Config backend (Apps Script · RESPALDO TEMPORAL)
 (mismo hardening que GNEW, aplicado 11/06/2026; ver sección GNEW para el detalle de cada pieza)
 - **Drive folder ID**: `1cfxHV8Oz_N9wsG6E9MRM_74dMSiioXUx` ("Contratos Mega Energia")
 - **Ref IDs**: `MEGA-YYYYMMDD-XXXXXX` (sufijo de 6 chars; los genera el cliente con crypto.getRandomValues; el backend deduplica con CacheService 6h + LockService)
@@ -104,8 +180,8 @@ CLAUDE.md
 
 ## Flujo de trabajo
 1. Editar `gnew.html` / `mega.html` (CSS en `<style>`, JS en `<script>` al final)
-2. Para backend, editar el `Code.gs` correspondiente (luego desplegar manualmente en Google Apps Script — ver orden de despliegue arriba)
-3. Testear abriendo el html en navegador (no hay build step)
+2. Para backend, editar `api/` (funciones de Vercel; sin build, sin dependencias). El `Code.gs` solo se toca si hace falta el respaldo (luego desplegar manualmente en Google Apps Script — ver orden de despliegue arriba)
+3. Testear: unitarias, API con el servidor local y e2e con Playwright (ver «Tramitación v2 → Pruebas»); abrir el html en el navegador no basta
 4. Victor hace `git push` manualmente
 
 ## Design system
@@ -124,6 +200,8 @@ CLAUDE.md
 - rm -rf / borrar archivos
 - Playwright / browser testing
 - npm run dev / levantar servidores
+- *Excepción (Victor, 8-oct-2026): para Tramitación v2 están autorizados el servidor local `tests/servidor-local.mjs` (127.0.0.1:8765) y Playwright en 127.0.0.1, en serie, un navegador, con `nice -n 10`, parando el servidor por PID (nunca `pkill -f`).*
+- Producción (Vercel, variables, correo real, el cron del VPS, `/root/latido-crons.sh`): solo con el OK de Victor (ver la puesta en marcha)
 
 **PERMITIDO sin preguntar:**
 - Leer/escribir cualquier archivo de código

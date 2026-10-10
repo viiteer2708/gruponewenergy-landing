@@ -11,7 +11,6 @@
 // el gancho /__pruebas/tramitacion o, para lo que el gancho no enseña (accesos), con la clave de servicio de .env.local.
 // Altavoz es siempre simulado. Solo se usan alias de Victor (victor.molins.10+algo@gmail.com).
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { randomInt } from 'node:crypto';
 import { before, describe, it } from 'node:test';
 import { setTimeout as esperar } from 'node:timers/promises';
@@ -21,6 +20,7 @@ import { FORM_TOKENS, secretoBandeja, supabaseUrl } from '../../api/_lib/config.
 import { NOMBRE_COOKIE, firmarSesion, hashCodigo } from '../../api/_lib/sesion.js';
 import { actualizar, borrar, insertar, seleccionar } from '../../api/_lib/supabase.js';
 import { generarJpeg, generarPdf, generarPng } from '../fixtures/generar.mjs';
+import { esperarAHermanosAnteriores } from './hermanos.mjs';
 
 try {
   process.loadEnvFile(fileURLToPath(new URL('../../.env.local', import.meta.url)));
@@ -44,43 +44,8 @@ const IBAN_TECLEADO = 'ES91 2100 0418 4502 0005 1332';
 const CUPS = 'ES0021000000000001RK';
 const CUPS_GAS = 'ES0031000000000003BS';
 
-/**
- * `node --test "tests/api/*.test.mjs"` lanza los ficheros A LA VEZ, y todos hablan con el MISMO servidor local, cuyo entorno
- * cambian los ganchos (/__pruebas/env: cuotas, Altavoz caído, «modo producción»…). Dos ficheros que cambian el entorno a la
- * vez se estropean entre sí (con TRAMITACION_PRUEBA=0 el servidor rechaza hasta las escrituras del otro). Por eso cada
- * fichero espera a que terminen los hermanos con número MENOR (00 → 10 → 20…), cuantos núcleos haya: así el orden es siempre
- * el mismo y nunca se esperan dos entre sí. Los hermanos son los procesos con el mismo padre (el lanzador de `node --test`).
- * Sin `ps`, o lanzado a mano sin lanzador, no hay a quién esperar y sigue.
- */
-async function esperarAHermanosAnteriores({ maxMs = 8 * 60_000 } = {}) {
-  const mio = Number(/(\d+)-[^/\\]*\.test\.mjs$/.exec(fileURLToPath(import.meta.url))?.[1]);
-  if (!Number.isFinite(mio)) return;
-  const fin = Date.now() + maxMs;
-  let avisado = false;
-  for (;;) {
-    let anteriores = [];
-    try {
-      const salida = execFileSync('ps', ['-o', 'pid=,args=', '--ppid', String(process.ppid)], { encoding: 'utf8', timeout: 10_000 });
-      anteriores = salida.split('\n')
-        .map((linea) => /^\s*(\d+)\s+(.*)$/.exec(linea))
-        .filter((m) => m && Number(m[1]) !== process.pid)
-        .map((m) => /(?:^|[/\s])(\d+)-[^/\s]*\.test\.mjs(?:\s|$)/.exec(m[2]))
-        .filter((m) => m && Number(m[1]) < mio)
-        .map((m) => m[0].trim());
-    } catch {
-      return; // sin `ps` (o sin padre): no hay a quién esperar
-    }
-    if (anteriores.length === 0) return;
-    if (Date.now() > fin) throw new Error(`Los ficheros anteriores (${anteriores.join(', ')}) no terminan: no se puede usar el servidor a la vez`);
-    if (!avisado) {
-      console.log(`Espero a que terminen los ficheros anteriores de tests/api (${anteriores.join(', ')}): comparten el servidor local y su entorno.`);
-      avisado = true;
-    }
-    await esperar(2000);
-  }
-}
-
-before(() => esperarAHermanosAnteriores(), { timeout: 10 * 60_000 });
+// Espera a los ficheros anteriores (00, 10): comparten el servidor local y su entorno. Ver ./hermanos.mjs.
+before(() => esperarAHermanosAnteriores(import.meta.url), { timeout: 10 * 60_000 });
 
 const FRASE_CODIGO = 'Si tu correo tiene acceso, te hemos enviado un código de 6 cifras. Caduca en 10 minutos. Revisa también el spam.';
 const FRASE_CODIGO_MALO = 'El código no es correcto o ha caducado. Pide uno nuevo.';
