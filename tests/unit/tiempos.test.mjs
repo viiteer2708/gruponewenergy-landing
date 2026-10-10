@@ -16,6 +16,8 @@ const vercel = JSON.parse(leer('vercel.json'));
 const MAX_FUNCION_TRAMITACION_MS = vercel.functions['api/tramitacion/*.js'].maxDuration * 1000;
 const MAX_FUNCION_BANDEJA_MS = vercel.functions['api/bandeja/*.js'].maxDuration * 1000;
 const TOPE_SCRIPT_MS = Number(/^const TOPE_LLAMADA_MS = ([\d_]+);/m.exec(leer('scripts/vigilante-tramitacion.mjs'))?.[1].replace(/_/g, ''));
+// Lo que espera el navegador por cada intento de `confirmar`: la misma constante en los dos formularios
+const CONFIRMAR_NAVEGADOR_MS = ['gnew.html', 'mega.html'].map((html) => Number(/^\s*const CONFIRMAR_TOPE_MS = ([\d_]+);/m.exec(leer(html))?.[1].replace(/_/g, '')));
 
 // Lo que no es el tope de un envío y se da por sentado en las cuentas (ver el comentario de api/_lib/vigilante.js):
 const CONSULTAS_DE_LA_PASADA_MS = 5_000; // conciliar, liberar, abandonar, limpiar y el parte: consultas de ~0,2 s cada una
@@ -50,16 +52,17 @@ test('una pasada del vigilante nunca supera el maxDuration de la función (60 s)
   assert.ok(peorPasada < MAX_FUNCION_TRAMITACION_MS - 5_000, 'y a la función le quedan al menos 5 s de margen');
 });
 
-test('confirmar: aviso (15 s) y, si quedan menos de 20 s, acuse (6 s) caben en lo que espera el navegador más una vuelta', () => {
-  // El formulario espera 25 s por intento de confirmar (4 intentos, idempotentes). Peor caso: el aviso agota sus 15 s y el
-  // acuse todavía entra (empieza antes de los 20 s) y agota los suyos.
-  const navegadorMs = 25_000;
+test('confirmar: aviso (15 s) y, si quedan menos de 20 s, acuse (6 s) caben en lo que espera el navegador (30 s por intento)', () => {
+  // El formulario espera 30 s por intento de confirmar (4 intentos, idempotentes; antes 25 s). Peor caso: el aviso agota sus 15 s
+  // y el acuse todavía entra (empieza antes de los 20 s) y agota los suyos.
+  assert.deepEqual(CONFIRMAR_NAVEGADOR_MS, [30_000, 30_000], 'CONFIRMAR_TOPE_MS de gnew.html y de mega.html (tiene que ser el mismo)');
+  const navegadorMs = CONFIRMAR_NAVEGADOR_MS[0];
   const trabajoPrevioMs = 3_000; // leer la tramitación, comprobar el almacén, marcar los documentos y cerrarla
   const peor = trabajoPrevioMs + TOPE_CONFIRMAR_AVISO_MS + BASE_Y_ESCRITURAS_MS + TOPE_CONFIRMAR_ACUSE_MS + BASE_Y_ESCRITURAS_MS;
   assert.ok(peor < MAX_FUNCION_TRAMITACION_MS, 'cabe de sobra en la función');
-  // Con Altavoz colgado puede pasar de los 25 s del navegador: entonces éste repite `confirmar`, que es idempotente y responde
-  // «listo» al momento (el aviso sigue `enviando` o pendiente: no se duplica). Se deja dicho aquí para que no sorprenda.
-  assert.ok(peor <= navegadorMs + 5_000, `peor caso ${peor} ms frente a los ${navegadorMs} ms del navegador`);
+  // Con los 30 s, el peor caso (28 s) ya cabe en lo que espera el navegador: ni siquiera con Altavoz lento hace falta repetir
+  // `confirmar` (que, si hiciera falta, es idempotente y responde «listo» al momento sin duplicar nada).
+  assert.ok(peor < navegadorMs, `peor caso ${peor} ms frente a los ${navegadorMs} ms del navegador`);
   assert.ok(PRESUPUESTO_ACUSE_MS > TOPE_CONFIRMAR_AVISO_MS, 'si el aviso gasta su tiempo, aún puede entrar el acuse');
 });
 

@@ -2,7 +2,9 @@
 
 Formulario de tramitación de contratos (`tramitatucontrato.energy`: `/gnew` y `/mega`) con almacén propio, aviso a backoffice **con la documentación adjunta** por Altavoz, bandeja de backoffice y vigilante. Sustituye al camino «Apps Script + Drive + Sheet», que queda como **respaldo temporal** durante la primera semana.
 
-Este documento es la referencia de lo **construido** (órdenes 1 a 6). El razonamiento y las alternativas descartadas están en [`diseno-tramitacion-v2.md`](./diseno-tramitacion-v2.md); si algo difiere, manda este documento y el código. No lleva ningún secreto: las variables se nombran, nunca se dan.
+**Se despliega DORMIDA.** Un interruptor, la constante `V2_ACTIVO` de `gnew.html` y `mega.html` (hoy `false`), decide qué camino usa el formulario: con `false` envía **exactamente como antes** (Apps Script) y no llama a `/api/tramitacion/*`; la v2 solo se usa abriendo la página con `?v2=1`. Se ensaya así en producción y, cuando está lista, se enciende poniendo `true` (§9).
+
+Este documento es la referencia de lo **construido** (órdenes 1 a 6 y 6b, el interruptor). El razonamiento y las alternativas descartadas están en [`diseno-tramitacion-v2.md`](./diseno-tramitacion-v2.md); si algo difiere, manda este documento y el código. No lleva ningún secreto: las variables se nombran, nunca se dan.
 
 ---
 
@@ -18,6 +20,8 @@ El comercial rellena el formulario como siempre. Cambia lo que pasa por detrás:
 6. **El aviso a backoffice lleva la documentación ADJUNTA** (decisión de Victor, 10-oct-2026, como con el sistema anterior): los documentos por su orden y la firma al final, hasta 10 ficheros y 3.000.000 bytes reales entre todos (los topes de Altavoz). Lo que no cabe se queda «en la bandeja» y el correo lo dice. El botón «Abrir en la bandeja» va siempre: la bandeja sigue siendo la copia segura y donde se marca «tramitada». El acuse al comercial no cambia: sin adjuntos, sin IBAN ni DNI.
 
 La primera semana, si la API nueva no contesta al empezar, el formulario usa el camino antiguo (Apps Script) como respaldo.
+
+Todo lo anterior vale **cuando la v2 está encendida**. Hasta entonces (`V2_ACTIVO = false`) el comercial rellena el formulario y se envía por el camino de siempre, sin ninguna diferencia que pueda notar; solo quien abre la página con `?v2=1` (el ensayo de la puesta en marcha) pasa por la v2.
 
 ## 2. El recorrido de un contrato
 
@@ -43,7 +47,7 @@ Nada de esto duplica si el navegador reintenta: `ref` (la referencia `GNE-…`/`
 
 | Dónde | Qué es |
 |---|---|
-| `gnew.html`, `mega.html`, `gracias.html`, `gracias-mega.html` | El formulario y las páginas de gracias. Constantes `API_BASE`, `FORMULARIO`, `RESPALDO_APPS_SCRIPT`. |
+| `gnew.html`, `mega.html`, `gracias.html`, `gracias-mega.html` | El formulario y las páginas de gracias. Constantes `API_BASE`, `FORMULARIO`, **`V2_ACTIVO`** (el interruptor de la v2; `USAR_V2` = `V2_ACTIVO` o `?v2=1` en la dirección de esta carga) y `RESPALDO_APPS_SCRIPT` (solo cuenta cuando se usa la v2). Con la v2 apagada `ejecutarEnvio` llama a `enviarComoAntes`, que reutiliza `enviarPorRespaldo` sin pasar por la API. |
 | `api/tramitacion/iniciar.js`, `confirmar.js` | Registrar el contrato y cerrarlo. Lógica en `api/_lib/tramitacion.js`. |
 | `api/tramitacion/vigilante.js` | Una pasada del vigilante (con `Authorization: Bearer`). Lógica en `api/_lib/vigilante.js` y `api/_lib/cola.js`. |
 | `api/bandeja/*.js` | Acceso con código, lista, ficha, cambio de estado y «volver a enviar». Lógica en `api/_lib/bandeja.js`. |
@@ -51,7 +55,8 @@ Nada de esto duplica si el navegador reintenta: `ref` (la referencia `GNE-…`/`
 | `api/_lib/` | `config` (variables y límites), `http`, `validadores`, `nombres`, `estados`, `correos` (asuntos, cuerpos y qué documentos van adjuntos), `sesion`, `supabase` (cliente con `fetch`, también descarga del almacén), `cartero` (Altavoz, con adjuntos), `cola`, `tramitacion`, `bandeja`, `vigilante`. Los ficheros `_*` y `api/_lib` no son funciones: Vercel no los sirve. |
 | `supabase/tramitacion.sql` | Tablas, función de cuotas, RLS y bucket. **Ya aplicado** en `gnew-plataforma` el 9-oct-2026. Es idempotente; se aplica con `execute_sql`, nunca con `apply_migration`. |
 | `scripts/vigilante-tramitacion.mjs` | El vigilante del VPS (cron). |
-| `scripts/limpiar-pruebas.mjs` | Borra todo lo que dejan las pruebas en la base y el almacén. |
+| `scripts/limpiar-pruebas.mjs` | Borra todo lo que dejan las pruebas en la base y el almacén (solo `prueba = true` y `pruebas/`). |
+| `scripts/limpiar-ensayo.mjs` | Borra, **por referencia**, los envíos del ensayo en producción (paso 3 de §9) con sus objetos del almacén. Solo envíos cuyo comercial sea un alias de Victor; sin `--aplicar` no borra nada. |
 | `tests/` | Unitarias, de API, con navegador y el servidor local (con su «espía» de Altavoz, `tests/cartero-espia.mjs`). Ver §8. |
 | `google-apps-script/`, `google-apps-script-mega/` | **Respaldo temporal** (ver §10). |
 
@@ -111,7 +116,7 @@ Backoffice (`escaneos@`) recibe cada contrato con **los documentos adjuntos**, c
 
 ⚠️ api.md §5 solo da `codigo` al 422 `marca_sin_remitente`: las validaciones de los adjuntos (más de 10, más de 3 MB, tipo, base64, vacío…) responden `{"error": "<frase>"}` **sin `codigo`**, así que no se pueden distinguir por código: un 422 sin `codigo` a una petición que llevaba adjuntos se trata como «rechazo por adjuntos» (si en realidad era otra cosa, el reintento sin adjuntos falla igual y queda `error_configuracion`, a costa de una llamada de más). El cartero también comprueba los topes ANTES de llamar (`defectoDeAdjuntos`): una selección que no cumpliera sale como el mismo rechazo, sin red.
 
-**Historial.** `aviso_enviado` lleva ahora `{intentos, simulado, adjuntos, en_bandeja}` (cuántos documentos han ido adjuntos y cuántos solo en la bandeja). Los dos eventos nuevos (`adjuntos_no_descargados`, `adjuntos_rechazados`) solo aparecen cuando algo falla; la ficha de la bandeja los enseña como «Cambio registrado» (no se tocó `bandeja-ficha.html`).
+**Historial.** `aviso_enviado` lleva ahora `{intentos, simulado, adjuntos, en_bandeja}` (cuántos documentos han ido adjuntos y cuántos solo en la bandeja). Los dos eventos nuevos (`adjuntos_no_descargados`, `adjuntos_rechazados`) solo aparecen cuando algo falla; la ficha de la bandeja los cuenta en llano: «Algún documento no se pudo adjuntar al aviso; está en la bandeja» y «Altavoz no aceptó los adjuntos: el aviso salió sin ellos; los documentos están en la bandeja» (`textoEvento` de `bandeja-ficha.html`).
 
 **Tiempos.** El aviso tiene **15 s EN TOTAL** (descargar los documentos + entregarlos a Altavoz): las descargas usan como mucho el 40 % (6 s en total, de 2 en 2: el almacén de Supabase responde un 429 «SlowDown / Too many connections» cuando va justo de conexiones) y Altavoz el resto; el reintento sin adjuntos tiene como mínimo 4 s aunque el primer envío haya gastado el plazo. El acuse (sin adjuntos) sigue con 8 s (6 s en `confirmar`).
 
@@ -205,7 +210,7 @@ Códigos de salida: `0` pasada hecha · `1` la web no ha contestado bien · `2` 
 
 `VIGILANTE_ENV` (otra ruta para el fichero de configuración) y `VIGILANTE_TOPE_MS` (cambia el tope de 55 s de la llamada) solo existen para las pruebas.
 
-**El testigo** se toca en **cada pasada normal, también si la web falló**: dice «el cron corrió». El fallo de la web ya va por Telegram, **y solo por Telegram**: con la web caída, `latido-crons.sh` dirá «vivo». `latido-crons.sh` debe darlo por CIEGO si falta o tiene más de 15 minutos (ver §9, paso 6). `--dry`, `--una-vez` y los errores de configuración (código 2) no lo tocan.
+**El testigo** se toca en **cada pasada normal, también si la web falló**: dice «el cron corrió». El fallo de la web ya va por Telegram, **y solo por Telegram**: con la web caída, `latido-crons.sh` dirá «vivo». `latido-crons.sh` debe darlo por CIEGO si falta o tiene más de 15 minutos (ver §9, paso 8). `--dry`, `--una-vez` y los errores de configuración (código 2) no lo tocan.
 
 ### 5.3 Qué hacer cuando llega un aviso
 
@@ -230,9 +235,9 @@ Los valores no están aquí. En Vercel las pone el orquestador (Production); en 
 | `ALTAVOZ_URL` | Vercel | `https://altavoz.gruponewenergy.es` |
 | `ALTAVOZ_API_KEY` | Vercel (secreta) | La clave de Altavoz **«formulario-tramitacion»** (envía como `escaneos@gruponew.energy` para GNEW y MEGA) |
 | `ALTAVOZ_SIMULAR` | Vercel | En producción, `0`. Con `1` no se envía nada (solo pruebas) |
-| `AVISO_DESTINO` | Vercel | Buzón que recibe el aviso: `escaneos@gruponew.energy` (GNEW y MEGA) |
+| `AVISO_DESTINO` | Vercel | Buzón que recibe el aviso: `escaneos@gruponew.energy` (GNEW y MEGA). **Durante el ensayo (§9, pasos 1-3) es un alias de Victor** (`victor.molins.10+tramitacion@gmail.com`) |
 | `AVISO_DESTINO_MEGA` | Vercel (opcional) | Si existe, el aviso de MEGA va aquí. **No se pone**: MEGA usa `AVISO_DESTINO` |
-| `BANDEJA_EMAILS` | Vercel | Quién puede entrar en la bandeja (separados por comas): `escaneos@gruponew.energy,victor.molins.10@gmail.com` |
+| `BANDEJA_EMAILS` | Vercel | Quién puede entrar en la bandeja (separados por comas): `escaneos@gruponew.energy,victor.molins.10@gmail.com`. **Durante el ensayo (§9, pasos 1-3) es un alias de Victor** (`victor.molins.10+bandeja@gmail.com`) |
 | `BANDEJA_SECRETO` | Vercel (secreta, ≥ 32 car.) | Firma las sesiones y los hashes de códigos e IP |
 | `VIGILANTE_SECRETO` | Vercel y VPS (secreta, ≥ 32 car.) | El Bearer del vigilante; el mismo valor en `/root/.tramitacion-vigilante.env` |
 | `SITIO_URL` | Vercel | `https://tramitatucontrato.energy` (los enlaces a la ficha) |
@@ -269,7 +274,9 @@ Todo se prueba contra la **base real** (`gnew-plataforma`), por eso:
 |---|---|---|
 | Unitarias (sin internet ni base) | `node --test "tests/unit/*.test.mjs"` | validadores, nombres, estados, correos, sesión, ZIP, `http`, `config` y el **script del vigilante** como caja negra (`vigilante-script.test.mjs`: endpoint falso en 127.0.0.1 y un stub de Telegram que escribe a un fichero) |
 | API | `node tests/servidor-local.mjs &` → `node --test "tests/api/*.test.mjs"` → `node scripts/limpiar-pruebas.mjs --todo` → `kill <PID>` | `00` almacén (subida y descarga directas con CORS), `10` iniciar/confirmar y cola, `20` bandeja, `30` vigilante, `40` adjuntos del aviso |
-| Con navegador | `bash tests/e2e/run.sh formulario` (9 casos) · `bandeja` (13) · `extras` · `capturas` | formulario completo, reintentos, respaldo, compresión de fotos, bandeja de punta a punta. Arranca y para solo el servidor y limpia al acabar |
+| Con navegador | `bash tests/e2e/run.sh formulario` (11 casos) · `bandeja` (13) · `extras` (10) · `capturas` | formulario completo, reintentos, respaldo, compresión de fotos, interruptor `V2_ACTIVO`, bandeja de punta a punta. Arranca y para solo el servidor y limpia al acabar |
+
+**El interruptor en las pruebas (`formulario.py`).** Con `V2_ACTIVO = false` (como se despliega), todo lo que prueba la v2 tiene que abrir la página con `?v2=1`: lo hace `Caso.ir` (`tests/e2e/comun.py`) por defecto en los casos 1-9 y en los extras; `ir(ruta, v2=False)` abre la dirección tal cual, que es lo que ve un comercial. **Caso 10**: sin `?v2=1` el envío es el de siempre. Se comprueba contra el formulario REAL de antes de la v2 (`git show 6b5dd53:gnew.html` y `:mega.html`, el último commit de producción previo): el mismo envío con los dos html (el Apps Script, interceptado con `page.route`, contesta `{"success":true,"refId":…}`) tiene que dar **los mismos textos del botón** (`Preparando datos...` → `Preparando 2 archivos...` → `Enviando contrato... No cierres esta página` → `Contrato enviado correctamente`; en `mega.html`, sin tildes, como siempre), **el mismo cuerpo al Apps Script** (mismas claves y valores salvo la referencia) y **la misma gracias** (`gracias.html`/`gracias-mega.html` sin `?ref=`), sin ninguna llamada a `/api/` ni al almacén, sin fila en la base, y una foto grande se sigue reduciendo. Si `V2_ACTIVO` está en `true`, el mismo caso comprueba lo contrario: que sin `?v2=1` se usa la v2. Exige que `gnew.html` y `mega.html` lleven el mismo valor. **Caso 11**: `?v2=1` convive con el prefill por URL del comparador DPC (los campos se rellenan, `v2` no estorba, el IBAN y el DNI del firmante no entran por la dirección) y el envío va por la v2, en GNEW y en MEGA.
 
 Ficheros de API en paralelo: `node --test "tests/api/*.test.mjs"` los lanza a la vez y todos comparten el servidor local y su entorno (los ganchos cambian cuotas, Altavoz «caído»…). Por eso `20` y `30` esperan a los hermanos de número menor (`tests/api/hermanos.mjs`): el orden es siempre `00 → 10 → 20 → 30`. Un fichero nuevo que toque el entorno compartido debe hacer lo mismo en su cabecera: `before(() => esperarAHermanosAnteriores(import.meta.url))`.
 
@@ -281,27 +288,54 @@ Las pruebas de `30-vigilante` insertan a mano las filas «subiendo» viejas con 
 
 ## 9. Puesta en marcha, paso a paso
 
-Cada punto marcado **REQUIERE OK DE VICTOR** toca producción (Vercel, correo real, cron del VPS). Nada de esto se hace antes de su OK. El SQL ya está aplicado.
+La v2 se despliega **dormida** y se enciende con un interruptor: la constante `V2_ACTIVO` de `gnew.html` y `mega.html`, hoy `false`, con el **mismo valor en los dos**. Con `false` el formulario envía **exactamente como antes** (Apps Script) y no llama a `/api/tramitacion/*`; la v2 solo se usa abriendo la página con `?v2=1` (vale solo para esa carga; no se guarda en ningún sitio). Con `true` la v2 es el camino normal y `?v2=1` da igual. Así, al desplegar, los comerciales siguen usando el formulario de siempre y la v2 se ensaya en producción antes de que la use nadie. (Sin el interruptor, desplegar la v2 con los avisos apuntando a un alias de Victor habría mandado los contratos reales de los comerciales al alias en vez de a `escaneos@`.)
+
+Cada punto marcado **REQUIERE OK DE VICTOR** toca producción (Vercel, `git push`, correo real, cron del VPS). Nada de esto se hace antes de su OK. El SQL ya está aplicado.
 
 **0. Antes de empezar (no toca nada)**
-   - Rama `tramitacion-v2` con todo en verde (§8).
+   - Rama `tramitacion-v2` con todo en verde (§8) y `const V2_ACTIVO = false;` en `gnew.html` y `mega.html` (`grep -n "const V2_ACTIVO" gnew.html mega.html`).
    - Confirmar el plan de Vercel de `gruponewenergy-landing` (Hobby o Pro) y si tiene Fluid. `maxDuration` de 60 s cubre ambos casos, pero Hobby no permite uso comercial.
    - Confirmar con la sesión de Altavoz que `responder_a` **y `adjuntos` (hasta 10 ficheros y 3.000.000 bytes reales entre todos)** están desplegados en `/api/v1/avisos`, que el candado `modo_prueba` está **apagado** y que la clave «formulario-tramitacion» sigue enviando como `escaneos@gruponew.energy` para GNEW y MEGA.
 
-**1. Variables en Vercel — REQUIERE OK DE VICTOR.** Proyecto `gruponewenergy-landing`, entorno Production. Las de la tabla del §6 con estos valores: `ALTAVOZ_SIMULAR=0`, `ALTAVOZ_URL=https://altavoz.gruponewenergy.es`, `ALTAVOZ_API_KEY` = la clave «formulario-tramitacion», `AVISO_DESTINO=escaneos@gruponew.energy` (sirve a GNEW y MEGA; no se pone `AVISO_DESTINO_MEGA`), `BANDEJA_EMAILS=escaneos@gruponew.energy,victor.molins.10@gmail.com`, `SITIO_URL=https://tramitatucontrato.energy`, `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` de `gnew-plataforma`, y **dos secretos nuevos y distintos** (`BANDEJA_SECRETO`, `VIGILANTE_SECRETO`, de 32 caracteres o más, aleatorios, distintos de los de `.env.local`). No poner nunca `TRAMITACION_PRUEBA`, `ALTAVOZ_SIMULAR_FALLO` ni `CUOTA_*`. Comprobar la lista (solo nombres, nunca valores).
-   *Para el ensayo del paso 3*, deja temporalmente `AVISO_DESTINO` y `BANDEJA_EMAILS` con alias de Victor (p. ej. `victor.molins.10+tramitacion@gmail.com` y `victor.molins.10+bandeja@gmail.com`); los valores definitivos entran en el paso 4.
+**1. Variables en Vercel — REQUIERE OK DE VICTOR.** Proyecto `gruponewenergy-landing`, entorno Production. Las de la tabla del §6, con `AVISO_DESTINO` y `BANDEJA_EMAILS` apuntando a **alias de Victor** mientras dure el ensayo (los valores definitivos entran en el paso 4):
+   - `AVISO_DESTINO=victor.molins.10+tramitacion@gmail.com` (el aviso de los envíos por la v2 llega a ese alias, no a `escaneos@`) y `BANDEJA_EMAILS=victor.molins.10+bandeja@gmail.com` (el código de acceso a la bandeja llega a ese alias).
+   - El resto, **ya definitivas**: `ALTAVOZ_SIMULAR=0`, `ALTAVOZ_URL=https://altavoz.gruponewenergy.es`, `ALTAVOZ_API_KEY` = la clave «formulario-tramitacion», `SITIO_URL=https://tramitatucontrato.energy`, `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY` de `gnew-plataforma`, y **dos secretos nuevos y distintos** (`BANDEJA_SECRETO`, `VIGILANTE_SECRETO`, de 32 caracteres o más, aleatorios, distintos de los de `.env.local`). No se pone `AVISO_DESTINO_MEGA`. No poner nunca `TRAMITACION_PRUEBA`, `ALTAVOZ_SIMULAR_FALLO` ni `CUOTA_*`. Comprobar la lista (solo nombres, nunca valores).
 
-**2. Fusionar y desplegar — REQUIERE OK DE VICTOR.** Merge de `tramitacion-v2` en `master` y `git push` → Vercel despliega. Comprobar (sin datos reales):
-   - `/gnew` y `/mega` cargan igual que antes; `/bandeja` lleva a `/bandeja/entrar`;
-   - `GET /api/_lib/config.js` → **404**;
-   - `POST /api/tramitacion/vigilante` sin secreto → **401**;
+**2. Fusionar y desplegar DORMIDA — REQUIERE OK DE VICTOR.** Merge de `tramitacion-v2` en `master` y `git push` → Vercel despliega, con `V2_ACTIVO = false`: **el formulario de producción sigue igual**. Comprobar (sin hacer ningún envío real):
+   - `curl -s https://tramitatucontrato.energy/gnew | grep -n "const V2_ACTIVO"` y lo mismo con `/mega` → `false` en los dos.
+   - Que un envío normal sigue yendo al Apps Script y **la página no llama a `/api/tramitacion`**, sin que salga nada de verdad. Es lo que comprueba el caso 10 de `tests/e2e/formulario.py` en local; esto lo repite contra lo desplegado, SIN `?v2=1`, con datos ficticios, de una de estas dos maneras:
+     - Con Playwright: interceptar `script.google.com` y contestarle un `{"success":true}` falso, abortar `/api/tramitacion/*`, rellenar `/gnew` y `/mega` y pulsar enviar → llega a la página de gracias tras UNA petición a `script.google.com` y NINGUNA a `/api/tramitacion/`.
+     - A mano, con las herramientas del navegador (pestaña Red): clic derecho en una petición → «Bloquear URL de solicitud», para `script.google.com` y para `/api/tramitacion`; rellenar y pulsar enviar. Se verán **4 intentos fallidos** contra `script.google.com` (unos 15 s; es el bucle de reintentos del camino antiguo) y después el aviso «Error al enviar el formulario»; y **ninguna** petición a `/api/tramitacion`. Eso prueba que el envío va al Apps Script y no a la v2 (medido en local el 10-oct-2026: 4 peticiones en 15,9 s).
+   - `/gnew` y `/mega` cargan igual que antes; `/bandeja` lleva a `/bandeja/entrar`.
+   - `GET /api/_lib/config.js` → **404**; `POST /api/tramitacion/vigilante` sin secreto → **401**.
    - **404** en `/CLAUDE.md`, `/docs/tramitacion-v2.md`, `/supabase/tramitacion.sql`, `/scripts/vigilante-tramitacion.mjs`, `/tests/servidor-local.mjs` y `/google-apps-script/Code.gs`.
 
-**3. Primer envío real, de punta a punta — REQUIERE OK DE VICTOR (correo real).** Desde `/gnew`, con un alias de Victor como comercial y un contrato de mentira (CUPS y datos válidos pero ficticios, nunca un cliente real), con 2-3 documentos y una foto grande (de más de 1 MB, para ver que se reduce). **Hacer un segundo envío con documentos que sumen más de 3 MB** (p. ej. un PDF de 4-5 MB) para ver el camino «No caben como adjunto y están en la bandeja». Leer el aviso y el acuse en el buzón del alias (conector de Gmail): asunto con el titular, **los documentos adjuntos (abrirlos: que se vean y pesen lo subido)**, el aviso naranja si algo no cupo, botón «Abrir en la bandeja», el acuse sin IBAN y sin adjuntos. Entrar en `/bandeja/entrar` con el alias de `BANDEJA_EMAILS`, abrir la ficha, ver y descargar los documentos (uno a uno y ZIP) y marcarla como tramitada. Repetir con `/mega`.
+**3. Ensayo en producción con `?v2=1` — REQUIERE OK DE VICTOR (correo real, solo a alias suyos).** Con los alias del paso 1 en marcha, abrir `https://tramitatucontrato.energy/gnew?v2=1` y `https://tramitatucontrato.energy/mega?v2=1` (el `?v2=1` vale solo para esa carga de la página) y enviar contratos de mentira: comercial = un alias de Victor (p. ej. `victor.molins.10+ensayo@gmail.com`; el borrado de más abajo solo toca envíos de un alias suyo) y datos ficticios (CUPS y datos válidos pero inventados, **nunca un cliente real**), con 2-3 documentos y una foto grande (de más de 1 MB, para ver que se reduce). **Hacer un segundo envío con documentos que sumen más de 3 MB** (p. ej. un PDF de 4-5 MB) para ver el camino «No caben como adjunto y están en la bandeja».
+   - Mientras se envía, el botón tiene que ir diciendo «Guardando los datos del contrato...», «Subiendo documento…» y «Comprobando que ha llegado todo...». ⚠️ **Si dice «Enviando contrato... No cierres esta página», el ensayo ha caído al respaldo de Apps Script** (la v2 no ha contestado tres veces): ese contrato de mentira ha salido por el camino antiguo —Drive, hoja de registro y correo a `escaneos@`, que NO obedece a `AVISO_DESTINO`—. Parar, avisar a backoffice de que lo ignore y arreglar la v2 antes de seguir.
+   - Leer el aviso y el acuse en el buzón de los alias (conector de Gmail): asunto con el titular, **los documentos adjuntos (abrirlos: que se vean y pesen lo subido)**, el aviso naranja si algo no cupo, botón «Abrir en la bandeja», y el acuse sin IBAN y sin adjuntos.
+   - Entrar en `/bandeja/entrar` con `victor.molins.10+bandeja@gmail.com` (el código llega a ese alias), abrir la ficha, ver y descargar los documentos (uno a uno y ZIP) y marcarla como tramitada. Hasta que esté el cron (paso 7) nada reintenta un correo que no salga a la primera: «Volver a enviar» desde la ficha.
+   - **Después, borrar el ensayo (dejarlo a cero).** Las referencias salen en la página de gracias («Tu referencia: GNE-…») y en la bandeja. Desde `/root/projects/_worktrees/tramitacion-v2` (o cualquier copia del repo con `.env.local`, que lleva las claves de `gnew-plataforma`):
+     ```bash
+     node scripts/limpiar-ensayo.mjs GNE-… MEGA-…              # en seco: dice qué borraría, no borra nada
+     node scripts/limpiar-ensayo.mjs --aplicar GNE-… MEGA-…    # lo borra
+     node scripts/limpiar-ensayo.mjs GNE-… MEGA-…              # tiene que decir «no existe» en todas
+     ```
+     Borra cada tramitación con sus documentos, correos y eventos (en cascada) **y sus objetos del almacén uno a uno por la API**: con SQL no basta, porque borrar filas de `storage.objects` no borra el fichero. Se niega a tocar cualquier envío cuyo comercial no sea un alias de Victor (`victor.molins.10+algo@gmail.com`) —y entonces no borra nada de lo pedido— e imprime solo referencias y recuentos. `limpiar-pruebas.mjs` no sirve aquí: solo toca `prueba = true`.
+   - El ensayo deja dos restos mínimos sin datos de contratos: los códigos de acceso a la bandeja de los alias (`tramitacion_accesos`, que el vigilante limpia al día siguiente) y los apuntes de «código enviado» a esos alias. Para quitarlos a mano (SQL por `execute_sql`, solo alias de Victor):
+     ```sql
+     delete from public.tramitacion_correos
+      where tramitacion_id is null and tipo = 'codigo_acceso' and para ~* '^victor\.molins\.10\+[a-z0-9._-]+@gmail\.com$';
+     delete from public.tramitacion_accesos
+      where email ~* '^victor\.molins\.10\+[a-z0-9._-]+@gmail\.com$';
+     ```
 
-**4. Valores definitivos — REQUIERE OK DE VICTOR.** Poner `AVISO_DESTINO=escaneos@gruponew.energy` y `BANDEJA_EMAILS=escaneos@gruponew.energy,victor.molins.10@gmail.com`, volver a desplegar (Vercel aplica los cambios de variables solo a los despliegues nuevos) y comprobar que Victor entra en la bandeja con su código.
+**4. Valores definitivos — REQUIERE OK DE VICTOR.** Poner `AVISO_DESTINO=escaneos@gruponew.energy` y `BANDEJA_EMAILS=escaneos@gruponew.energy,victor.molins.10@gmail.com`, volver a desplegar (Vercel aplica los cambios de variables solo a los despliegues nuevos) y comprobar que Victor entra en `/bandeja` con su código. ⚠️ **A partir de aquí, NO hacer más ensayos con `?v2=1`**: sus avisos ya irían a `escaneos@`.
 
-**5. El vigilante en el VPS — REQUIERE OK DE VICTOR (crea el fichero con el secreto y el cron).**
+**5. Encender — REQUIERE OK DE VICTOR (commit + push).** Poner `V2_ACTIVO = true` en `gnew.html` **y** `mega.html` (los dos con el mismo valor; el caso 10 lo exige), pasar `bash tests/e2e/run.sh formulario` (con el interruptor encendido, el caso 10 comprueba que sin `?v2=1` se usa la v2), commit y `git push` → Vercel despliega. Desde ese momento **los comerciales envían por la v2** y los avisos van a `escaneos@`. Marcha atrás en un minuto: `V2_ACTIVO = false` y otro push (el formulario vuelve a Apps Script cuando Vercel despliega; lo ya recibido por la v2 sigue en la bandeja).
+
+**6. Vigilar el primer contrato real.** En cuanto entre el primero de un comercial de verdad (no se prueba con datos reales: se espera a que llegue), mirar: en la bandeja aparece «Pendiente» con todos sus documentos (el ZIP se abre); a `escaneos@` llega el aviso con los documentos adjuntos; el comercial recibe el acuse (sin IBAN ni adjuntos); y en la ficha «Correos» dice «enviado» y el historial lo cuenta bien. Si algo falla: marcha atrás (paso 5) y a investigar. Mientras no esté el cron (paso 7) nada reintenta un correo que no haya salido a la primera: mirar «Correos» en la ficha y «Volver a enviar»; conviene hacer el paso 7 el mismo día.
+
+**7. El vigilante en el VPS — REQUIERE OK DE VICTOR (crea el fichero con el secreto y el cron).**
    1. `/root/.tramitacion-vigilante.env` (permisos **0600**) con `VIGILANTE_URL=https://tramitatucontrato.energy/api/tramitacion/vigilante` y `VIGILANTE_SECRETO=` el mismo valor que en Vercel. Crear el fichero **sin pasar el secreto por pantalla ni por el chat**; comprobar con `stat -c %a`.
    2. Comprobar que el script ya está en `/root/projects/gruponewenergy-landing/scripts/vigilante-tramitacion.mjs` (llega con el auto-pull tras el merge; si el repo está sucio, el auto-pull lo salta).
    3. Una pasada a mano, sin avisar: `/usr/local/bin/node /root/projects/gruponewenergy-landing/scripts/vigilante-tramitacion.mjs --dry` → debe terminar con «pasada correcta» y código 0. (⚠️ `--dry` no avisa ni guarda estado, pero **la web hace su trabajo de verdad**: reintenta correos reales, concilia y abandona envíos viejos.)
@@ -309,7 +343,7 @@ Cada punto marcado **REQUIERE OK DE VICTOR** toca producción (Vercel, correo re
       `*/5 * * * * /usr/local/bin/node /root/projects/gruponewenergy-landing/scripts/vigilante-tramitacion.mjs >> /root/tramitacion-vigilante.log 2>&1`
    5. A los 10 minutos: el registro tiene líneas «pasada correcta», `/root/.tramitacion-vigilante-last` tiene fecha reciente y existe `/root/.tramitacion-vigilante-state.json`.
 
-**6. El testigo en el latido — REQUIERE OK DE VICTOR (edita `/root/latido-crons.sh`).** Un bloque como el de SICOM: CIEGO si el testigo falta o tiene más de 15 minutos.
+**8. El testigo en el latido — REQUIERE OK DE VICTOR (edita `/root/latido-crons.sh`).** Un bloque como el de SICOM: CIEGO si el testigo falta o tiene más de 15 minutos.
    ```bash
    # ---- Tramitación v2: vigilante (cron cada 5 min; toca el testigo en cada pasada) ----
    TESTIGO_TRAMITACION=/root/.tramitacion-vigilante-last
@@ -325,15 +359,15 @@ Cada punto marcado **REQUIERE OK DE VICTOR** toca producción (Vercel, correo re
    fi
    ```
 
-**7. Ensayo de alarma (recomendado) — REQUIERE OK DE VICTOR.** Para saber que Telegram suena de verdad: estropear a propósito el secreto del fichero del VPS; a los 10 minutos Victor debe recibir «el vigilante no consigue hablar con la web (2 veces seguidas)»; restaurarlo, y a los 5 minutos «la web vuelve a responder al vigilante».
+**9. Ensayo de alarma (recomendado) — REQUIERE OK DE VICTOR.** Para saber que Telegram suena de verdad: estropear a propósito el secreto del fichero del VPS; a los 10 minutos Victor debe recibir «el vigilante no consigue hablar con la web (2 veces seguidas)»; restaurarlo, y a los 5 minutos «la web vuelve a responder al vigilante».
 
-**8. Una semana de vigilancia.** Mirar cada día la bandeja (¿todo lo recibido está?), el registro del cron y los avisos. Mientras tanto `RESPALDO_APPS_SCRIPT = true`: si la API no contesta, el formulario usa el camino antiguo (el contrato entra por Drive, correo y hoja de registro, no por la bandeja); cada vez que ocurra, mirar por qué la API no contestaba.
+**10. Una semana con el respaldo activo.** Mientras tanto `RESPALDO_APPS_SCRIPT = true` (como está): si la API no contesta, el formulario usa el camino antiguo (el contrato entra por Drive, correo y hoja de registro, no por la bandeja). Mirar cada día la bandeja (¿todo lo recibido está?), el registro del cron y los avisos; cada vez que se use el respaldo, mirar por qué la API no contestaba.
 
-**9. Retirar el respaldo — REQUIERE OK DE VICTOR (commit + push).** Pasada la semana sin incidencias: `RESPALDO_APPS_SCRIPT = false` en `gnew.html` y `mega.html`. Cuando Victor quiera, dejar los dos Apps Script como archivo (y las carpetas de Drive, que quedan como histórico).
+**11. Retirar el respaldo — REQUIERE OK DE VICTOR (commit + push).** Pasada la semana sin incidencias: `RESPALDO_APPS_SCRIPT = false` en `gnew.html` y `mega.html`. Cuando Victor quiera, dejar los dos Apps Script como archivo (y las carpetas de Drive, que quedan como histórico). (Con el respaldo retirado, `V2_ACTIVO = false` ya no serviría de marcha atrás: no quedaría camino antiguo al que volver. Decidir entonces si se quita el interruptor.)
 
 ## 10. El respaldo temporal (Apps Script)
 
-Los dos `Code.gs` (`google-apps-script/` y `google-apps-script-mega/`) siguen siendo el camino antiguo: Drive + correo + hoja de registro. **Solo se usan si `iniciar` falla tres veces seguidas por red, tiempo, 404 o 5xx** y `RESPALDO_APPS_SCRIPT` vale `true` (hoy, en los dos `html`). No se tocan en la v2: su despliegue pendiente y sus notas (Altavoz con respaldo Gmail, `config-formulario.json`, permisos de Apps Script) están en `CLAUDE.md`, en las secciones marcadas «respaldo temporal». Los contratos que entren por ahí **no aparecen en la bandeja**: se tramitan como hasta ahora desde el correo/Drive.
+Los dos `Code.gs` (`google-apps-script/` y `google-apps-script-mega/`) siguen siendo el camino antiguo: Drive + correo + hoja de registro. **Se usan en dos casos.** (1) Como **camino normal mientras la v2 está apagada** (`V2_ACTIVO = false` y sin `?v2=1`): el envío va directo a Apps Script, sin pasar por la API y tenga el valor que tenga `RESPALDO_APPS_SCRIPT` (`enviarComoAntes`). (2) Como **respaldo de la v2** (encendida, o abierta con `?v2=1`): solo si `iniciar` falla tres veces seguidas por red, tiempo, 404 o 5xx **y** `RESPALDO_APPS_SCRIPT` vale `true` (hoy, en los dos `html`). No se tocan en la v2: su despliegue pendiente y sus notas (Altavoz con respaldo Gmail, `config-formulario.json`, permisos de Apps Script) están en `CLAUDE.md`, en las secciones marcadas «respaldo temporal». Los contratos que entren por ahí **no aparecen en la bandeja**: se tramitan como hasta ahora desde el correo/Drive.
 
 ## 11. Decisiones y riesgos abiertos
 
@@ -345,8 +379,11 @@ Los dos `Code.gs` (`google-apps-script/` y `google-apps-script-mega/`) siguen si
 6. **Correo duplicado, nunca perdido**: si la función muere entre el 2xx de Altavoz y apuntarlo, el vigilante reenvía.
 7. **Avisos en bloque**: cada incidencia avisa por separado; si Altavoz cae un buen rato con muchos contratos, llegarán varios mensajes (y varios «resuelto» al volver).
 8. **Adjuntos y duplicados**: si el tiempo se agota con Altavoz todavía enviando (el aviso pesa hasta ~4 MB), el vigilante reenvía el aviso CON adjuntos y backoffice puede recibir dos. Es el mismo riesgo asumido del punto 6, algo más probable con adjuntos.
-9. **El navegador espera 25 s por intento de `confirmar`** (`gnew.html`/`mega.html`, no tocados en la orden 6). Con Altavoz muy lento, `confirmar` puede tardar hasta ≈ 28 s (trabajo previo 3 s + aviso 15 s + acuse 6 s + 4 s de base): el navegador repite `confirmar` (idempotente), que responde «listo» al momento y no duplica nada (el correo está `enviando` o ya `enviado`). Si se quiere más holgura, subir esa espera a 30 s en los dos html.
-10. **La ficha de la bandeja** no tiene frases para los eventos `adjuntos_no_descargados` y `adjuntos_rechazados` (enseña «Cambio registrado»). Dos `case` en `textoEvento` de `bandeja-ficha.html`, si se quiere.
+9. **Resuelto (orden 6b): el navegador espera 30 s por intento de `confirmar`** (antes 25 s) en `gnew.html` y `mega.html`. El peor caso del servidor (≈ 28 s: trabajo previo 3 s + aviso 15 s + acuse 6 s + 4 s de base) ya cabe; si aun así venciera, repetir `confirmar` es idempotente y responde «listo» al momento sin duplicar nada. `tests/unit/tiempos.test.mjs` lee la constante de los dos html y ata el número.
+10. **Resuelto (orden 6b): la ficha de la bandeja tiene frases para `adjuntos_no_descargados` y `adjuntos_rechazados`** (§4, «Historial»). La segunda nombra a Altavoz, tal como se pidió; el regex `JERGA` de `tests/e2e/bandeja.py` no admite ese nombre en un texto que ve backoffice, por eso el caso 6 comprueba estas dos frases aparte, después de `sin_jerga()`. Si se prefiere no nombrar a Altavoz en la ficha, basta con cambiar la frase (y esa comprobación).
+11. **El ensayo con `?v2=1` y el respaldo**: `?v2=1` activa la v2 «completa, con su respaldo» (orden 6b). Con `RESPALDO_APPS_SCRIPT = true`, si durante el ensayo la v2 no contesta tres veces, el formulario cae al Apps Script, que **no obedece a `AVISO_DESTINO`** y manda el contrato de mentira a `escaneos@` (y a Drive y a la hoja de registro). Se reconoce porque el botón dice «Enviando contrato... No cierres esta página» en vez de «Guardando los datos del contrato...» (§9, paso 3). Si se prefiere un ensayo sin esa red de seguridad, bastaría con que `?v2=1` ignorase el respaldo.
+12. **Hay una ventana sin vigilante** entre encender la v2 (paso 5) y poner el cron (paso 7): un correo que no salga a la primera no se reintenta solo. Se cubre mirando a mano el primer contrato (paso 6) y haciendo el paso 7 el mismo día.
+13. **Las fotos grandes se reducen dos veces en el respaldo de la v2**: `prepararEnvio` las reduce (para subirlas al almacén) y, si luego entra el respaldo (v2 encendida y API caída), `enviarPorRespaldo` las vuelve a reducir con `prepararArchivo`: más tiempo en «Preparando N archivos...» en un camino que ya es raro. No afecta al interruptor apagado, que no pasa por `prepararEnvio`. Arreglo posible: que `prepararArchivo` reutilice `fotosReducidas`. Sin tocar.
 
 ## 12. Lo construido que difiere del diseño
 
@@ -361,3 +398,5 @@ Los dos `Code.gs` (`google-apps-script/` y `google-apps-script-mega/`) siguen si
 - **Con la web caída el script no purga** (ni manda «resuelto»): la purga de 24 h solo corre en las pasadas en que la web contesta.
 - **`--dry` y `--una-vez`** concretan «imprime sin avisar» y «no toca el estado» como se describe en §5.2; el testigo se toca en cada pasada normal, también con la web caída.
 - **El script lee la configuración** también de `VIGILANTE_ENV` (solo pruebas) y rechaza `http://` salvo en local.
+- **El formulario tiene un interruptor, `V2_ACTIVO`** (orden 6b; el diseño no lo preveía): la v2 se despliega dormida y se ensaya con `?v2=1`. El modo apagado es `enviarComoAntes`, que reutiliza `enviarPorRespaldo` y envía igual que el formulario de producción de antes de la v2 (lo comprueba el caso 10, comparándolo con ese html). Diferencias a propósito: si falla, el aviso ya no enseña la línea «Detalle: …» con el mensaje técnico y sí la referencia. En `mega.html` los textos del botón conservan las faltas de tilde de producción («pagina», «envio»).
+- **`scripts/limpiar-ensayo.mjs`** (orden 6b): borra por referencia los envíos del ensayo en producción y sus objetos del almacén (§9, paso 3). El diseño solo preveía `limpiar-pruebas.mjs`, que no toca `prueba = false`.

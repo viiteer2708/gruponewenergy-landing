@@ -1222,7 +1222,16 @@
     // Diseño completo: docs/diseno-tramitacion-v2.md
     const API_BASE = '';                          // mismo origen (tramitatucontrato.energy)
     const FORMULARIO = 'gnew';
-    // Interruptor del respaldo: pasada la primera semana sin incidencias, a false.
+    // INTERRUPTOR DE LA v2 (10-oct-2026). Con false el formulario envía EXACTAMENTE como antes
+    // de la v2 (el camino de Apps Script: enviarComoAntes) y NO llama a /api/tramitacion/*:
+    // así se despliega la v2 «dormida». La v2 se ensaya en producción abriendo la página con
+    // ?v2=1 (solo esa carga de la página; no se guarda en ningún sitio) y se enciende poniendo
+    // true. Con true, la v2 es el camino normal y ?v2=1 da igual. gnew.html y mega.html llevan
+    // siempre el mismo valor.
+    const V2_ACTIVO = false;
+    const USAR_V2 = V2_ACTIVO || new URLSearchParams(window.location.search).get('v2') === '1';
+    // Interruptor del respaldo (solo cuenta cuando se usa la v2): pasada la primera semana
+    // sin incidencias, a false.
     const RESPALDO_APPS_SCRIPT = true;
     const CORREO_TRAMITACION = 'escaneos@gruponew.energy';
     const COLOR_PRIMARIO = '#0B6E4F';
@@ -1236,7 +1245,7 @@
     const SUBIDA_POR_MB_MS = 12000;
     const SUBIDA_INTENTOS = 3;                    // con esperas de 2 s y 5 s
     const SUBIDA_ESPERAS_MS = [2000, 5000];
-    const CONFIRMAR_TOPE_MS = 25000;              // cada intento de «confirmar»
+    const CONFIRMAR_TOPE_MS = 30000;              // cada intento de «confirmar» (con los adjuntos el servidor puede tardar hasta ~28 s)
     const CONFIRMAR_INTENTOS = 4;                 // con esperas de 2,5 s × intento
     const VUELTAS_MAX = 2;                        // veces que «confirmar» puede mandar de vuelta a «iniciar»
     const MAX_MB_ARCHIVO = 25;                    // tope del almacén por archivo
@@ -1878,6 +1887,40 @@
         if (!result) throw lastError || new Error('sin confirmar');
     }
 
+    // ===== INTERRUPTOR APAGADO (V2_ACTIVO = false): EL ENVÍO DE SIEMPRE =====
+    // Lo que hacía el formulario antes de la v2, con los mismos textos: «Preparando datos...» →
+    // «Preparando N archivos...» (las fotos de más de 1 MB se reducen y todo se pasa a base64,
+    // UNO A UNO) → «Enviando contrato...» al Apps Script (120 s + 8 s por MB y 4 intentos, con la
+    // MISMA referencia) → «Contrato enviado correctamente» → gracias.html (sin referencia en la
+    // dirección, como antes). NO habla con /api/tramitacion/*, no sube nada al almacén y no
+    // depende de RESPALDO_APPS_SCRIPT. Es enviarPorRespaldo, la misma pieza que usa la v2 como
+    // respaldo, sin pasar antes por prepararEnvio (que reduciría las fotos dos veces).
+    // Diferencias a propósito, solo si falla: el aviso de error ya NO enseña la línea «Detalle: …»
+    // con el mensaje técnico (la web no enseña mensajes técnicos) y sí la referencia.
+    async function enviarComoAntes() {
+        setStatus('Preparando datos...');
+        // Si esta tramitación ya se intentó (reintento manual tras un fallo), se reutiliza su
+        // referencia para que el backend pueda deduplicar
+        if (!currentRefId) currentRefId = generateRefId();
+        const refId = currentRefId;
+        try {
+            const p = {
+                hp: form.gnew_hp.value,
+                datos: datosDelFormulario(),
+                firma: leerFirma(),
+                items: Array.from(selectedFiles.files).map(function(f) { return { original: f }; })
+            };
+            await enviarPorRespaldo(p, refId);
+            currentRefId = null; // el siguiente contrato usará una referencia nueva
+            setStatus('Contrato enviado correctamente');
+            window.location.href = 'gracias.html';
+        } catch (err) {
+            restaurarBoton();
+            if (err && err.unreadableFile) mostrarArchivoIlegible(err.unreadableFile);
+            else mostrarOverlayRespaldoFallido(refId);
+        }
+    }
+
     // ===== LO QUE VE EL COMERCIAL =====
 
     function restaurarBoton() {
@@ -2088,6 +2131,11 @@
         btn.classList.add('loading');
         btn.disabled = true;
         try {
+            if (!USAR_V2) {
+                // Interruptor apagado y sin ?v2=1: el envío de siempre (nada de /api/tramitacion/*)
+                await enviarComoAntes();
+                return;
+            }
             let p;
             if (reanudar && envio) {
                 p = envio;

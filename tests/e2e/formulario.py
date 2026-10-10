@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""tests/e2e/formulario.py · Los 9 casos del formulario de tramitación (gnew.html y mega.html) con navegador real.
+"""tests/e2e/formulario.py · Los 11 casos del formulario de tramitación (gnew.html y mega.html) con navegador real.
 
 Uso (lo normal es `bash tests/e2e/run.sh formulario`, que arranca el servidor y limpia después):
-    python tests/e2e/formulario.py                 los 9 casos, en serie
+    python tests/e2e/formulario.py                 los 11 casos, en serie
     python tests/e2e/formulario.py 1 5             solo esos casos
     python tests/e2e/formulario.py capturas        capturas a 390 px ANTES (html de master) y DESPUÉS, y su comparación
-    python tests/e2e/formulario.py extras [N…]     comprobaciones extra (rutas que los 9 casos no tocan); no cuentan en el «9/9»
+    python tests/e2e/formulario.py extras [N…]     comprobaciones extra (rutas que los 11 casos no tocan); no cuentan en el «11/11»
 
 Un solo Chromium, viewport 390×844, `pageerror` y consola vigilados (0 errores inesperados es parte del criterio).
 Todo lo de Google Apps Script está interceptado; la base se lee siempre por /__pruebas/tramitacion.
+
+El interruptor V2_ACTIVO de los html se despliega APAGADO: los casos 1-9 (y los extras) prueban la v2 abriendo la página con
+`?v2=1` (lo pone `Caso.ir`); el 10 prueba lo que ve un comercial SIN ese parámetro; el 11 comprueba que `?v2=1` convive con el
+prefill por URL del comparador DPC.
 """
+import base64
 import json
 import re
 import subprocess
@@ -17,12 +22,13 @@ import sys
 import tempfile
 import time
 import traceback
+import urllib.parse
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
 from comun import (BASE, CUPS_GAS, CUPS_LUZ, FIXTURES, GOOGLE_RESPUESTA_OK, IBAN_TECLEADO, REF_GRACIAS, RAIZ, SALIDAS,
-                   VIEWPORT, Caso, correo_de, esperar_estado, estado_de)
+                   VIEWPORT, Caso, correo_de, datos_formulario, esperar_estado, estado_de)
 
 PDF = FIXTURES / 'documento-5-5mb.pdf'
 JPG = FIXTURES / 'foto-pequena.jpg'
@@ -63,7 +69,7 @@ def comprobar_recibida(e, ref, formulario, n_documentos):
 
 
 # ---------------------------------------------------------------------------
-# Los 9 casos
+# Los casos 1-9 (la v2, abierta con ?v2=1); el 10 y el 11 están más abajo, con el interruptor
 # ---------------------------------------------------------------------------
 
 def caso_1(c):
@@ -399,6 +405,181 @@ def caso_9(c):
     assert not c.google
 
 
+# ---------------------------------------------------------------------------
+# El interruptor V2_ACTIVO (casos 10 y 11)
+# ---------------------------------------------------------------------------
+
+HTML_DE_PRODUCCION = '6b5dd53'  # último commit de master ANTES de la v2: el formulario «de siempre»
+
+# Anota (por JavaScript, sin perder ninguno aunque cambien en el mismo instante) cada texto que se escribe en el botón de envío
+JS_VIGILAR_TEXTOS = """
+(() => {
+  const vigilar = () => {
+    const el = document.getElementById('statusText');
+    if (!el || !window.__registrarTexto) return;
+    new MutationObserver((cambios) => {
+      for (const cambio of cambios) for (const nodo of cambio.addedNodes) window.__registrarTexto(nodo.textContent);
+    }).observe(el, { childList: true });
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', vigilar); else vigilar();
+})();
+"""
+
+
+def interruptor_v2(formulario):
+    """El valor de V2_ACTIVO que lleva el html (True/False)."""
+    m = re.search(r'^\s*const V2_ACTIVO = (true|false);', (RAIZ / f'{formulario}.html').read_text(encoding='utf-8'), re.M)
+    assert m, f'No encuentro V2_ACTIVO en {formulario}.html'
+    return m.group(1) == 'true'
+
+
+def _html_de_produccion(formulario):
+    """El html de antes de la v2 (git), o None si este clon no tiene esa historia."""
+    try:
+        return subprocess.run(['git', '-C', str(RAIZ), 'show', f'{HTML_DE_PRODUCCION}:{formulario}.html'], check=True, capture_output=True).stdout
+    except (subprocess.CalledProcessError, OSError):
+        return None
+
+
+def _simular_apps_script(c):
+    """Intercepta el Apps Script con page.route (nada llega a Google) y contesta como el de verdad:
+    {"success": true, "refId": <el ref_id recibido>}. Devuelve la lista de cuerpos que va recibiendo."""
+    recibidos = []
+
+    def servidor(url):
+        host = urllib.parse.urlparse(url).hostname or ''
+        return host == 'script.google.com' or host.endswith('googleusercontent.com')
+
+    def manejador(route, request):
+        cuerpo = request.post_data_json
+        recibidos.append(cuerpo)
+        route.fulfill(status=200, content_type='application/json; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'},
+                      body=json.dumps({'success': True, 'refId': cuerpo.get('ref_id')}))
+
+    c.page.route(servidor, manejador)
+    return recibidos
+
+
+def _envio_de_siempre(c, formulario, recibidos, textos, html=None, foto_grande=False):
+    """Un envío como lo hace un comercial: la página SIN `?v2=1`, se rellena, se firma y se pulsa enviar. `html` = otro html
+    que se sirve en lugar del actual (el de producción de antes de la v2). Espera a la página de gracias y devuelve lo que ha
+    pasado: los textos del botón por orden, el cuerpo que llegó al Apps Script y la dirección final."""
+    ruta = '/' + formulario
+    if html is not None:
+        c.page.route(BASE + ruta, lambda r, _q: r.fulfill(status=200, content_type='text/html; charset=utf-8', body=html))
+    try:
+        c.ir(ruta, v2=False)
+    finally:
+        if html is not None:
+            c.page.unroute(BASE + ruta)
+    del textos[:]  # solo los textos de ESTE envío
+    antes = len(recibidos)
+    c.rellenar(formulario)
+    tamano = c.foto_grande('foto-grande.jpeg') if foto_grande else None
+    if not foto_grande:
+        c.adjuntar(JPG, PNG)
+    c.firmar()
+    c.enviar()
+    c.page.wait_for_url(re.compile(r'/gracias(?:-mega)?\.html'), timeout=60_000)  # con o sin ?ref=: cada caso comprueba la dirección exacta
+    assert len(recibidos) == antes + 1, f'{len(recibidos) - antes} peticiones al Apps Script (tenía que ser 1)'
+    return {'textos': list(textos), 'cuerpo': recibidos[-1], 'url': c.page.url, 'tamano_foto': tamano}
+
+
+def caso_10(c):
+    """SIN `?v2=1` manda el interruptor. Apagado (como se despliega): el envío es EL DE SIEMPRE, igual que el del commit de producción
+    de antes de la v2 (mismos textos, mismo cuerpo al Apps Script, misma gracias), sin tocar /api/tramitacion/* ni el almacén."""
+    estados = {interruptor_v2('gnew'), interruptor_v2('mega')}
+    assert len(estados) == 1, 'gnew.html y mega.html tienen que llevar el mismo valor de V2_ACTIVO'
+    llamadas_api = []
+    c.page.on('request', lambda r: llamadas_api.append(r.url) if '/api/' in r.url else None)
+
+    if estados == {True}:
+        # Interruptor ENCENDIDO: la v2 es el camino normal, con o sin `?v2=1`
+        c.ir('/gnew', v2=False)
+        c.rellenar('gnew')
+        c.adjuntar(JPG, PNG)
+        c.enviar()
+        ref = c.esperar_gracias()
+        assert len(c.iniciar) == 1 and c.iniciar[0]['ref'] == ref and not c.google
+        comprobar_recibida(esperar_estado(ref, 'recibida'), ref, 'gnew', 2)
+        print('      (V2_ACTIVO = true: sin ?v2=1 se usa la v2)')
+        return
+
+    textos = []
+    c.page.expose_function('__registrarTexto', lambda texto: textos.append(texto))
+    c.page.add_init_script(JS_VIGILAR_TEXTOS)
+    recibidos = _simular_apps_script(c)
+
+    for formulario, prefijo in (('gnew', 'GNE'), ('mega', 'MEGA')):
+        pagina = 'página' if formulario == 'gnew' else 'pagina'  # mega.html siempre ha escrito estos textos sin tildes
+        esperados = ['Preparando datos...', 'Preparando 2 archivos...', f'Enviando contrato... No cierres esta {pagina}', 'Contrato enviado correctamente']
+        antes = _html_de_produccion(formulario)
+        hoy = _envio_de_siempre(c, formulario, recibidos, textos)
+        gracias = BASE + ('/gracias.html' if formulario == 'gnew' else '/gracias-mega.html')
+        assert hoy['url'] == gracias, f'La gracias del modo dormido tiene que ser la de siempre, sin referencia: {hoy["url"]}'
+        assert hoy['textos'] == esperados, hoy['textos']
+        cuerpo = dict(hoy['cuerpo'])
+        ref = cuerpo.pop('ref_id')
+        assert re.fullmatch(prefijo + r'-\d{8}-[A-Z0-9]{6}', ref), ref
+        assert cuerpo['token'] == {'gnew': 'GNE-2026-w7k4q9x2', 'mega': 'MEGA-2026-h3p8k5z1q6'}[formulario] and cuerpo['hp'] == ''
+        assert 'terminos' not in cuerpo and cuerpo['firma'].startswith('data:image/png;base64,')
+        assert [a['name'] for a in cuerpo['archivos']] == ['foto-pequena.jpg', 'firma-pequena.png'] and all(a['data'] for a in cuerpo['archivos'])
+        assert estado_de(ref) is None, 'El modo dormido no deja fila en la base nueva'
+
+        if antes is None:
+            print(f'      (sin {HTML_DE_PRODUCCION} en este clon de git: no se compara {formulario} con el formulario de producción)')
+            continue
+        # La prueba de «EXACTAMENTE como antes»: el MISMO envío con el html de producción de antes de la v2
+        viejo = _envio_de_siempre(c, formulario, recibidos, textos, html=antes)
+        assert viejo['url'] == hoy['url'], (viejo['url'], hoy['url'])
+        assert viejo['textos'] == hoy['textos'], (viejo['textos'], hoy['textos'])
+        cuerpo_viejo = dict(viejo['cuerpo'])
+        cuerpo_viejo.pop('ref_id')
+        assert sorted(cuerpo_viejo) == sorted(cuerpo), (sorted(cuerpo_viejo), sorted(cuerpo))
+        for clave in cuerpo:
+            assert cuerpo_viejo[clave] == cuerpo[clave], f'{formulario}: «{clave}» no es igual que en producción'
+
+    # reducirFoto + base64 también en el modo dormido: una foto de más de 1 MB sale como .jpg más pequeño (y en singular)
+    grande = _envio_de_siempre(c, 'gnew', recibidos, textos, foto_grande=True)
+    a = grande['cuerpo']['archivos'][0]
+    assert a['name'] == 'foto-grande.jpg' and a['type'] == 'image/jpeg', a
+    assert len(base64.b64decode(a['data'])) < grande['tamano_foto'], 'La foto grande tiene que salir reducida'
+    assert grande['textos'][1] == 'Preparando 1 archivo...', grande['textos']
+
+    assert not llamadas_api, f'El modo dormido no puede tocar la API: {llamadas_api[:3]}'
+    assert not c.iniciar and not c.confirmar and not c.puts and not c.respuestas, 'Ni iniciar, ni confirmar, ni almacén'
+    assert not c.google, 'Todo el Apps Script se atendió en page.route'
+
+
+def caso_11(c):
+    """`?v2=1` con un prefill por URL (como lo abre el comparador DPC): los campos se rellenan, `v2` no estorba, el IBAN y el DNI
+    del firmante NO entran por la dirección y el envío va por la v2 (GNEW y MEGA)."""
+    for formulario, prefijo in (('gnew', 'GNE'), ('mega', 'MEGA')):
+        prefill = {k: v for k, v in datos_formulario(formulario).items() if k not in ('cuenta_bancaria', 'dni_firmante')}
+        # Y los dos datos que JAMÁS se aceptan por la dirección, puestos a propósito
+        consulta = urllib.parse.urlencode({'v2': '1', **prefill, 'cuenta_bancaria': IBAN_TECLEADO, 'dni_firmante': '12345678Z'})
+        c.ir(f'/{formulario}?{consulta}', v2=False)
+        c.page.wait_for_function("() => document.querySelector('[name=\"quien_eres\"]').value !== ''")
+        for nombre, valor in prefill.items():
+            assert c.page.input_value(f'[name="{nombre}"]') == valor, f'{formulario}: «{nombre}» no se ha rellenado desde la dirección'
+        assert c.page.input_value('[name="cuenta_bancaria"]') == '' and c.page.input_value('[name="dni_firmante"]') == '', \
+            'El IBAN y el DNI del firmante no pueden entrar por la dirección'
+        if formulario == 'mega':
+            assert c.page.input_value('[name="tipo_suministro"]') == 'Luz', 'El `change` del prefill tiene que llegar a los listeners'
+        # el resto, como siempre (lo que ya está relleno queda igual) → v2
+        c.rellenar(formulario)
+        c.adjuntar(JPG, PNG)
+        c.enviar()
+        ref = c.esperar_gracias()
+        ini = c.iniciar[-1]
+        assert ini['formulario'] == formulario and ini['ref'] == ref and ref.startswith(prefijo + '-')
+        for nombre, valor in prefill.items():
+            assert ini['datos'][nombre] == valor, f'{formulario}: «{nombre}» no viajó a iniciar tal como vino en la dirección'
+        comprobar_recibida(esperar_estado(ref, 'recibida'), ref, formulario, 2)
+    assert len(c.iniciar) == 2 and len(c.confirmar) == 2, 'Cada formulario: un iniciar y un confirmar (la v2)'
+    assert not c.google, 'Con ?v2=1 no se toca el Apps Script'
+
+
 CASOS = [
     (1, 'GNEW completo: 3 archivos (uno de 5,5 MB) + firma, progreso real y gracias con referencia', caso_1),
     (2, 'Corte de red en confirmar (respuesta perdida) → reintento, una sola fila y un solo aviso', caso_2),
@@ -409,6 +590,8 @@ CASOS = [
     (7, 'CUPS inválido → error en línea; errores del servidor (campos, documentación, firma) en línea', caso_7),
     (8, 'Todas las subidas cortadas → «No hemos podido terminar el envío» → Reintentar con la MISMA referencia', caso_8),
     (9, 'Tras un fallo se quita un archivo y se reenvía → vieja «abandonada», nueva «recibida»', caso_9),
+    (10, 'Interruptor V2_ACTIVO sin ?v2=1: el envío de SIEMPRE (Apps Script) idéntico al de producción, sin tocar /api/tramitacion', caso_10),
+    (11, '?v2=1 con prefill por URL (comparador DPC): campos rellenos, IBAN/DNI fuera de la URL y envío por la v2', caso_11),
 ]
 
 # Qué casos esperan hablar con el Apps Script (respuesta simulada); los demás lo ven abortado y fallan si lo intentan
@@ -463,7 +646,7 @@ def correr(numeros, lista=None, google_simulado=None, etiqueta='caso'):
 
 
 # ---------------------------------------------------------------------------
-# Extras: lo que los 9 casos no tocan (no cuentan en el «9/9»; `run.sh extras`)
+# Extras: lo que los 11 casos no tocan (no cuentan en el «11/11»; `run.sh extras`). También con ?v2=1 (lo pone `Caso.ir`)
 # ---------------------------------------------------------------------------
 
 CORS_ABIERTO = {'Access-Control-Allow-Origin': '*'}

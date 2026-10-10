@@ -239,7 +239,12 @@ class Caso:
         return route.abort('blockedbyclient')
 
     # -- navegación y formulario ----------------------------------------------------------------------
-    def ir(self, ruta):
+    def ir(self, ruta, v2=True):
+        """Abre un formulario. Por defecto con `?v2=1`: con el interruptor V2_ACTIVO apagado (como se despliega) la v2 solo
+        se ensaya así, y todos los casos que prueban la v2 pasan por aquí. `v2=False` abre la dirección tal cual, que es lo
+        que ve un comercial."""
+        if v2:
+            ruta += ('&' if '?' in ruta else '?') + 'v2=1'
         self.page.goto(BASE + ruta, wait_until='load')
         self.page.wait_for_selector('#contractForm')
 

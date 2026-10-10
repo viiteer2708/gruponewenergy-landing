@@ -577,7 +577,7 @@ def caso_5(c):
 
 
 def caso_6(c):
-    """Correos de la ficha: «enviado a las HH:MM», «Volver a enviar» (con su evento) y, con Altavoz caído, «pendiente (se reintenta solo)»."""
+    """Correos de la ficha: «enviado a las HH:MM», «Volver a enviar» (con su evento) y, con Altavoz caído, «pendiente (se reintenta solo)»; y las frases del historial para los eventos de adjuntos."""
     ref = SEMILLAS['A']
     c.con_sesion()
     p = c.page
@@ -614,6 +614,27 @@ def caso_6(c):
     bloque.locator('.correo').nth(1).get_by_role('button', name='Volver a enviar', exact=True).click()
     p.wait_for_function("() => /Acuse al comercial: enviado a las/.test(document.getElementById('bloqueCorreos').textContent)")
     c.sin_jerga()
+
+    # Los dos eventos de los adjuntos (solo aparecen cuando algo falla; aquí se añaden a la respuesta de la ficha, sin estropear el
+    # almacén): frases en llano, no «Cambio registrado». Va DESPUÉS de sin_jerga(): la de `adjuntos_rechazados` nombra a Altavoz
+    # (así está pedida) y el regex JERGA de este fichero no admite ese nombre en un texto que ve backoffice.
+    def con_eventos_de_adjuntos(route, request):
+        real = route.fetch()
+        cuerpo = real.json()
+        momento = cuerpo['eventos'][-1]['creado_en']
+        cuerpo['eventos'] += [
+            {'tipo': 'adjuntos_no_descargados', 'actor': 'sistema', 'detalle': {'n': 1, 'ordenes': [2], 'causas': ['tiempo']}, 'creado_en': momento},
+            {'tipo': 'adjuntos_rechazados', 'actor': 'sistema', 'detalle': {'http': 422, 'n': 3}, 'creado_en': momento},
+        ]
+        route.fulfill(response=real, json=cuerpo)
+
+    p.route('**/api/bandeja/ficha**', con_eventos_de_adjuntos)
+    c.abrir_ficha(ref)
+    historial = p.inner_text('#bloqueHistorial')
+    assert 'Algún documento no se pudo adjuntar al aviso; está en la bandeja' in historial, historial
+    assert 'Altavoz no aceptó los adjuntos: el aviso salió sin ellos; los documentos están en la bandeja' in historial, historial
+    assert 'Cambio registrado' not in historial, historial
+    p.unroute('**/api/bandeja/ficha**')
 
 
 def caso_7(c):

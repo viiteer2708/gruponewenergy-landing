@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # tests/e2e/run.sh · Pruebas con navegador de Tramitación v2, de principio a fin y sin dejar nada detrás.
 #
-#   bash tests/e2e/run.sh formulario    los 9 casos del formulario (gnew.html, mega.html y las páginas de gracias)
-#   bash tests/e2e/run.sh extras        comprobaciones extra (rutas que los 9 casos no tocan; no cuentan en el «9/9»)
+#   bash tests/e2e/run.sh formulario    los 11 casos del formulario (gnew.html, mega.html y las páginas de gracias; el 10 y el 11 son del interruptor V2_ACTIVO)
+#   bash tests/e2e/run.sh extras        comprobaciones extra (rutas que los 11 casos no tocan; no cuentan en el «11/11»)
 #   bash tests/e2e/run.sh capturas      capturas a 390 px del html de MASTER (antes) y del actual (después), comparadas
 #   bash tests/e2e/run.sh bandeja       la bandeja de backoffice (acceso con código, lista, ficha, descargas, estado) y sus capturas a 390 y 1440 px
 #
