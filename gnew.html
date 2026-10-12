@@ -1228,7 +1228,7 @@
     // ?v2=1 (solo esa carga de la página; no se guarda en ningún sitio) y se enciende poniendo
     // true. Con true, la v2 es el camino normal y ?v2=1 da igual. gnew.html y mega.html llevan
     // siempre el mismo valor.
-    const V2_ACTIVO = false;
+    const V2_ACTIVO = true;
     const USAR_V2 = V2_ACTIVO || new URLSearchParams(window.location.search).get('v2') === '1';
     // Interruptor del respaldo (solo cuenta cuando se usa la v2): pasada la primera semana
     // sin incidencias, a false.
