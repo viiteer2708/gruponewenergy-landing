@@ -313,7 +313,7 @@ describe('Bandeja · acceso (código por email, sesión y cuotas)', { timeout: 6
     t.diagnostic('correo con acceso: código enviado (solo hash en la base); correo sin acceso: misma respuesta, 0 correos, 0 accesos');
   });
 
-  it('entrar: el código correcto da la cookie (HttpOnly, SameSite=Lax, 30 días), `yo` dice quién es y el código solo vale una vez', async () => {
+  it('entrar: el código correcto da la cookie (HttpOnly, SameSite=Lax, 365 días), `yo` dice quién es y el código solo vale una vez', async () => {
     const { codigo, ip } = await pedirYLeer();
     const r = await post('/api/bandeja/entrar', { email: EMAIL, codigo: ` ${codigo.slice(0, 3)} ${codigo.slice(3)} ` }, { cabeceras: desde(ip) }); // con espacios
     assert.equal(r.status, 200, r.texto);
@@ -321,7 +321,7 @@ describe('Bandeja · acceso (código por email, sesión y cuotas)', { timeout: 6
     assert.equal(r.cookies.length, 1);
     const [pares, ...atributos] = r.cookies[0].split(';').map((x) => x.trim());
     assert.match(pares, /^bandeja_sesion=[A-Za-z0-9_.-]+$/);
-    assert.ok(atributos.includes('HttpOnly') && atributos.includes('SameSite=Lax') && atributos.includes('Path=/') && atributos.includes('Max-Age=2592000'), `Atributos: ${atributos.join(' · ')}`);
+    assert.ok(atributos.includes('HttpOnly') && atributos.includes('SameSite=Lax') && atributos.includes('Path=/') && atributos.includes('Max-Age=31536000'), `Atributos: ${atributos.join(' · ')}`);
     assert.ok(!atributos.includes('Secure'), 'Por http en local no lleva Secure');
     assert.ok(!r.texto.includes(pares.split('=')[1]), 'La cookie no viaja en el cuerpo');
 
@@ -417,7 +417,7 @@ describe('Bandeja · acceso (código por email, sesión y cuotas)', { timeout: 6
       'firma cambiada': `${carga}.${firma.slice(0, -2)}${firma.endsWith('A') ? 'BB' : 'AA'}`,
       'sin firma': carga,
       'basura': 'esto.no.es.una.cookie',
-      'caducada (hace 31 días)': firmarSesion(EMAIL, secretoBandeja(), { ahora: ahora - 31 * 24 * 3600 * 1000 }),
+      'caducada (hace 366 días)': firmarSesion(EMAIL, secretoBandeja(), { ahora: ahora - 366 * 24 * 3600 * 1000 }),
       'firmada con otro secreto': firmarSesion(EMAIL, 'otro-secreto-que-no-es-el-de-la-bandeja-0123456789'),
       'correo sin acceso (bien firmada)': firmarSesion(FUERA, secretoBandeja()),
     };

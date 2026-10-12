@@ -26,14 +26,14 @@ function cambiarUnCaracter(texto, posicion) {
   return texto.slice(0, posicion) + nuevo + texto.slice(posicion + 1);
 }
 
-test('sesión: ida y vuelta con el email normalizado y 30 días de vida', () => {
+test('sesión: ida y vuelta con el email normalizado y 365 días de vida', () => {
   const cookie = firmarSesion('  Backoffice@Ejemplo.COM ', SECRETO, { ahora: AHORA });
   const sesion = verificarSesion(cookie, SECRETO, { ahora: AHORA + 1000 });
   assert.ok(sesion, 'una cookie recién firmada debe valer');
   assert.equal(sesion.email, 'backoffice@ejemplo.com');
   assert.equal(sesion.iat, Math.floor(AHORA / 1000));
-  assert.equal(sesion.exp - sesion.iat, 30 * 24 * 60 * 60);
-  assert.equal(DURACION_SESION_SEG, 30 * 24 * 60 * 60);
+  assert.equal(sesion.exp - sesion.iat, 365 * 24 * 60 * 60);
+  assert.equal(DURACION_SESION_SEG, 365 * 24 * 60 * 60);
 });
 
 test('sesión: la cookie solo lleva caracteres seguros y dos partes', () => {
@@ -72,8 +72,9 @@ test('sesión: una cookie caducada se rechaza (justo en el límite también)', (
   assert.ok(verificarSesion(cookie, SECRETO, { ahora: AHORA + 59_000 }), 'a los 59 s sigue valiendo');
   assert.equal(verificarSesion(cookie, SECRETO, { ahora: AHORA + 60_000 }), null, 'a los 60 s ya no');
   assert.equal(verificarSesion(cookie, SECRETO, { ahora: AHORA + 31 * 24 * 3600 * 1000 }), null);
-  const treintaDias = firmarSesion('a@b.es', SECRETO, { ahora: AHORA });
-  assert.equal(verificarSesion(treintaDias, SECRETO, { ahora: AHORA + 31 * 24 * 3600 * 1000 }), null);
+  const unAno = firmarSesion('a@b.es', SECRETO, { ahora: AHORA });
+  assert.ok(verificarSesion(unAno, SECRETO, { ahora: AHORA + 364 * 24 * 3600 * 1000 }), 'a los 364 días sigue valiendo');
+  assert.equal(verificarSesion(unAno, SECRETO, { ahora: AHORA + 366 * 24 * 3600 * 1000 }), null);
 });
 
 test('sesión: firmada con otro secreto no vale', () => {
@@ -109,12 +110,12 @@ test('sesión: un secreto mal configurado sí lanza (no se confunde con «sin se
   assert.throws(() => firmarSesion('', SECRETO, { ahora: AHORA }), /email/i);
 });
 
-test('cookie: HttpOnly, SameSite=Lax, Path=/, Max-Age de 30 días y Secure opcional', () => {
+test('cookie: HttpOnly, SameSite=Lax, Path=/, Max-Age de 365 días y Secure opcional', () => {
   const valor = firmarSesion('a@b.es', SECRETO, { ahora: AHORA });
   const sinSecure = cookieSesion(valor);
   assert.ok(sinSecure.startsWith(`${NOMBRE_COOKIE}=${valor};`));
   assert.equal(NOMBRE_COOKIE, 'bandeja_sesion');
-  assert.match(sinSecure, /; Max-Age=2592000(;|$)/);
+  assert.match(sinSecure, /; Max-Age=31536000(;|$)/);
   assert.match(sinSecure, /; Path=\/(;|$)/);
   assert.match(sinSecure, /; HttpOnly(;|$)/);
   assert.match(sinSecure, /; SameSite=Lax(;|$)/);

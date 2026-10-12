@@ -7,7 +7,7 @@
 import { createHash, createHmac, randomInt, timingSafeEqual } from 'node:crypto';
 
 export const NOMBRE_COOKIE = 'bandeja_sesion';
-export const DURACION_SESION_SEG = 30 * 24 * 60 * 60; // 30 días
+export const DURACION_SESION_SEG = 365 * 24 * 60 * 60; // 365 días (Victor, 12-oct-2026: «no quiero que pida nada en los próximos 365 días»)
 
 function exigirSecreto(secreto) {
   if (typeof secreto !== 'string' || secreto.length < 16) {
@@ -76,7 +76,7 @@ export function verificarSesion(valor, secreto, { ahora = Date.now() } = {}) {
 // punto): así nunca se cuela una cabecera ni un atributo extra.
 const VALOR_COOKIE = /^[A-Za-z0-9_.-]+$/;
 
-/** Cabecera Set-Cookie de la sesión: HttpOnly, SameSite=Lax, Path=/, 30 días; Secure si se pide. */
+/** Cabecera Set-Cookie de la sesión: HttpOnly, SameSite=Lax, Path=/, 365 días; Secure si se pide. */
 export function cookieSesion(valor, { secure = false, maxAgeSeg = DURACION_SESION_SEG } = {}) {
   if (typeof valor !== 'string' || !VALOR_COOKIE.test(valor)) throw new Error('Valor de cookie no válido');
   return `${NOMBRE_COOKIE}=${valor}; Max-Age=${Math.floor(maxAgeSeg)}; Path=/; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
