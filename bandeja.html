@@ -328,7 +328,7 @@
         }
 
         /* ===== QUIÉN HA ABIERTO LA FICHA ===== */
-        /* Sin abrir: una raya azul a la izquierda (sigue azul al pasar el ratón: va después de .tarjeta:hover) y la pastilla */
+        /* Sin abrir (solo las pendientes): una raya azul a la izquierda (sigue azul al pasar el ratón: va después de .tarjeta:hover) y la pastilla */
         .tarjeta.sin-abrir {
             border-left: 4px solid #2563EB;
         }
@@ -600,8 +600,10 @@
 
     function tarjeta(it) {
         var vistas = Array.isArray(it.vistas) ? it.vistas : [];
+        // «Sin abrir» solo en las pendientes: en una tramitada, una incompleta o una descartada que nadie ha abierto se contradiría con su estado
+        var sinAbrir = vistas.length === 0 && it.estado === 'recibida';
         var li = el('li');
-        var a = el('a', 'tarjeta' + (vistas.length === 0 ? ' sin-abrir' : ''));
+        var a = el('a', 'tarjeta' + (sinAbrir ? ' sin-abrir' : ''));
         a.href = '/bandeja/c/' + encodeURIComponent(it.ref);
 
         var cabeza = el('div', 't-cabeza');
@@ -626,14 +628,17 @@
         pie.appendChild(el('span', null, n + (n === 1 ? ' documento' : ' documentos')));
         a.appendChild(pie);
 
-        // Quién ha abierto la ficha: nadie → «Sin abrir»; si no, una línea por persona (las más recientes primero)
-        var vista = el('div', 't-vista');
-        if (vistas.length === 0) {
-            vista.appendChild(el('span', 'ins ins-sin-abrir', 'Sin abrir'));
-        } else {
-            for (var j = 0; j < vistas.length && j < MAX_VISTAS; j++) vista.appendChild(lineaAbierta(vistas[j]));
+        // Quién ha abierto la ficha: una pendiente que nadie ha abierto → «Sin abrir»; si alguien la ha abierto (en cualquier estado) →
+        // una línea por persona, las más recientes primero; cualquier otra que nadie ha abierto no lleva esta fila
+        if (sinAbrir || vistas.length > 0) {
+            var vista = el('div', 't-vista');
+            if (sinAbrir) {
+                vista.appendChild(el('span', 'ins ins-sin-abrir', 'Sin abrir'));
+            } else {
+                for (var j = 0; j < vistas.length && j < MAX_VISTAS; j++) vista.appendChild(lineaAbierta(vistas[j]));
+            }
+            a.appendChild(vista);
         }
-        a.appendChild(vista);
 
         li.appendChild(a);
         return li;

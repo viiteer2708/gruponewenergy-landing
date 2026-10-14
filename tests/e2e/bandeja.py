@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """tests/e2e/bandeja.py · La bandeja de backoffice con navegador real (orden 4): acceso con código, lista, ficha,
 descargas (una a una y en ZIP), cambio de estado, volver a enviar y las capturas a 390 y 1440 px; y (14-oct-2026) quién ha
-abierto cada ficha («Sin abrir» / «Abierta por …» en la lista y en la ficha: casos 14 y 15).
+abierto cada ficha («Sin abrir» solo en las pendientes / «Abierta por …» en la lista y en la ficha: casos 14, 15 y 16).
 
 Uso (lo normal es `bash tests/e2e/run.sh bandeja`, que arranca el servidor y limpia después):
     python tests/e2e/bandeja.py              todos los casos, en serie
@@ -1054,6 +1054,81 @@ def caso_15(c):
     c.sin_jerga()
 
 
+def caso_16(c):
+    """«Sin abrir» solo en las pendientes: una pendiente que nadie ha abierto la lleva (raya azul y pastilla); una tramitada, una incompleta y una descartada que nadie ha abierto NO enseñan «Sin abrir», ni raya, ni fila de «quién»; y si alguien las abre, «Abierta por …» sale igual (en cualquier estado) y sin la raya."""
+    extra = lambda titular: {'titular': titular, 'quien_eres': 'Comercial Marcador16'}  # la búsqueda `marcador16` encuentra solo estas cuatro
+    pendiente = crear('gnew', [(1, 'pendiente.jpg', JPG.read_bytes())], extra=extra('Titular Solo Pendiente SL'))
+    tramitada = crear('gnew', [(1, 'tramitada.jpg', JPG.read_bytes())], extra=extra('Titular Ya Tramitada SL'))
+    incompleta = crear('gnew', [(1, 'incompleta.pdf', b'%PDF-1.4\n' + b'x' * 2048)], extra=extra('Titular Incompleto SL'), completo=False)
+    descartada = crear('gnew', [(1, 'bot.pdf', b'%PDF-1.4\n' + b'x' * 2048)], extra=extra('Titular Bot SL'), hp='soy un robot')
+    c.con_sesion()
+    p = c.page
+    galleta = {'Cookie': 'bandeja_sesion=' + [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion'][0]['value']}
+    # la tramitada se marca por la API: así NADIE abre su ficha (por la pantalla habría que abrirla)
+    st, _, cuerpo = http('POST', '/api/bandeja/estado', {'ref': tramitada, 'accion': 'tramitar'}, cabeceras=galleta)
+    assert st == 200, cuerpo
+    aperturas = lambda ref: [x for x in estado_de(ref)['eventos'] if x['tipo'] == 'ficha_abierta']
+    assert all(aperturas(r) == [] for r in (pendiente, tramitada, incompleta, descartada)), 'Nadie ha abierto ninguna'
+    tarjeta = lambda ref: p.locator(f'a.tarjeta[href$="{ref}"]')
+    raya = lambda ref: tarjeta(ref).evaluate("e => { const s = getComputedStyle(e); return [s.borderLeftWidth, s.borderLeftColor]; }")
+
+    def sin_la_marca(ref):
+        """La tarjeta no dice «Sin abrir»: ni el texto, ni la raya azul, ni la fila de «quién» (ni ojo)."""
+        t = tarjeta(ref)
+        assert t.count() == 1, f'{ref} debería estar en la lista'
+        assert 'Sin abrir' not in t.inner_text() and 'Abierta por' not in t.inner_text(), t.inner_text()
+        assert 'sin-abrir' not in t.get_attribute('class').split()
+        assert t.locator('.t-vista').count() == 0 and t.locator('.ins-sin-abrir').count() == 0 and t.locator('svg').count() == 0
+        assert raya(ref)[0] == '1px', 'Sin la raya azul'
+
+    def abierta_por_sin_raya(ref):
+        t = tarjeta(ref)
+        assert t.count() == 1, f'{ref} debería estar en la lista'
+        assert re.search(rf'Abierta por {re.escape(EMAIL)} · hace (unos segundos|\d+ min)', t.inner_text()), t.inner_text()
+        assert 'Sin abrir' not in t.inner_text() and 'sin-abrir' not in t.get_attribute('class').split()
+        assert t.locator('.t-vista svg[aria-hidden="true"]').count() == 1
+        assert raya(ref)[0] == '1px', 'Abierta no lleva la raya azul'
+
+    # 1) «Todas» (sin las descartadas): la pendiente sin abrir lleva su raya azul y su pastilla; la tramitada y la incompleta, nada
+    c.ver('/bandeja', 'a.tarjeta')
+    c.esperar_lista()
+    c.elegir_filtro('Todas')
+    c.buscar('marcador16')
+    assert sorted(c.refs_en_lista()) == sorted([pendiente, tramitada, incompleta]), c.refs_en_lista()
+    t = tarjeta(pendiente)
+    assert 'sin-abrir' in t.get_attribute('class').split() and 'Sin abrir' in t.inner_text(), t.inner_text()
+    assert raya(pendiente) == ['4px', 'rgb(37, 99, 235)']
+    assert t.locator('.t-vista .ins-sin-abrir').count() == 1
+    sin_la_marca(tramitada)
+    sin_la_marca(incompleta)
+    c.sin_jerga()
+    c.sin_desbordes()
+
+    # 2) cada pestaña con su estado: Tramitadas, Incompletas y Descartadas sin abrir no enseñan «Sin abrir»
+    c.elegir_filtro('Tramitadas')
+    assert c.refs_en_lista() == [tramitada], c.refs_en_lista()
+    sin_la_marca(tramitada)
+    c.elegir_filtro('Incompletas')
+    assert c.refs_en_lista() == [incompleta], c.refs_en_lista()
+    sin_la_marca(incompleta)
+    p.get_by_role('button', name='Más', exact=True).click()
+    c.elegir_filtro('Descartadas')
+    assert c.refs_en_lista() == [descartada], c.refs_en_lista()
+    sin_la_marca(descartada)
+    assert all(aperturas(r) == [] for r in (tramitada, incompleta, descartada)), 'Mirar la lista no abre ninguna ficha'
+
+    # 3) alguien abre la descartada y la tramitada: «Abierta por …» sale igual aunque no estén pendientes, y sin la raya
+    for ref in (descartada, tramitada):
+        st, _, cuerpo = http('GET', f'/api/bandeja/ficha?ref={ref}&abrir=1', cabeceras=galleta)
+        assert st == 200, cuerpo
+    c.elegir_filtro('Descartadas')
+    abierta_por_sin_raya(descartada)
+    c.elegir_filtro('Tramitadas')
+    abierta_por_sin_raya(tramitada)
+    c.sin_jerga()
+    c.sin_desbordes()
+
+
 CASOS = [
     (1, 'Acceso: de /bandeja al login con «volver», código por correo simulado, código malo, código bueno y cookie HttpOnly', caso_1),
     (2, 'Un correo sin acceso ve lo mismo que uno con acceso, sin correo y sin entrar', caso_2),
@@ -1070,6 +1145,7 @@ CASOS = [
     (13, 'Cuando algo falla: frases en llano y reintentar (lista, ficha, estado, correos, descargas)', caso_13),
     (14, 'Quién ha abierto cada ficha: «Sin abrir» → ficha → «Abierta por …» (arriba y en el historial) → de vuelta en la lista', caso_14),
     (15, 'Varias personas (3 líneas, «hace …» al día) y lista que se pone al día al volver desde la caché de «atrás»', caso_15),
+    (16, '«Sin abrir» solo en las pendientes: tramitada, incompleta y descartada sin abrir no lo enseñan; abiertas, «Abierta por …» en cualquier estado', caso_16),
 ]
 
 
