@@ -227,6 +227,13 @@
             overflow-wrap: anywhere;
         }
 
+        .abierta-por {
+            margin-top: .35rem;
+            font-size: .8125rem;
+            color: var(--text-muted);
+            overflow-wrap: anywhere;
+        }
+
         .banner {
             margin-top: .75rem;
             padding: .7rem .9rem;
@@ -602,6 +609,7 @@
                 <div class="insignias" id="insignias"></div>
             </div>
             <p class="tramitada-por" id="tramitadaPor" hidden></p>
+            <p class="abierta-por" id="abiertaPor" hidden></p>
             <div class="banner" id="banner" hidden></div>
             <div class="acciones" id="acciones"></div>
             <div class="confirmar" id="confirmar" role="alertdialog" aria-labelledby="confirmarTexto" hidden>
@@ -734,9 +742,11 @@
     }
 
     // `silenciosa` = refresco por detrás (enlaces caducados, después de un cambio): no tapa la ficha con «Cargando»
+    // y NO cuenta como abrirla. Solo la carga de verdad (la primera, y la de «Reintentar») manda `abrir=1`: el servidor
+    // apunta entonces quién abre la ficha (una vez cada 15 minutos por persona)
     async function cargar(silenciosa) {
         if (!silenciosa) mostrarCarga('Cargando la ficha…');
-        const r = await api('/api/bandeja/ficha?ref=' + encodeURIComponent(ref));
+        const r = await api('/api/bandeja/ficha?ref=' + encodeURIComponent(ref) + (silenciosa ? '' : '&abrir=1'));
         if (!r.red && r.status === 401) { irALogin(); return false; }
         if (r.red) {
             if (!silenciosa) mostrarCarga(FRASE_RED, true, true);
@@ -795,6 +805,8 @@
             por.hidden = true;
         }
 
+        pintarAbiertaPor();
+
         const banner = $('banner');
         let aviso = '';
         let rojo = false;
@@ -815,6 +827,19 @@
         pintarDocumentos();
         pintarCorreos();
         pintarHistorial();
+    }
+
+    // «Abierta por a@b (14-10-2026 a las 10:32) · c@d (…)»: una entrada por persona, con su apertura más reciente y la última
+    // primero. Sale de los eventos `ficha_abierta` del historial; si no hay ninguno, la línea no se enseña.
+    function pintarAbiertaPor() {
+        const linea = $('abiertaPor');
+        const porPersona = new Map(); // correo → su apertura más reciente (los eventos llegan de más antiguo a más nuevo)
+        for (const ev of datos.eventos) {
+            if (ev.tipo === 'ficha_abierta' && typeof ev.actor === 'string' && ev.actor && partes(ev.creado_en)) porPersona.set(ev.actor, ev.creado_en);
+        }
+        const gente = [...porPersona].sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]));
+        linea.textContent = gente.length > 0 ? 'Abierta por ' + gente.map(([quien, cuando]) => `${quien} (${fechaHora(cuando)})`).join(' · ') : '';
+        linea.hidden = gente.length === 0;
     }
 
     function pintarAcciones() {
@@ -1164,6 +1189,7 @@
             case 'descartada': return 'Descartada por el filtro antibots';
             case 'aviso_reenviado': return `Aviso reenviado${por}`;
             case 'acuse_reenviado': return `Acuse reenviado${por}`;
+            case 'ficha_abierta': return `Ficha abierta${por}`;
             case 'adjuntos_no_descargados': return 'Algún documento no se pudo adjuntar al aviso; está en la bandeja';
             case 'adjuntos_rechazados': return 'Altavoz no aceptó los adjuntos: el aviso salió sin ellos; los documentos están en la bandeja';
             default: return 'Cambio registrado';

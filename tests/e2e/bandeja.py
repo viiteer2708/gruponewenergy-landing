@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """tests/e2e/bandeja.py · La bandeja de backoffice con navegador real (orden 4): acceso con código, lista, ficha,
-descargas (una a una y en ZIP), cambio de estado, volver a enviar y las capturas a 390 y 1440 px.
+descargas (una a una y en ZIP), cambio de estado, volver a enviar y las capturas a 390 y 1440 px; y (14-oct-2026) quién ha
+abierto cada ficha («Sin abrir» / «Abierta por …» en la lista y en la ficha: casos 14 y 15).
 
 Uso (lo normal es `bash tests/e2e/run.sh bandeja`, que arranca el servidor y limpia después):
     python tests/e2e/bandeja.py              todos los casos, en serie
@@ -25,7 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -402,7 +403,7 @@ def caso_3(c):
             visto['antes'] = consulta['antes'][0]
             falsa = {'ref': 'GNE-20260101-PAGINA', 'formulario': 'gnew', 'estado': 'recibida', 'compania': 'Compañía de otra página', 'titular_nombre': 'Titular de la segunda página',
                      'cups': 'ES0021000000000001RK', 'comercial_nombre': 'Comercial', 'tarifa': '2.0TD', 'creada_en': '2026-01-01T10:00:00.000000+00:00',
-                     'recibida_en': '2026-01-01T10:00:00.000000+00:00', 'n_documentos': 1}
+                     'recibida_en': '2026-01-01T10:00:00.000000+00:00', 'n_documentos': 1, 'vistas': []}
             route.fulfill(status=200, content_type='application/json', body=json.dumps({'ok': True, 'items': [falsa], 'siguiente': None}))
         else:
             real = route.fetch()
@@ -710,7 +711,10 @@ def caso_9(c):
     tarjeta = p.locator(f'a.tarjeta[href$="{ref}"]')
     assert XSS_TITULAR in tarjeta.inner_text(), tarjeta.inner_text()
     assert XSS_COMERCIAL in tarjeta.inner_text()
-    assert p.locator('#lista img, #lista script, #lista svg, #lista iframe, #lista b, #lista u').count() == 0, 'La lista no ha creado ningún elemento con lo que escribió el comercial'
+    assert tarjeta.locator('img, script, svg, iframe, b, u').count() == 0, 'La tarjeta no ha creado ningún elemento con lo que escribió el comercial'
+    # (en el resto de la lista puede haber ojos: las tarjetas «Abierta por …» llevan un SVG propio, siempre el mismo)
+    assert p.locator('#lista img, #lista script, #lista iframe, #lista b, #lista u').count() == 0, 'La lista no ha creado ningún elemento con lo que escribió el comercial'
+    assert p.locator('#lista svg:not(.t-ojo)').count() == 0, 'En la lista no hay más SVG que los ojos de las tarjetas'
     c.sin_desbordes()
     tarjeta.click()
     p.wait_for_selector('#ficha:not([hidden])')
@@ -911,6 +915,145 @@ def caso_13(c):
     c.sin_jerga()
 
 
+def caso_14(c):
+    """Quién ha abierto cada ficha: una pendiente que nadie ha mirado enseña «Sin abrir» (raya azul y pastilla); al abrir su ficha sale «Abierta por …» arriba y «Ficha abierta por …» en el historial, UNA vez (ni una carga que falla ni el refresco en silencio apuntan de más); y al volver atrás la tarjeta enseña «Abierta por» y ya no «Sin abrir»."""
+    ref = crear('gnew', [(1, 'visto.jpg', JPG.read_bytes())], extra={'titular': 'Titular Visto SL'})
+    aperturas = lambda: [x for x in estado_de(ref)['eventos'] if x['tipo'] == 'ficha_abierta']
+    c.con_sesion()
+    p = c.page
+    pedidas = []  # direcciones (enteras) de las peticiones a la ficha: se mira cuáles llevan abrir=1
+    p.on('request', lambda r: pedidas.append(r.url) if '/api/bandeja/ficha' in r.url else None)
+
+    # 1) en la lista, una pendiente que nadie ha abierto: «Sin abrir», con su raya azul de 4 px y su pastilla azul, y ningún «Abierta por»
+    c.ver('/bandeja', 'a.tarjeta')
+    c.buscar(ref)
+    tarjeta = p.locator(f'a.tarjeta[href$="{ref}"]')
+    assert tarjeta.count() == 1
+    assert 'sin-abrir' in tarjeta.get_attribute('class').split()
+    texto = tarjeta.inner_text()
+    assert 'Sin abrir' in texto and 'Abierta por' not in texto, texto
+    assert tarjeta.evaluate("e => { const s = getComputedStyle(e); return [s.borderLeftWidth, s.borderLeftColor]; }") == ['4px', 'rgb(37, 99, 235)']
+    assert tarjeta.locator('.t-vista .ins-sin-abrir').evaluate("e => { const s = getComputedStyle(e); return [s.color, s.backgroundColor]; }") == ['rgb(29, 78, 216)', 'rgb(219, 234, 254)']
+    assert tarjeta.locator('svg').count() == 0
+    assert aperturas() == []
+    c.sin_jerga()
+    c.sin_desbordes()
+
+    # 2) se abre la ficha, pero la carga falla (sin red): no cuenta como abrirla; con «Reintentar» sí, y manda abrir=1
+    c.rota('/api/bandeja/ficha')
+    p.route('**/api/bandeja/ficha**', lambda route, request: route.abort('connectionreset'))
+    tarjeta.click()
+    p.wait_for_function("() => /No hemos podido conectar/.test(document.getElementById('estadoCarga').textContent)")
+    assert aperturas() == [], 'Una carga que no llega no es una apertura'
+    p.unroute('**/api/bandeja/ficha**')
+    p.get_by_role('button', name='Reintentar', exact=True).click()
+    p.wait_for_selector('#ficha:not([hidden])')
+    assert len(pedidas) == 2 and all(u.endswith(f'ref={ref}&abrir=1') for u in pedidas), pedidas
+    linea = p.inner_text('#abiertaPor')
+    assert p.is_visible('#abiertaPor')
+    assert re.fullmatch(rf'Abierta por {re.escape(EMAIL)} \(\d{{1,2}}-\d{{1,2}}-\d{{4}} a las \d{{2}}:\d{{2}}\)', linea), linea
+    assert f'Ficha abierta por {EMAIL}' in p.inner_text('#bloqueHistorial')
+    hechas = aperturas()
+    assert len(hechas) == 1 and hechas[0]['actor'] == EMAIL and hechas[0]['detalle'] == {}, hechas
+    c.sin_jerga()
+    c.sin_desbordes()
+
+    # 3) el refresco en silencio de después de una acción («Volver a enviar» vuelve a pedir la ficha) NO manda abrir=1 ni apunta otra
+    p.locator('#bloqueCorreos .correo').nth(0).get_by_role('button', name='Volver a enviar', exact=True).click()
+    p.wait_for_selector('.correo-resultado')
+    assert len(pedidas) == 3 and 'abrir' not in pedidas[-1], pedidas
+    assert len(aperturas()) == 1
+    assert p.inner_text('#bloqueHistorial').count('Ficha abierta por') == 1
+
+    # 4) volver atrás: la tarjeta ya no es «Sin abrir», sino «Abierta por …» con el ojo y el «hace …»
+    p.go_back()
+    p.wait_for_url(re.compile(r'/bandeja$'))
+    c.esperar_lista()
+    c.buscar(ref)
+    tarjeta = p.locator(f'a.tarjeta[href$="{ref}"]')
+    texto = tarjeta.inner_text()
+    assert re.search(rf'Abierta por {re.escape(EMAIL)} · hace (unos segundos|\d+ min)', texto), texto
+    assert 'Sin abrir' not in texto
+    assert 'sin-abrir' not in tarjeta.get_attribute('class').split()
+    assert tarjeta.evaluate("e => getComputedStyle(e).borderLeftWidth") == '1px', 'Sin la raya azul'
+    assert tarjeta.locator('.t-vista svg[aria-hidden="true"]').count() == 1
+    assert tarjeta.locator('.t-vista strong').inner_text() == EMAIL
+    assert len(aperturas()) == 1
+    c.sin_jerga()
+    c.sin_desbordes()
+
+
+def caso_15(c):
+    """Varias personas y caché de «atrás»: una tarjeta con 4 aperturas enseña las 3 más recientes (ojo, correo en negrita y «hace …» al día cada minuto); y al volver desde la caché del navegador (pageshow) la lista se vuelve a pedir con el mismo filtro y búsqueda y deja de decir «Sin abrir»."""
+    ref = crear('gnew', [(1, 'visto.jpg', JPG.read_bytes())], extra={'titular': 'Titular Varias Personas SL'})
+    ref2 = crear('gnew', [(1, 'cache.jpg', JPG.read_bytes())], extra={'titular': 'Titular Cache SL'})
+    c.con_sesion()
+    p = c.page
+    otra = 'victor.molins.10+otra-persona@gmail.com'
+    larga = 'victor.molins.10+una-persona-de-backoffice-con-un-correo-bastante-largo-de-verdad@gmail.com'
+    cuarta = 'victor.molins.10+cuarta-persona@gmail.com'
+
+    def hace(**tiempo):
+        return (datetime.now(timezone.utc) - timedelta(**tiempo)).strftime('%Y-%m-%dT%H:%M:%S.%f') + '+00:00'
+
+    def con_cuatro_personas(route, request):
+        real = route.fetch()
+        cuerpo = real.json()
+        for item in cuerpo['items']:
+            if item['ref'] == ref:
+                item['vistas'] = [{'por': EMAIL, 'en': hace(minutes=4)}, {'por': otra, 'en': hace(hours=2)},
+                                  {'por': larga, 'en': hace(days=3)}, {'por': cuarta, 'en': hace(days=9)}]
+        route.fulfill(response=real, json=cuerpo)
+
+    # 1) cuatro personas: se enseñan las tres más recientes, una línea cada una, y la cuarta no
+    p.clock.install()  # reloj falso (antes de cargar la página) para adelantar minutos sin esperarlos
+    p.route('**/api/bandeja/lista**', con_cuatro_personas)
+    c.ver('/bandeja', 'a.tarjeta')
+    c.buscar(ref)
+    tarjeta = p.locator(f'a.tarjeta[href$="{ref}"]')
+    lineas = tarjeta.locator('.t-abierta')
+    assert lineas.count() == 3, lineas.count()
+    assert [x.inner_text() for x in tarjeta.locator('.t-abierta strong').all()] == [EMAIL, otra, larga]
+    assert cuarta not in tarjeta.inner_text() and 'Sin abrir' not in tarjeta.inner_text()
+    assert tarjeta.locator('.t-abierta svg.t-ojo[aria-hidden="true"]').count() == 3
+    primera = lineas.nth(0).inner_text()
+    assert re.fullmatch(rf'Abierta por {re.escape(EMAIL)} · hace 4 min', primera), primera
+    assert re.fullmatch(rf'Abierta por {re.escape(otra)} · hace 2 h', lineas.nth(1).inner_text())
+    assert re.fullmatch(rf'Abierta por {re.escape(larga)} · hace 3 días', lineas.nth(2).inner_text())
+    assert 'sin-abrir' not in tarjeta.get_attribute('class').split()
+    # el correo largo se parte en vez de salirse de la tarjeta
+    c.sin_desbordes()
+    assert tarjeta.evaluate("e => e.scrollWidth <= e.clientWidth + 1"), 'La tarjeta no desborda'
+    c.sin_jerga()
+    # el «hace …» se mantiene al día solo (cada minuto): pasados 3 minutos, de 4 a 7
+    p.clock.fast_forward('03:00')
+    p.wait_for_function("() => /hace 7 min/.test(document.querySelector('.t-abierta .t-cuando').textContent)", polling=250)
+    assert re.fullmatch(rf'Abierta por {re.escape(EMAIL)} · hace 7 min', lineas.nth(0).inner_text())
+
+    # 2) la lista que se quedó en la caché de «atrás»: la tarjeta sigue diciendo «Sin abrir» hasta que llega un pageshow de caché
+    p.unroute('**/api/bandeja/lista**')
+    c.elegir_filtro('Todas')
+    c.buscar(ref2)
+    tarjeta2 = p.locator(f'a.tarjeta[href$="{ref2}"]')
+    assert 'Sin abrir' in tarjeta2.inner_text()
+    galleta = [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion'][0]['value']
+    st, _, _ = http('GET', f'/api/bandeja/ficha?ref={ref2}&abrir=1', cabeceras={'Cookie': f'bandeja_sesion={galleta}'})  # alguien la abre «en otra pestaña»
+    assert st == 200
+    listas = lambda: len([r for r in c.respuestas if r['ruta'].endswith('/lista')])
+    antes = listas()
+    p.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }))")  # una carga normal: no hace nada
+    p.wait_for_timeout(600)
+    assert listas() == antes and 'Sin abrir' in tarjeta2.inner_text(), 'Un pageshow normal no recarga la lista'
+    p.evaluate("() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }))")  # volver desde la caché del navegador
+    p.wait_for_function("(r) => /Abierta por/.test(document.querySelector(`a.tarjeta[href$='${r}']`)?.textContent || '')", arg=ref2, polling=250)
+    assert listas() == antes + 1
+    texto = tarjeta2.inner_text()
+    assert re.search(rf'Abierta por {re.escape(EMAIL)} · hace (unos segundos|\d+ min)', texto) and 'Sin abrir' not in texto, texto
+    assert p.input_value('#q') == ref2, 'La búsqueda se conserva'
+    assert p.get_by_role('button', name='Todas', exact=True).get_attribute('aria-pressed') == 'true', 'El filtro se conserva'
+    c.sin_jerga()
+
+
 CASOS = [
     (1, 'Acceso: de /bandeja al login con «volver», código por correo simulado, código malo, código bueno y cookie HttpOnly', caso_1),
     (2, 'Un correo sin acceso ve lo mismo que uno con acceso, sin correo y sin entrar', caso_2),
@@ -925,6 +1068,8 @@ CASOS = [
     (11, 'Salir cierra la sesión', caso_11),
     (12, 'Enlaces de 10 minutos: se renuevan solos y al pulsar «Descargar» / «Ver» si se pasaron', caso_12),
     (13, 'Cuando algo falla: frases en llano y reintentar (lista, ficha, estado, correos, descargas)', caso_13),
+    (14, 'Quién ha abierto cada ficha: «Sin abrir» → ficha → «Abierta por …» (arriba y en el historial) → de vuelta en la lista', caso_14),
+    (15, 'Varias personas (3 líneas, «hace …» al día) y lista que se pone al día al volver desde la caché de «atrás»', caso_15),
 ]
 
 

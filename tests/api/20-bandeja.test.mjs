@@ -1,5 +1,5 @@
 // tests/api/20-bandeja.test.mjs · Pruebas de API de la bandeja de backoffice (orden 4): código de acceso, sesión,
-// lista, ficha, estado y «volver a enviar».
+// lista, ficha, estado y «volver a enviar»; y (14-oct-2026) quién ha abierto cada ficha: evento `ficha_abierta` y `vistas`.
 //
 // Necesita el servidor local en marcha y la base REAL de Supabase (todo lo que se escribe lleva prueba=true y vive bajo
 // pruebas/ en el almacén; se borra con scripts/limpiar-pruebas.mjs --todo):
@@ -12,10 +12,11 @@
 // Altavoz es siempre simulado. Solo se usan alias de Victor (victor.molins.10+algo@gmail.com).
 import assert from 'node:assert/strict';
 import { randomInt } from 'node:crypto';
-import { before, describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import { setTimeout as esperar } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
+import { MINUTOS_ENTRE_APERTURAS, ficha as fichaEnEsteProceso } from '../../api/_lib/bandeja.js';
 import { FORM_TOKENS, secretoBandeja, supabaseUrl } from '../../api/_lib/config.js';
 import { NOMBRE_COOKIE, firmarSesion, hashCodigo } from '../../api/_lib/sesion.js';
 import { actualizar, borrar, insertar, seleccionar } from '../../api/_lib/supabase.js';
@@ -575,8 +576,9 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
     for (const ref of [C, D, E]) assert.ok(!porRef.has(ref), `${ref}: lo que no está recibido no sale en Pendientes`);
     const a = porRef.get(A);
     assert.deepEqual(Object.keys(a).sort(), [
-      'cups', 'compania', 'comercial_nombre', 'creada_en', 'estado', 'formulario', 'n_documentos', 'recibida_en', 'ref', 'tarifa', 'titular_nombre',
+      'cups', 'compania', 'comercial_nombre', 'creada_en', 'estado', 'formulario', 'n_documentos', 'recibida_en', 'ref', 'tarifa', 'titular_nombre', 'vistas',
     ].sort());
+    assert.deepEqual(a.vistas, [], 'Nadie ha abierto todavía la ficha de A: `vistas` va vacía, no ausente');
     assert.deepEqual(
       { formulario: a.formulario, estado: a.estado, compania: a.compania, titular_nombre: a.titular_nombre, cups: a.cups, comercial_nombre: a.comercial_nombre, tarifa: a.tarifa, n_documentos: a.n_documentos },
       { formulario: 'gnew', estado: 'recibida', compania: 'Compañía de Prueba', titular_nombre: 'Titular de Prueba SL', cups: CUPS, comercial_nombre: 'Comercial de Prueba', tarifa: '2.0TD', n_documentos: 4 },
@@ -965,5 +967,248 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
       assert.equal((await intento).status, 401);
     }
     assert.equal((await estadoDe(ref)).tramitacion.estado, 'tramitada', 'Y no se cambió nada sin sesión');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parte 3 · quién ha abierto cada ficha: evento `ficha_abierta` (ficha?abrir=1) y `vistas` de la lista
+// ---------------------------------------------------------------------------
+
+describe('Bandeja · quién ha abierto cada ficha', { timeout: 900_000 }, () => {
+  let cookie;
+  const autorizado = (extra = {}) => ({ cookie, ...extra });
+  const OTRA = 'victor.molins.10+otra-persona@gmail.com'; // otra persona de backoffice (alias de Victor): solo aparece en la base, no entra
+  const hace = (minutos) => new Date(Date.now() - minutos * 60_000).toISOString();
+  const lote = String(randomInt(10000, 99999)); // marca propia: la búsqueda `lote<N>` solo encuentra las fichas sueltas de esta parte
+  const sueltas = []; // sus referencias, para borrarlas al terminar (con ellas caen sus eventos)
+  let contador = 0;
+
+  const aperturasDe = async (ref) => (await estadoDe(ref)).eventos.filter((e) => e.tipo === 'ficha_abierta');
+  const abrirFicha = (ref, extra = '&abrir=1') => get(`/api/bandeja/ficha?ref=${ref}${extra}`, autorizado());
+  const pares = (eventos) => eventos.map((e) => [e.tipo, e.actor]);
+
+  /** Las tarjetas de la lista (todas las fichas) que encuentra una búsqueda, por referencia. */
+  async function tarjetas(q) {
+    const r = await get(`/api/bandeja/lista?estado=todas&q=${encodeURIComponent(q)}`, autorizado());
+    assert.equal(r.status, 200, r.texto);
+    return new Map(r.json.items.map((i) => [i.ref, i]));
+  }
+
+  /** Una ficha suelta (sin documentos ni correos) para probar sin pasar por el almacén: de hace 10 días, fuera de la ventana de `conciliar`. */
+  async function fichaSuelta(titulo) {
+    contador += 1;
+    const ref = `GNE-20260101-V${lote}${contador}`;
+    const fecha = new Date(Date.now() - 10 * 24 * 3_600_000 - contador * 1000).toISOString();
+    const [fila] = await insertar('tramitaciones', {
+      ref,
+      formulario: 'gnew',
+      estado: 'recibida',
+      prueba: true,
+      carpeta: `pruebas/gnew/2026/01/${ref}-aperturasxx`,
+      comercial_nombre: 'Aperturas de Prueba',
+      comercial_email: EMAIL_COMERCIAL,
+      compania: 'Compañía de Prueba',
+      cups: CUPS,
+      titular_nombre: `Titular Aperturas ${titulo}`,
+      titular_nif: '00000000T',
+      iban: IBAN,
+      direccion: 'Calle de Prueba 1',
+      cp: '28001',
+      poblacion: 'Madrid',
+      provincia: 'Madrid',
+      telefono: '600000000',
+      email_cliente: EMAIL_CLIENTE,
+      busqueda: `lote${lote} titular aperturas ${titulo.toLowerCase()}`,
+      creada_en: fecha,
+      recibida_en: fecha,
+    });
+    sueltas.push(ref);
+    return { ref, id: fila.id };
+  }
+
+  const apertura = (id, actor, minutos, tipo = 'ficha_abierta') => ({ tramitacion_id: id, tipo, actor, detalle: {}, creado_en: hace(minutos) });
+
+  before(async () => {
+    assert.match(EMAIL, ES_ALIAS);
+    assert.equal(MINUTOS_ENTRE_APERTURAS, 15, 'La ventana por persona es de 15 minutos (los casos de abajo se calculan con ella)');
+    cookie = await sesionNueva();
+  });
+
+  after(async () => {
+    if (sueltas.length > 0) await borrar('tramitaciones', { ref: `in.(${sueltas.join(',')})` }); // no se deja nada suelto
+  });
+
+  it('abrir=1 apunta la apertura una sola vez (ya en el historial de la respuesta); sin él no se apunta nada; la lista lo cuenta en `vistas`', async (t) => {
+    const ref = await crearTramitacion({ datos: datosGnew({ titular: 'Titular Visto SL' }), documentos: [documento(1, 'visto.pdf', generarPdf(2048))] });
+    const base = (await estadoDe(ref)).eventos.map((e) => e.tipo);
+    assert.ok(!base.includes('ficha_abierta'));
+
+    // (a) la lista: nadie la ha abierto
+    assert.deepEqual((await tarjetas(ref)).get(ref).vistas, []);
+
+    // (d) sin `abrir`, o con algo que no es «1» (también el primero de un parámetro repetido), la ficha se ve y no se apunta nada
+    for (const extra of ['', '&abrir=0', '&abrir=', '&abrir=true', '&abrir=2', '&abrir=0&abrir=1']) {
+      const r = await abrirFicha(ref, extra);
+      assert.equal(r.status, 200, `«${extra}»: ${r.texto}`);
+      assert.deepEqual(r.json.eventos.map((e) => e.tipo), base, `«${extra}» no apunta nada`);
+    }
+    assert.deepEqual(await aperturasDe(ref), []);
+    assert.deepEqual((await tarjetas(ref)).get(ref).vistas, [], 'Y la lista sigue sin verla abierta');
+
+    // (b) con abrir=1: 200 y la apertura ya sale en los eventos de la propia respuesta, como el más nuevo, con el correo de la sesión
+    const primera = await abrirFicha(ref);
+    assert.equal(primera.status, 200, primera.texto);
+    assert.deepEqual(primera.json.eventos.map((e) => e.tipo), [...base, 'ficha_abierta'], 'Del más antiguo al más nuevo: la apertura, la última');
+    const nueva = primera.json.eventos.at(-1);
+    assert.deepEqual(Object.keys(nueva).sort(), ['actor', 'creado_en', 'detalle', 'tipo'], 'Con la misma forma que los demás eventos (sin id)');
+    assert.equal(nueva.actor, EMAIL);
+    assert.deepEqual(nueva.detalle, {});
+    assert.ok(Math.abs(Date.parse(nueva.creado_en) - Date.now()) < 120_000, 'Se apunta con la hora de ahora');
+    const guardadas = await aperturasDe(ref);
+    assert.equal(guardadas.length, 1);
+    assert.equal(guardadas[0].actor, EMAIL);
+    assert.deepEqual(guardadas[0].detalle, {});
+    assert.equal(Date.parse(guardadas[0].creado_en), Date.parse(nueva.creado_en), 'Lo que enseña la respuesta es lo que hay en la base');
+
+    // (c) otra vez con abrir=1 en seguida (también con el parámetro repetido): sigue habiendo UNA, y la ficha la enseña
+    for (const extra of ['&abrir=1', '&abrir=1&abrir=1']) {
+      const r = await abrirFicha(ref, extra);
+      assert.equal(r.status, 200, r.texto);
+      assert.deepEqual(r.json.eventos.map((e) => e.tipo), [...base, 'ficha_abierta'], `«${extra}» no apunta otra`);
+    }
+    // (d) y sin abrir, la ficha enseña la apertura que ya hay y no apunta ninguna más
+    const sin = await abrirFicha(ref, '');
+    assert.deepEqual(sin.json.eventos.map((e) => e.tipo), [...base, 'ficha_abierta']);
+    assert.equal((await aperturasDe(ref)).length, 1);
+
+    // (e) la lista: una entrada, con quién y cuándo
+    const tarjeta = (await tarjetas(ref)).get(ref);
+    assert.deepEqual(Object.keys(tarjeta.vistas[0]).sort(), ['en', 'por']);
+    assert.equal(tarjeta.vistas.length, 1);
+    assert.equal(tarjeta.vistas[0].por, EMAIL);
+    assert.equal(Date.parse(tarjeta.vistas[0].en), Date.parse(nueva.creado_en));
+
+    // abrir=1 en una referencia que no existe sigue dando el 404 en llano, y sin sesión el 401: ninguno apunta nada
+    const inexistente = await abrirFicha(nuevaRef());
+    assert.equal(inexistente.status, 404, inexistente.texto);
+    assert.deepEqual(inexistente.json, { ok: false, codigo: 'no_encontrada', mensaje: 'No encontramos esta tramitación.', retryable: false });
+    const sinSesion = await get(`/api/bandeja/ficha?ref=${ref}&abrir=1`);
+    assert.equal(sinSesion.status, 401, sinSesion.texto);
+    assert.equal(sinSesion.json.codigo, 'sesion');
+    assert.equal((await aperturasDe(ref)).length, 1, 'El 404 y el 401 no dejan rastro');
+    t.diagnostic('abrir=1 → UNA apertura en la respuesta y en la base; repetirlo, o no mandar abrir, no apunta más; la lista da vistas=[{por, en}]');
+  });
+
+  it('la ventana de 15 minutos es por persona: una apertura tuya de hace 10 min frena otra; una de hace 16 min no; la de otra persona no cuenta', async () => {
+    const reciente = await fichaSuelta('Reciente');
+    const antigua = await fichaSuelta('Antigua');
+    const ajena = await fichaSuelta('Ajena');
+    await insertar('tramitacion_eventos', [
+      apertura(reciente.id, EMAIL, MINUTOS_ENTRE_APERTURAS - 5),
+      apertura(antigua.id, EMAIL, MINUTOS_ENTRE_APERTURAS + 1),
+      apertura(ajena.id, OTRA, 1),
+    ], { devolver: false });
+
+    // hace 10 min: no se apunta otra
+    const r1 = await abrirFicha(reciente.ref);
+    assert.equal(r1.status, 200, r1.texto);
+    assert.deepEqual(pares(r1.json.eventos), [['ficha_abierta', EMAIL]]);
+    assert.equal((await aperturasDe(reciente.ref)).length, 1);
+
+    // hace 16 min: sí, y queda detrás de la vieja
+    const r2 = await abrirFicha(antigua.ref);
+    assert.equal(r2.status, 200, r2.texto);
+    assert.deepEqual(pares(r2.json.eventos), [['ficha_abierta', EMAIL], ['ficha_abierta', EMAIL]]);
+    assert.ok(Date.parse(r2.json.eventos[1].creado_en) - Date.parse(r2.json.eventos[0].creado_en) > MINUTOS_ENTRE_APERTURAS * 60_000, 'La nueva es de ahora y la vieja de hace más de 15 min');
+    assert.equal((await aperturasDe(antigua.ref)).length, 2);
+    assert.deepEqual(pares((await abrirFicha(antigua.ref)).json.eventos), [['ficha_abierta', EMAIL], ['ficha_abierta', EMAIL]], 'Con la nueva ya reciente, otra vez no');
+
+    // la de otra persona, aunque sea de hace 1 min, no cuenta: se apunta la tuya
+    const r3 = await abrirFicha(ajena.ref);
+    assert.equal(r3.status, 200, r3.texto);
+    assert.deepEqual(pares(r3.json.eventos), [['ficha_abierta', OTRA], ['ficha_abierta', EMAIL]]);
+
+    // en la lista: una entrada por persona, la apertura más reciente de cada una y las más recientes primero
+    const lista = await tarjetas(`lote${lote}`);
+    assert.deepEqual(lista.get(reciente.ref).vistas.map((v) => v.por), [EMAIL]);
+    assert.deepEqual(lista.get(antigua.ref).vistas.map((v) => v.por), [EMAIL], 'Dos aperturas de la misma persona: una sola entrada');
+    assert.ok(Date.now() - Date.parse(lista.get(antigua.ref).vistas[0].en) < 5 * 60_000, 'Y es la más reciente (la de ahora, no la de hace 16 min)');
+    assert.deepEqual(lista.get(ajena.ref).vistas.map((v) => v.por), [EMAIL, OTRA]);
+  });
+
+  it('`vistas`: una entrada por persona (la más reciente), de más reciente a más antigua, como mucho 5; solo cuentan las aperturas; por ficha se leen las 20 últimas', async () => {
+    const [p1, p2, p3, p4, p5, p6, p7, p8] = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((x) => `victor.molins.10+vistas-${x}@gmail.com`);
+    const siete = await fichaSuelta('Siete');
+    const una = await fichaSuelta('Una');
+    const ninguna = await fichaSuelta('Ninguna');
+    const veintidos = await fichaSuelta('Veintidos');
+    const lejana = await fichaSuelta('Lejana');
+    await insertar('tramitacion_eventos', [
+      // siete personas (p6 y p7 se quedan fuera por el tope de 5); p1 abre dos veces; y un evento que NO es una apertura
+      apertura(siete.id, p1, 60), apertura(siete.id, p1, 5), apertura(siete.id, p2, 30), apertura(siete.id, p3, 20), apertura(siete.id, p4, 90),
+      apertura(siete.id, p5, 120), apertura(siete.id, p6, 150), apertura(siete.id, p7, 200), apertura(siete.id, p8, 1, 'aviso_enviado'),
+      apertura(una.id, p2, 300),
+      // 22 aperturas de p1 (de hace 1 a 22 min) y una MÁS ANTIGUA de p2: por ficha se leen las 20 últimas, así que p2 no sale
+      ...Array.from({ length: 22 }, (_, i) => apertura(veintidos.id, p1, i + 1)),
+      apertura(veintidos.id, p2, 400),
+      // una sola apertura, más vieja que las 22 de la ficha de al lado: el tope es por ficha y no en total
+      apertura(lejana.id, p3, 600),
+    ], { devolver: false });
+
+    const lista = await tarjetas(`lote${lote}`);
+    const mira = (ficha) => lista.get(ficha.ref).vistas.map((v) => v.por);
+    assert.deepEqual(mira(siete), [p1, p3, p2, p4, p5], 'Una por persona, de más reciente a más antigua, hasta 5 (sin p6 ni p7 ni el que solo tiene un aviso)');
+    const enSiete = lista.get(siete.ref).vistas;
+    assert.ok(Math.abs(Date.parse(enSiete[0].en) - (Date.now() - 5 * 60_000)) < 2 * 60_000, 'De p1 sale su apertura MÁS reciente (hace 5 min, no la de hace 60)');
+    const tiempos = enSiete.map((v) => Date.parse(v.en));
+    assert.deepEqual(tiempos, [...tiempos].sort((x, y) => y - x), 'De más reciente a más antigua');
+    assert.deepEqual(mira(una), [p2]);
+    assert.deepEqual(lista.get(ninguna.ref).vistas, [], '`[]` si nadie la ha abierto');
+    assert.deepEqual(mira(veintidos), [p1], 'Por ficha se leen las 20 últimas aperturas: la de p2, más vieja, no entra');
+    assert.deepEqual(mira(lejana), [p3], 'El tope de 20 es por ficha: la de al lado no se la come');
+    for (const ficha of [siete, una, ninguna, veintidos, lejana]) {
+      assert.deepEqual(Object.keys(lista.get(ficha.ref)).sort(), [
+        'comercial_nombre', 'compania', 'creada_en', 'cups', 'estado', 'formulario', 'n_documentos', 'recibida_en', 'ref', 'tarifa', 'titular_nombre', 'vistas',
+      ], 'El item solo lleva el campo nuevo `vistas`: los eventos embebidos no se cuelan');
+    }
+    assert.ok(!JSON.stringify([...lista.values()]).includes('tramitacion_eventos'), 'Ni el nombre de la tabla');
+  });
+
+  it('si no se puede apuntar la apertura (la base la rechaza o no hay red), la ficha sale igual y el registro lleva una frase fija sin datos', async () => {
+    const { ref } = await fichaSuelta('Fallo');
+    const fetchReal = globalThis.fetch;
+    const consolaReal = console.error;
+    const registro = [];
+    const casos = [
+      ['la base rechaza la escritura (503)', () => new Response(JSON.stringify({ message: `texto con datos ${EMAIL} ${ref}` }), { status: 503, headers: { 'Content-Type': 'application/json' } })],
+      ['no hay red', () => { throw new TypeError(`fetch failed ${EMAIL}`); }],
+    ];
+    for (const [motivo, fallar] of casos) {
+      // Solo se estropea la ESCRITURA de eventos; lo demás (leer la ficha) va a la base de verdad. La ficha se pide en este proceso.
+      globalThis.fetch = async (url, opciones) => (String(url).includes('/rest/v1/tramitacion_eventos') && opciones?.method === 'POST' ? fallar() : fetchReal(url, opciones));
+      console.error = (...partes) => registro.push(partes.join(' '));
+      let r;
+      try {
+        r = await fichaEnEsteProceso(ref, { email: EMAIL, abrir: true });
+      } finally {
+        globalThis.fetch = fetchReal;
+        console.error = consolaReal;
+      }
+      assert.equal(r.status, 200, `${motivo}: la ficha sale igual`);
+      assert.equal(r.cuerpo.tramitacion.ref, ref, motivo);
+      assert.ok(!r.cuerpo.eventos.some((e) => e.tipo === 'ficha_abierta'), `${motivo}: sin apertura en el historial`);
+    }
+    assert.equal(registro.length, 2, 'Una línea por fallo');
+    for (const linea of registro) {
+      assert.match(linea, /^\[bandeja\/ficha\] no se ha podido apuntar que se abre la ficha: \S/);
+      assert.ok(!linea.includes(EMAIL) && !linea.includes(ref) && !linea.includes('datos'), `Ni correos, ni referencias, ni el cuerpo de la respuesta en el registro: ${linea}`);
+    }
+    assert.deepEqual(await aperturasDe(ref), [], 'No se apuntó nada');
+
+    // y sin el fallo, la misma llamada sí la apunta (la prueba no se engaña)
+    const bien = await fichaEnEsteProceso(ref, { email: EMAIL, abrir: true });
+    assert.equal(bien.status, 200);
+    assert.deepEqual(pares(bien.cuerpo.eventos), [['ficha_abierta', EMAIL]]);
+    assert.equal((await aperturasDe(ref)).length, 1);
   });
 });

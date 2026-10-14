@@ -307,6 +307,10 @@ export function salir({ https = false } = {}) {
 
 export const PAGINA = 30;
 
+// Cuántas personas distintas enseña `vistas` por tarjeta, y cuántas aperturas (las más recientes) se piden por ficha para armarlas.
+const MAX_VISTAS = 5;
+const MAX_APERTURAS_POR_FICHA = 20;
+
 // Qué estados hay detrás de cada chip. «Todas» deja fuera las descartadas (los envíos que ha parado el filtro antibots
 // viven aparte, bajo «Descartadas»).
 const ESTADOS_DE_LA_LISTA = Object.freeze({
@@ -317,7 +321,10 @@ const ESTADOS_DE_LA_LISTA = Object.freeze({
   todas: ['recibida', 'tramitada', 'subiendo', 'abandonada'],
 });
 
-const COLUMNAS_LISTA = 'ref,formulario,estado,compania,titular_nombre,cups,comercial_nombre,tarifa,creada_en,recibida_en,tramitacion_documentos(count)';
+// `tramitacion_eventos(actor,creado_en)` trae las aperturas de cada ficha: `listar` le pone el filtro (solo `ficha_abierta`), el
+// orden y el tope con parámetros de la propia consulta (`tramitacion_eventos.tipo`, `.order`, `.limit`), que PostgREST aplica a
+// cada ficha por separado.
+const COLUMNAS_LISTA = 'ref,formulario,estado,compania,titular_nombre,cups,comercial_nombre,tarifa,creada_en,recibida_en,tramitacion_documentos(count),tramitacion_eventos(actor,creado_en)';
 
 // El cursor es la `creada_en` del último elemento tal como la devolvió la base (con microsegundos): se reutiliza el texto
 // original, no una fecha de JavaScript (que solo llega al milisegundo y podría saltarse filas).
@@ -331,12 +338,29 @@ function palabrasDe(q) {
 }
 
 /**
+ * Quién ha abierto una ficha, para la tarjeta de la lista: de sus aperturas (`ficha_abierta`, de más reciente a más antigua)
+ * deja UNA por persona —la más reciente— y como mucho MAX_VISTAS. Devuelve [{por, en}] (lista vacía si nadie la ha abierto).
+ */
+function vistasDe(aperturas) {
+  const porPersona = new Map();
+  for (const a of Array.isArray(aperturas) ? aperturas : []) {
+    if (typeof a?.actor !== 'string' || !a.actor || porPersona.has(a.actor)) continue;
+    porPersona.set(a.actor, a.creado_en);
+    if (porPersona.size === MAX_VISTAS) break;
+  }
+  return [...porPersona].map(([por, en]) => ({ por, en }));
+}
+
+/**
  * GET /api/bandeja/lista?estado=&q=&antes=. Devuelve {status, cuerpo}:
  *   200 {ok, items:[{ref, formulario, estado, compania, titular_nombre, cups, comercial_nombre, tarifa, creada_en,
- *        recibida_en, n_documentos}], siguiente}      30 por página, de más reciente a más antigua
+ *        recibida_en, n_documentos, vistas:[{por, en}]}], siguiente}      30 por página, de más reciente a más antigua
  *   400 peticion                                        `estado` desconocido o `antes` que no es una fecha
  * `siguiente` es el valor de `antes` para pedir la página siguiente (null si no hay más). `q` busca, palabra a palabra
  * (todas deben aparecer), en titular, CUPS, referencia, comercial y compañía.
+ * `vistas` dice quién ha abierto la ficha: una entrada por persona (`por` = su correo, `en` = su apertura MÁS reciente),
+ * de más reciente a más antigua y como mucho 5; `[]` si nadie la ha abierto. Sale de los eventos `ficha_abierta` (ver `ficha`);
+ * por ficha se leen sus 20 últimas aperturas.
  */
 export async function listar(consulta = {}) {
   const clave = primero(consulta.estado) ?? 'pendientes';
@@ -351,6 +375,10 @@ export async function listar(consulta = {}) {
     estado: estados.length === 1 ? `eq.${estados[0]}` : `in.(${estados.join(',')})`,
     order: 'creada_en.desc',
     limit: PAGINA + 1, // una de más para saber si hay otra página
+    // Lo que va con el nombre de la tabla se aplica a las aperturas embebidas, no a las tramitaciones
+    'tramitacion_eventos.tipo': 'eq.ficha_abierta',
+    'tramitacion_eventos.order': 'creado_en.desc',
+    'tramitacion_eventos.limit': MAX_APERTURAS_POR_FICHA,
   };
   if (antes) query.creada_en = `lt.${antes}`;
   const palabras = palabrasDe(primero(consulta.q) ?? '');
@@ -369,6 +397,7 @@ export async function listar(consulta = {}) {
     creada_en: f.creada_en,
     recibida_en: f.recibida_en,
     n_documentos: Number(f.tramitacion_documentos?.[0]?.count ?? 0),
+    vistas: vistasDe(f.tramitacion_eventos),
   }));
   const siguiente = filas.length > PAGINA ? items[items.length - 1].creada_en : null;
   return resp(200, { ok: true, items, siguiente });
@@ -381,6 +410,9 @@ export async function listar(consulta = {}) {
 /** Lo que valen los enlaces de descarga firmados: 10 minutos. */
 export const SEGUNDOS_ENLACE = 600;
 const MAX_EVENTOS = 50;
+
+/** Minutos que han de pasar para que la MISMA persona deje constancia de otra apertura de la misma ficha (ver `ficha`). */
+export const MINUTOS_ENTRE_APERTURAS = 15;
 
 // Lo que la ficha enseña de la tramitación. NO sale el id, la carpeta del almacén, el hash de la IP, el navegador ni el
 // texto de búsqueda. El IBAN sale completo: la ficha es para backoffice y solo se ve con sesión.
@@ -403,7 +435,25 @@ async function buscarPorRef(ref, select) {
 }
 
 /**
- * GET /api/bandeja/ficha?ref=. Devuelve {status, cuerpo}:
+ * Deja constancia de que `actor` ha abierto la ficha, salvo que ya la abriera hace menos de MINUTOS_ENTRE_APERTURAS minutos.
+ * `eventos` son los últimos de la tramitación, de más nuevo a más antiguo (los que `ficha` ya ha leído: no hay consulta extra);
+ * se mira la apertura MÁS RECIENTE de esa persona. Devuelve el evento nuevo con la forma de los de la ficha, o null si no
+ * hacía falta apuntarlo o no se ha podido: la apertura NUNCA hace fallar la ficha (y el registro lleva una frase fija).
+ */
+async function apuntarApertura(tramitacionId, actor, eventos) {
+  const ultima = eventos.find((e) => e.tipo === 'ficha_abierta' && e.actor === actor);
+  if (ultima && Date.now() - Date.parse(ultima.creado_en) < MINUTOS_ENTRE_APERTURAS * 60_000) return null;
+  try {
+    const [nuevo] = await insertar('tramitacion_eventos', { tramitacion_id: tramitacionId, tipo: 'ficha_abierta', actor, detalle: {} }, { devolver: true });
+    return nuevo ? { tipo: nuevo.tipo, actor: nuevo.actor, detalle: nuevo.detalle, creado_en: nuevo.creado_en } : null;
+  } catch (error) {
+    console.error(`[bandeja/ficha] no se ha podido apuntar que se abre la ficha: ${textoSeguroDeError(error)}`);
+    return null;
+  }
+}
+
+/**
+ * GET /api/bandeja/ficha?ref=[&abrir=1]. `email` es el de la sesión. Devuelve {status, cuerpo}:
  *   200 {ok, tramitacion, documentos:[{orden, nombre, tamano, tipo_mime, es_firma, subido, url}], correos:[{tipo, estado,
  *        intentos, enviado_en, codigo_respuesta}], eventos:[{tipo, actor, detalle, creado_en}] (los últimos 50, de más
  *        antiguo a más nuevo), enlaces_caducan_en}
@@ -411,8 +461,14 @@ async function buscarPorRef(ref, select) {
  * Cada `url` es una firma de descarga (10 minutos) y no lleva el nombre original del archivo: la clave del objeto es
  * <carpeta>/NN.ext y el nombre que ve backoffice vive solo aquí, en `nombre`. Si el almacén no firma, la ficha sale igual
  * con `url: null`.
+ * `abrir` (que la página manda solo en la carga de verdad, no en sus refrescos en silencio) apunta la apertura como evento
+ * `ficha_abierta` con el correo de la sesión como actor, y ese evento ya sale en `eventos` de esta misma respuesta. Si esa
+ * persona ya abrió la ficha hace menos de 15 minutos (MINUTOS_ENTRE_APERTURAS) no se apunta otra. Sin `abrir` no se apunta
+ * nada. Es un evento y NO una columna de `tramitaciones`: un UPDATE dispararía el trigger que renueva `actualizada_en`, y el
+ * vigilante abandona las `subiendo` por esa fecha (mirar una subida a medias la mantendría viva). Si no se puede apuntar,
+ * la ficha sale igual.
  */
-export async function ficha(ref) {
+export async function ficha(ref, { email, abrir = false } = {}) {
   const fila = await buscarPorRef(ref, '*,tramitacion_documentos(*)');
   if (!fila) return noExiste();
 
@@ -429,10 +485,16 @@ export async function ficha(ref) {
     }
   }
 
-  const [correos, eventos] = await Promise.all([
+  const [correos, ultimos] = await Promise.all([
     correosDe(fila.id),
     seleccionar('tramitacion_eventos', { select: 'tipo,actor,detalle,creado_en', tramitacion_id: `eq.${fila.id}`, order: 'id.desc', limit: MAX_EVENTOS }),
   ]);
+
+  // La apertura entra en el historial de esta misma respuesta, como el evento más nuevo y respetando el tope de 50
+  // (`ultimos` va de más nuevo a más antiguo; más abajo se da la vuelta)
+  const quien = normalizarEmail(email);
+  const apertura = abrir === true && quien ? await apuntarApertura(fila.id, quien, ultimos) : null;
+  const eventos = apertura ? [apertura, ...ultimos].slice(0, MAX_EVENTOS) : ultimos;
 
   return resp(200, {
     ok: true,

@@ -114,7 +114,8 @@ create table if not exists public.tramitacion_eventos (
   id              bigint generated always as identity primary key,
   tramitacion_id  uuid not null references public.tramitaciones (id) on delete cascade,
   tipo            text not null,     -- creada · datos_actualizados · reanudada · firma_guardada · recibida · aviso_enviado · acuse_enviado ·
-                                     -- correo_fallo · correos_conciliados · tramitada · reabierta · abandonada · descartada · aviso_reenviado · acuse_reenviado
+                                     -- correo_fallo · correos_conciliados · tramitada · reabierta · abandonada · descartada · aviso_reenviado · acuse_reenviado ·
+                                     -- ficha_abierta (backoffice abre la ficha; actor = su email)
   actor           text not null default 'sistema',   -- 'comercial' | 'sistema' | 'vigilante' | email de backoffice
   detalle         jsonb not null default '{}'::jsonb,
   creado_en       timestamptz not null default now()

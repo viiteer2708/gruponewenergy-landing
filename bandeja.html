@@ -327,6 +327,56 @@
             color: var(--text-muted);
         }
 
+        /* ===== QUIÉN HA ABIERTO LA FICHA ===== */
+        /* Sin abrir: una raya azul a la izquierda (sigue azul al pasar el ratón: va después de .tarjeta:hover) y la pastilla */
+        .tarjeta.sin-abrir {
+            border-left: 4px solid #2563EB;
+        }
+
+        .t-vista {
+            display: grid;
+            gap: .25rem;
+            margin-top: .5rem;
+            font-size: .8125rem;
+        }
+
+        .ins-sin-abrir {
+            justify-self: start;
+            background: #DBEAFE;
+            color: #1D4ED8;
+        }
+
+        .ins-sin-abrir::before {
+            content: '';
+            display: inline-block;
+            width: .45rem;
+            height: .45rem;
+            margin-right: .4rem;
+            border-radius: 50%;
+            background: currentColor;
+            vertical-align: .04rem;
+        }
+
+        /* Abierta: un ojo y «Abierta por <correo> · hace 5 min», una línea por persona */
+        .t-abierta {
+            display: flex;
+            align-items: flex-start;
+            gap: .4rem;
+            color: #166534;
+            overflow-wrap: anywhere;
+        }
+
+        .t-ojo {
+            flex: none;
+            width: 1rem;
+            height: 1rem;
+            margin-top: .1rem;
+        }
+
+        .t-resto {
+            white-space: nowrap;
+        }
+
         .mensaje {
             padding: 2rem 1rem;
             text-align: center;
@@ -435,6 +485,7 @@
     var ETIQUETA_ESTADO = { recibida: 'Pendiente', tramitada: 'Tramitada', subiendo: 'Subiendo', abandonada: 'Incompleta', descartada: 'Descartada' };
     var ETIQUETA_MARCA = { gnew: 'GNEW', mega: 'MEGA' };
     var FILTROS = ['pendientes', 'tramitadas', 'incompletas', 'todas', 'descartadas'];
+    var MAX_VISTAS = 3;      // personas que se enseñan en una tarjeta («Abierta por …»)
 
     var inputQ = document.getElementById('q');
     var cajaFiltros = document.getElementById('filtros');
@@ -510,9 +561,47 @@
     }
 
     // ---------- tarjetas ----------
+    // Un ojo pequeño (SVG en línea, siempre el mismo dibujo): decora, no dice nada que no diga ya el texto
+    function ojo() {
+        var NS = 'http://www.w3.org/2000/svg';
+        var svg = document.createElementNS(NS, 'svg');
+        var atributos = { 'class': 't-ojo', viewBox: '0 0 24 24', width: '16', height: '16', fill: 'none', stroke: 'currentColor',
+            'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true', focusable: 'false' };
+        Object.keys(atributos).forEach(function (k) { svg.setAttribute(k, atributos[k]); });
+        var contorno = document.createElementNS(NS, 'path');
+        contorno.setAttribute('d', 'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z');
+        var pupila = document.createElementNS(NS, 'circle');
+        pupila.setAttribute('cx', '12');
+        pupila.setAttribute('cy', '12');
+        pupila.setAttribute('r', '3');
+        svg.appendChild(contorno);
+        svg.appendChild(pupila);
+        return svg;
+    }
+
+    // «Abierta por <correo> · hace 5 min». El «hace …» lleva su fecha en data-fecha: actualizarHoras() lo mantiene al día
+    function lineaAbierta(v) {
+        var linea = el('div', 't-abierta');
+        linea.appendChild(ojo());
+        var texto = el('span');
+        texto.appendChild(document.createTextNode('Abierta por '));
+        texto.appendChild(el('strong', null, String((v && v.por) || '')));
+        if (v && v.en) {
+            texto.appendChild(document.createTextNode(' '));
+            var resto = el('span', 't-resto', '· '); // el «·» y el «hace …» van juntos: si la línea se parte, pasan enteros a la siguiente
+            var cuando = el('span', 't-cuando', hace(v.en));
+            cuando.setAttribute('data-fecha', v.en);
+            resto.appendChild(cuando);
+            texto.appendChild(resto);
+        }
+        linea.appendChild(texto);
+        return linea;
+    }
+
     function tarjeta(it) {
+        var vistas = Array.isArray(it.vistas) ? it.vistas : [];
         var li = el('li');
-        var a = el('a', 'tarjeta');
+        var a = el('a', 'tarjeta' + (vistas.length === 0 ? ' sin-abrir' : ''));
         a.href = '/bandeja/c/' + encodeURIComponent(it.ref);
 
         var cabeza = el('div', 't-cabeza');
@@ -536,6 +625,15 @@
         var n = Number(it.n_documentos) || 0;
         pie.appendChild(el('span', null, n + (n === 1 ? ' documento' : ' documentos')));
         a.appendChild(pie);
+
+        // Quién ha abierto la ficha: nadie → «Sin abrir»; si no, una línea por persona (las más recientes primero)
+        var vista = el('div', 't-vista');
+        if (vistas.length === 0) {
+            vista.appendChild(el('span', 'ins ins-sin-abrir', 'Sin abrir'));
+        } else {
+            for (var j = 0; j < vistas.length && j < MAX_VISTAS; j++) vista.appendChild(lineaAbierta(vistas[j]));
+        }
+        a.appendChild(vista);
 
         li.appendChild(a);
         return li;
@@ -676,6 +774,12 @@
         if (!document.hidden && ultimaCarga && Date.now() - ultimaCarga > 60000 && !inputQ.matches(':focus')) nuevaBusqueda();
     });
     setInterval(actualizarHoras, 60000);
+
+    // Al volver atrás desde una ficha el navegador puede enseñar la lista tal como se quedó (caché de «atrás/adelante»), con
+    // tarjetas que seguirían diciendo «Sin abrir» aunque ya se haya abierto: se vuelve a pedir, con el mismo filtro y búsqueda
+    window.addEventListener('pageshow', function (ev) {
+        if (ev.persisted) nuevaBusqueda();
+    });
 
     // ---------- arranque ----------
     api('/api/bandeja/yo').then(function (r) {
