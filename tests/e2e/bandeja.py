@@ -56,6 +56,11 @@ XSS_COMERCIAL = '<b onmouseover="window.__xss=3">Comercial</b> "Peligroso"'
 XSS_OBSERVACIONES = '<svg onload="window.__xss=4"> línea uno\n<iframe src="javascript:window.__xss=5"></iframe> línea dos'
 XSS_DIRECCION = "Calle <u>Rara</u> 1 & 'comillas'"
 
+# El servidor guarda lo que escribe el comercial EN MAYÚSCULAS: `onerror="window.__xss=1"` llega como `ONERROR="WINDOW.__XSS=1"`, que no haría
+# nada aunque se colara (JavaScript distingue mayúsculas y `WINDOW` no existe), y entonces «no se ha ejecutado nada» no probaría nada. Por eso
+# en los casos de XSS la página tiene un `WINDOW` que ES `window`: si algo se colara y se ejecutara, dejaría `window.__XSS` y se vería.
+JS_ALIAS_EN_MAYUSCULAS = 'window.WINDOW = window;'
+
 
 # ---------------------------------------------------------------------------
 # HTTP contra el servidor local (como un navegador, pero sin navegador)
@@ -344,7 +349,8 @@ def caso_3(c):
     assert refs.index(ref_b) < refs.index(ref_a), 'Más recientes primero'
     tarjeta_a = p.locator(f'a.tarjeta[href$="{ref_a}"]')
     texto = tarjeta_a.inner_text()
-    for esperado in ['Titular de Prueba SL', 'Pendiente', 'GNEW', 'Compañía de Prueba · 2.0TD', 'ES0021000000000001RK', 'Comercial: Comercial de Prueba', '4 documentos']:
+    # (lo que escribe el comercial sale en MAYÚSCULAS, como se guarda; las etiquetas de la tarjeta, como siempre)
+    for esperado in ['TITULAR DE PRUEBA SL', 'Pendiente', 'GNEW', 'COMPAÑÍA DE PRUEBA · 2.0TD', 'ES0021000000000001RK', 'Comercial: COMERCIAL DE PRUEBA', '4 documentos']:
         assert esperado in texto, f'Falta «{esperado}» en la tarjeta: {texto!r}'
     assert re.search(r'hace (unos segundos|\d+ min)', texto), texto
     assert tarjeta_a.get_attribute('href') == f'/bandeja/c/{ref_a}'
@@ -442,11 +448,13 @@ def caso_4(c):
     assert 'Pendiente' in p.inner_text('#insignias') and 'GNEW' in p.inner_text('#insignias')
     cuerpo = p.inner_text('#ficha')
     for esperado in ['COMERCIAL', 'CONTRATO', 'TITULAR', 'SUMINISTRO', 'CONTACTO', 'CAMBIO DE TITULAR', 'OBSERVACIONES', 'DOCUMENTOS (4)', 'CORREOS', 'HISTORIAL',
-                     'Comercial de Prueba', 'victor.molins.10+comercial@gmail.com', 'Compañía de Prueba', 'ES0021000000000001RK', 'Fijo 12 meses', '2.0TD',
-                     'P1: 4.6 kW · P2: 4.6 kW', 'Titular de Prueba SL', '00000000T', 'Firmante de Prueba', '12345678Z',
+                     'COMERCIAL DE PRUEBA', 'victor.molins.10+comercial@gmail.com', 'COMPAÑÍA DE PRUEBA', 'ES0021000000000001RK', 'FIJO 12 MESES', '2.0TD',
+                     'P1: 4.6 kW · P2: 4.6 kW', 'TITULAR DE PRUEBA SL', '00000000T', 'FIRMANTE DE PRUEBA', '12345678Z',
                      'ES91 2100 0418 4502 0005 1332',  # el IBAN COMPLETO (para backoffice), en grupos de cuatro
-                     'Calle de Prueba 1, 2.º A', '28001', 'Madrid', '600000000', 'victor.molins.10+cliente@gmail.com', 'Prueba automática de Tramitación v2']:
+                     'CALLE DE PRUEBA 1, 2.º A', '28001', 'MADRID', '600000000', 'victor.molins.10+cliente@gmail.com', 'PRUEBA AUTOMÁTICA DE TRAMITACIÓN V2']:
         assert esperado in cuerpo, f'Falta «{esperado}» en la ficha'
+    # Con el contenido en MAYÚSCULAS, «COMERCIAL» o «TITULAR» ya salen en cualquier valor («COMERCIAL DE PRUEBA»): los títulos de las secciones, aparte
+    assert [x.inner_text() for x in p.locator('#colDatos h2').all()] == ['COMERCIAL', 'CONTRATO', 'TITULAR', 'SUMINISTRO', 'CONTACTO', 'CAMBIO DE TITULAR', 'OBSERVACIONES']
     assert 'ES9121000418450200051332' not in p.url
     assert p.get_attribute('#irDocs', 'href') == '#bloqueDocs'
     nombres = [x.inner_text() for x in p.locator('.doc-nombre').all()]
@@ -496,7 +504,7 @@ def caso_4(c):
         with p.expect_download(timeout=120_000) as bajada:
             p.get_by_role('button', name='Descargar todo (ZIP)', exact=True).click()
         descarga = bajada.value
-        assert descarga.suggested_filename == f'{ref} - Titular de Prueba SL.zip', descarga.suggested_filename
+        assert descarga.suggested_filename == f'{ref} - TITULAR DE PRUEBA SL.zip', descarga.suggested_filename
         zip_ruta = Path(carpeta) / 'bandeja.zip'
         descarga.save_as(str(zip_ruta))
         prueba = subprocess.run(['python3', '-m', 'zipfile', '-t', str(zip_ruta)], capture_output=True, text=True)
@@ -718,7 +726,9 @@ def caso_8(c):
 
 
 def caso_9(c):
-    """Todo lo que escribe el comercial se ve como TEXTO: ni HTML, ni scripts, ni manejadores de eventos, en la lista y en la ficha."""
+    """Todo lo que escribe el comercial se ve como TEXTO: ni HTML, ni scripts, ni manejadores de eventos, en la lista y en la ficha.
+    (Se guarda en MAYÚSCULAS: lo que se ve es la versión en mayúsculas de lo escrito, y de ella tampoco puede salir nada ejecutable.)"""
+    c.ctx.add_init_script(JS_ALIAS_EN_MAYUSCULAS)  # ver JS_ALIAS_EN_MAYUSCULAS
     ref = crear('gnew', [(1, 'escaneo.jpg', JPG.read_bytes())], extra={
         'titular': XSS_TITULAR, 'quien_eres': XSS_COMERCIAL, 'observaciones': XSS_OBSERVACIONES, 'dir_suministro': XSS_DIRECCION,
         'cambio_titular': 'Si', 'nuevo_titular': '<script>window.__xss=6</script> Nuevo SL'})
@@ -727,8 +737,8 @@ def caso_9(c):
     c.ver('/bandeja', 'a.tarjeta')
     c.buscar('titular co')
     tarjeta = p.locator(f'a.tarjeta[href$="{ref}"]')
-    assert XSS_TITULAR in tarjeta.inner_text(), tarjeta.inner_text()
-    assert XSS_COMERCIAL in tarjeta.inner_text()
+    assert XSS_TITULAR.upper() in tarjeta.inner_text(), tarjeta.inner_text()
+    assert XSS_COMERCIAL.upper() in tarjeta.inner_text()
     assert tarjeta.locator('img, script, svg, iframe, b, u').count() == 0, 'La tarjeta no ha creado ningún elemento con lo que escribió el comercial'
     # (en el resto de la lista puede haber ojos: las tarjetas «Abierta por …» llevan un SVG propio, siempre el mismo)
     assert p.locator('#lista img, #lista script, #lista iframe, #lista b, #lista u').count() == 0, 'La lista no ha creado ningún elemento con lo que escribió el comercial'
@@ -739,9 +749,10 @@ def caso_9(c):
     c.sin_desbordes()
     ficha = p.inner_text('#ficha')
     for texto in [XSS_TITULAR, XSS_COMERCIAL, XSS_DIRECCION, 'línea uno', '<iframe src="javascript:window.__xss=5"></iframe> línea dos', '<script>window.__xss=6</script> Nuevo SL']:
-        assert texto in ficha, f'La ficha debe enseñar «{texto[:40]}» como texto'
-    assert p.locator('#ficha img[src="x"], #ficha iframe, #ficha svg[onload], #ficha b[onmouseover], #ficha u').count() == 0
-    assert p.evaluate("() => typeof window.__xss") == 'undefined', 'Se ha ejecutado algo del contenido del comercial'
+        assert texto.upper() in ficha, f'La ficha debe enseñar «{texto.upper()[:40]}» (en mayúsculas) como texto'
+    # (`i`: el valor de `src` sale en mayúsculas —`X`— y el selector tiene que seguir detectando una imagen colada)
+    assert p.locator('#ficha img[src="x" i], #ficha iframe, #ficha svg[onload], #ficha b[onmouseover], #ficha u').count() == 0
+    assert p.evaluate("() => typeof window.__xss") == 'undefined' and p.evaluate("() => typeof window.__XSS") == 'undefined', 'Se ha ejecutado algo del contenido del comercial'
     assert p.evaluate("() => document.querySelectorAll('script').length") == 1, 'La página tiene su único script y ninguno colado'
     assert p.title().startswith(ref)
     c.sin_jerga()
@@ -1149,6 +1160,7 @@ def caso_16(c):
 
 def caso_17(c):
     """El modo Lista (tabla): el interruptor Tarjetas / Lista (por defecto Tarjetas; se recuerda al recargar), la cabecera y las filas con todas sus columnas, «Sin abrir» con su raya azul, «Abierta por …» con +N, «Cargar más» en la tabla, volver a Tarjetas sin pedir otra vez la lista, clic en una fila y «atrás», lo que escribe el comercial como texto, sin jerga, sin desbordes a 390 px y, a 1440 px, la tabla entera sin deslizarse."""
+    c.ctx.add_init_script(JS_ALIAS_EN_MAYUSCULAS)  # ver JS_ALIAS_EN_MAYUSCULAS
     ref_a, ref_b = SEMILLAS['A'], SEMILLAS['B']
     marcador = lambda titular: {'titular': titular, 'quien_eres': 'Comercial Marcador17'}  # la búsqueda `marcador17` encuentra solo estas dos
     sin_abrir = crear('gnew', [(1, 'lista-sin-abrir.jpg', JPG.read_bytes())], extra=marcador('Titular Lista Sin Abrir SL'))
@@ -1200,11 +1212,11 @@ def caso_17(c):
     fa = fila(ref_a)
     assert fa.get_attribute('href') == f'/bandeja/c/{ref_a}', 'Toda la fila es un enlace a su ficha'
     assert fa.locator('.c-ref').inner_text() == ref_a
-    assert fa.locator('.pildora-nombre').inner_text() == 'Titular de Prueba SL'
+    assert fa.locator('.pildora-nombre').inner_text() == 'TITULAR DE PRUEBA SL'
     assert fa.locator('.avatar').inner_text() == 'TP' and 'avatar-gnew' in fa.locator('.avatar').get_attribute('class').split()
-    assert fa.locator('.c-compania .marca-gnew').inner_text() == 'GNEW' and fa.locator('.c-compania .c-txt').inner_text() == 'Compañía de Prueba · 2.0TD'
+    assert fa.locator('.c-compania .marca-gnew').inner_text() == 'GNEW' and fa.locator('.c-compania .c-txt').inner_text() == 'COMPAÑÍA DE PRUEBA · 2.0TD'
     assert fa.locator('.c-cups').inner_text() == 'ES0021000000000001RK' and 'monospace' in fa.locator('.c-cups').evaluate("e => getComputedStyle(e).fontFamily")
-    assert fa.locator('.c-comercial').inner_text() == 'Comercial de Prueba'
+    assert fa.locator('.c-comercial').inner_text() == 'COMERCIAL DE PRUEBA'
     assert re.fullmatch(r'hace (unos segundos|\d+ min|\d+ h)', fa.locator('.c-recibida').inner_text()), fa.locator('.c-recibida').inner_text()
     assert re.match(r'\d{4}-\d{2}-\d{2}T', fa.locator('.c-recibida.t-cuando').get_attribute('data-fecha') or ''), 'El «hace …» lleva su fecha: se mantiene al día solo'
     assert fa.locator('.c-docs').inner_text() == '4' and fa.locator('.c-docs').evaluate("e => getComputedStyle(e).fontWeight") == '700'
@@ -1323,11 +1335,11 @@ def caso_17(c):
     c.buscar(peligro)
     fp = fila(peligro)
     assert fp.count() == 1
-    assert XSS_TITULAR in fp.locator('.pildora-nombre').inner_text() and XSS_COMERCIAL in fp.locator('.c-comercial').inner_text()
+    assert XSS_TITULAR.upper() in fp.locator('.pildora-nombre').inner_text() and XSS_COMERCIAL.upper() in fp.locator('.c-comercial').inner_text()
     assert fp.locator('img, script, svg, iframe, b, u').count() == 0, 'La fila no ha creado ningún elemento con lo que escribió el comercial'
     assert p.locator('#lista img, #lista script, #lista iframe, #lista b, #lista u').count() == 0
     assert p.locator('#lista svg:not(.t-ojo)').count() == 0, 'En la tabla no hay más SVG que los ojos'
-    assert p.evaluate("() => typeof window.__xss") == 'undefined', 'Se ha ejecutado algo del contenido del comercial'
+    assert p.evaluate("() => typeof window.__xss") == 'undefined' and p.evaluate("() => typeof window.__XSS") == 'undefined', 'Se ha ejecutado algo del contenido del comercial'
     assert re.fullmatch(r'[A-Z0-9]{1,2}', fp.locator('.avatar').inner_text()), 'Las iniciales salen de las letras del nombre, no de los signos'
     c.sin_jerga()
 

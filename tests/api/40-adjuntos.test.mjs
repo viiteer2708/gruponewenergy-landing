@@ -14,7 +14,8 @@
 // TODO se hace por HTTP contra ese servidor (confirmar, el vigilante, «volver a enviar»): una llamada a cola.js o a vigilante.js
 // desde este proceso enviaría en este proceso y el espía no vería nada. Solo se usan alias de Victor (victor.molins.10+algo@gmail.com).
 //
-// Cada envío lleva un titular único, y el asunto del aviso lo lleva: así se encuentra su envío entre los que anota el espía.
+// Cada envío lleva un titular único, y el asunto del aviso lo lleva (en MAYÚSCULAS, como se guarda lo que escribe el comercial): así se
+// encuentra su envío entre los que anota el espía.
 import assert from 'node:assert/strict';
 import { createHash, randomInt } from 'node:crypto';
 import { after, before, describe, it } from 'node:test';
@@ -166,9 +167,12 @@ async function estadoDe(ref) {
   return r.json;
 }
 
-/** Lo que el espía anotó de los envíos cuyo asunto lleva ese titular: [{adjuntos, resultado, tope, etiqueta…}] del más antiguo al más nuevo. */
+/**
+ * Lo que el espía anotó de los envíos cuyo asunto lleva ese titular: [{adjuntos, resultado, tope, etiqueta…}] del más antiguo al más nuevo.
+ * El asunto lleva el titular EN MAYÚSCULAS (lo que escribe el comercial se guarda así) y el espía filtra con `includes`, que distingue mayúsculas.
+ */
 async function enviosDe(titular, tipo) {
-  const r = await get(`/__pruebas/correos?tipo=${tipo}&asunto=${encodeURIComponent(titular)}`);
+  const r = await get(`/__pruebas/correos?tipo=${tipo}&asunto=${encodeURIComponent(titular.toUpperCase())}`);
   assert.equal(r.status, 200, r.texto);
   assert.equal(r.json.espia, true, 'El servidor local debe tener el espía de Altavoz (Node 22.15 o más: module.registerHooks)');
   return r.json.envios;
@@ -427,7 +431,7 @@ describe('Adjuntos · si algo falla, backoffice recibe el aviso igualmente', { t
     assert.equal(falloDescarga.length, 1, 'queda apuntado una vez (en el intento en que ocurrió)');
     assert.deepEqual(falloDescarga[0].detalle, { n: 2, ordenes: [2, 3], causas: ['no_existe', 'tamano'] });
     assert.equal(falloDescarga[0].actor, 'vigilante');
-    for (const dato of ['dni.jpg', 'factura.png', 'contrato', EMAIL_COMERCIAL, EMAIL_CLIENTE, IBAN, titular]) assert.ok(!JSON.stringify(e.eventos).includes(dato), `el historial no lleva «${dato}»`);
+    for (const dato of ['dni.jpg', 'factura.png', 'contrato', EMAIL_COMERCIAL, EMAIL_CLIENTE, IBAN, titular, titular.toUpperCase()]) assert.ok(!JSON.stringify(e.eventos).includes(dato), `el historial no lleva «${dato}»`);
     assert.deepEqual(evento(e, 'aviso_enviado').at(-1).detalle, { intentos: 2, simulado: true, adjuntos: 2, en_bandeja: 2 });
     assert.ok(tipos(e).indexOf('adjuntos_no_descargados') < tipos(e).indexOf('aviso_enviado'), 'el apunte del fallo va antes de «aviso enviado»');
     t.diagnostic(`${ref}: sin dni.jpg (no está) ni factura.png (otro tamaño); el aviso sale con 2 adjuntos y 2 en la bandeja`);

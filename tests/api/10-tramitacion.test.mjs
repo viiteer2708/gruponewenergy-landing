@@ -264,8 +264,8 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
     assert.equal(Number(e.documentos[1].tamano_comprobado), documentos[0].datos.length);
     assert.equal(Number(e.documentos[0].tamano_comprobado), generarPng().length);
 
-    // los correos
-    const asunto = `Nuevo Contrato - Compañía de Prueba - Titular de Prueba SL - Comercial de Prueba - ${CUPS}`;
+    // los correos (lo que escribe el comercial sale en MAYÚSCULAS: el asunto sale de la fila; «Nuevo Contrato» es texto fijo)
+    const asunto = `Nuevo Contrato - COMPAÑÍA DE PRUEBA - TITULAR DE PRUEBA SL - COMERCIAL DE PRUEBA - ${CUPS}`;
     const aviso = correoDe(e, 'aviso');
     const acuse = correoDe(e, 'acuse');
     for (const c of [aviso, acuse]) {
@@ -289,7 +289,8 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
     // Orden 6: el PDF de 5,5 MiB no cabe como adjunto (el tope es de 3.000.000 bytes) y se queda en la bandeja; lo demás va adjunto
     assert.ok(aviso.cuerpo_html.includes('Documentación adjunta a este correo (3)'), 'dni.jpg, factura.png y la firma van adjuntos');
     assert.ok(aviso.cuerpo_html.includes('No caben como adjunto y están en la bandeja:</strong> contrato.pdf (5,50 MB).'), 'El PDF grande se queda en la bandeja');
-    assert.ok(aviso.cuerpo_html.includes('&lt;b&gt;etiqueta&lt;/b&gt;') && !aviso.cuerpo_html.includes('<b>etiqueta</b>'), 'Lo que teclea el comercial va escapado');
+    // Las observaciones se guardan en mayúsculas («<B>ETIQUETA</B>»): lo que importa no cambia, que salgan ESCAPADAS (como texto, nunca como HTML)
+    assert.ok(aviso.cuerpo_html.includes('&lt;B&gt;ETIQUETA&lt;/B&gt;') && !aviso.cuerpo_html.includes('<B>ETIQUETA</B>') && !aviso.cuerpo_html.includes('<b>etiqueta</b>'), 'Lo que teclea el comercial va escapado');
     assert.equal(acuse.asunto, `Recibido: ${asunto}`);
     assert.equal(acuse.para, EMAIL_COMERCIAL);
     assert.equal(acuse.responder_a, AVISO_DESTINO);
@@ -304,7 +305,7 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
     const recibida = e.eventos.find((x) => x.tipo === 'recibida');
     assert.deepEqual(recibida.detalle, { n_documentos: 4, bytes: e.documentos.reduce((s, d) => s + Number(d.tamano_comprobado), 0) });
     const historial = JSON.stringify(e.eventos);
-    for (const dato of [IBAN, EMAIL_COMERCIAL, EMAIL_CLIENTE, DNI_TITULAR, 'Titular de Prueba']) assert.ok(!historial.includes(dato), 'El historial no lleva datos personales');
+    for (const dato of [IBAN, EMAIL_COMERCIAL, EMAIL_CLIENTE, DNI_TITULAR, 'Titular de Prueba', 'TITULAR DE PRUEBA']) assert.ok(!historial.includes(dato), 'El historial no lleva datos personales');
 
     // el gancho de correos ve el aviso simulado
     const g = await llamar('GET', `/__pruebas/correos?para=${encodeURIComponent(AVISO_DESTINO)}&tipo=aviso`);
@@ -399,7 +400,7 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
 
     const e = await estadoDe(ref);
     assert.equal(e.documentos.filter((d) => d.orden >= 1).length, 1);
-    assert.equal(e.tramitacion.titular_nombre, 'Titular de Prueba SL', 'Un 409 no cambia los datos');
+    assert.equal(e.tramitacion.titular_nombre, 'TITULAR DE PRUEBA SL', 'Un 409 no cambia los datos');
     assert.deepEqual(tipos(e), ['creada', 'firma_guardada']);
   });
 
@@ -436,7 +437,7 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
     assert.deepEqual([reanudada.json.estado, reanudada.json.listo, reanudada.json.subidas.length], ['subiendo', false, 1]);
     a = await estadoDe(refA);
     assert.equal(a.tramitacion.estado, 'subiendo');
-    assert.equal(a.tramitacion.observaciones, 'Reanudada con una nota nueva', 'Al reanudar se guardan los datos actuales');
+    assert.equal(a.tramitacion.observaciones, 'REANUDADA CON UNA NOTA NUEVA', 'Al reanudar se guardan los datos actuales');
     assert.deepEqual(tipos(a), ['creada', 'firma_guardada', 'abandonada', 'reanudada']);
 
     // y una abandonada con una lista distinta no se reanuda
@@ -554,9 +555,10 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
       observaciones: 'a\u0000b\ud800c\r\nd',
     });
     const { ref, estado: e } = await enviarCompleto({ datos, documentos });
-    assert.equal(e.tramitacion.comercial_nombre, 'Nombre Con salto Y tab');
-    assert.equal(e.tramitacion.compania, 'Compañía Bcc: otro@ejemplo.com');
-    assert.equal(e.tramitacion.observaciones, 'a b\ufffdc\nd');
+    // (todo en mayúsculas: también lo que parece un correo dentro de un texto libre; solo los campos de correo van en minúsculas)
+    assert.equal(e.tramitacion.comercial_nombre, 'NOMBRE CON SALTO Y TAB');
+    assert.equal(e.tramitacion.compania, 'COMPAÑÍA BCC: OTRO@EJEMPLO.COM');
+    assert.equal(e.tramitacion.observaciones, 'A B\ufffdC\nD');
     const aviso = correoDe(e, 'aviso');
     assert.ok(!/[\r\n]/.test(aviso.asunto), 'El asunto es de una sola línea');
     assert.equal(aviso.estado, 'enviado');
@@ -701,12 +703,12 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
     assert.match(ref, /^MEGA-\d{8}-[A-Z0-9]{6}$/);
     assert.equal(e.tramitacion.formulario, 'mega');
     assert.equal(e.tramitacion.compania, 'MEGA ENERGIA');
-    assert.equal(e.tramitacion.tipo_suministro, 'Gas', 'RL.1 es gas, diga lo que diga el cliente');
+    assert.equal(e.tramitacion.tipo_suministro, 'GAS', 'RL.1 es gas (se guarda en mayúsculas), diga lo que diga el cliente');
     assert.match(e.tramitacion.carpeta, new RegExp(`^pruebas/mega/\\d{4}/\\d{2}/${ref}-`));
     const aviso = correoDe(e, 'aviso');
     const acuse = correoDe(e, 'acuse');
     assert.equal(aviso.marca, 'MEGA');
-    assert.equal(aviso.asunto, `Nuevo Contrato MEGA - Titular Mega de Prueba SL - Comercial de Prueba - ${CUPS_GAS}`);
+    assert.equal(aviso.asunto, `Nuevo Contrato MEGA - TITULAR MEGA DE PRUEBA SL - COMERCIAL DE PRUEBA - ${CUPS_GAS}`);
     assert.equal(acuse.asunto, `Recibido: ${aviso.asunto}`);
     assert.equal(aviso.para, AVISO_DESTINO, 'MEGA usa el mismo buzón: no hace falta AVISO_DESTINO_MEGA');
     assert.ok(aviso.cuerpo_html.includes(`${BASE}/bandeja/c/${ref}`));
@@ -717,6 +719,80 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
     const mala = await iniciar(entradaIniciar({ formulario: 'mega', ref: nuevaRef('mega'), documentos, datos: datosMega({ tarifa: '9.9XX' }) }));
     assert.equal(mala.status, 400);
     assert.deepEqual(Object.keys(mala.json.campos), ['tarifa']);
+  });
+
+  it('MAYÚSCULAS de punta a punta: lo que escribe el comercial se guarda y se envía EN MAYÚSCULAS (fila, aviso, asunto y acuse); los correos electrónicos, en minúsculas', async (t) => {
+    const ALIAS = 'victor.molins.10+mayus@gmail.com';
+    const documentos = PEQUENOS();
+    const { ref, estado: e } = await enviarCompleto({
+      documentos,
+      datos: datosGnew({
+        titular: 'Juan Pérez Peña SL',
+        dir_suministro: 'calle mayor 5',
+        quien_eres: 'ana lópez',
+        email_comercial: 'Victor.Molins.10+Mayus@gmail.com',
+        poblacion: 'Peñíscola',
+        provincia: 'castellón',
+        cambio_titular: 'Si',
+        nuevo_titular: 'ñandú e hijos, s.l.',
+      }),
+    });
+
+    // la fila de la base
+    const f = e.tramitacion;
+    assert.deepEqual(
+      {
+        titular_nombre: f.titular_nombre, direccion: f.direccion, comercial_nombre: f.comercial_nombre, poblacion: f.poblacion, provincia: f.provincia,
+        compania: f.compania, oferta: f.oferta, firmante_nombre: f.firmante_nombre, nuevo_titular: f.nuevo_titular, observaciones: f.observaciones,
+      },
+      {
+        titular_nombre: 'JUAN PÉREZ PEÑA SL', direccion: 'CALLE MAYOR 5', comercial_nombre: 'ANA LÓPEZ', poblacion: 'PEÑÍSCOLA', provincia: 'CASTELLÓN',
+        compania: 'COMPAÑÍA DE PRUEBA', oferta: 'FIJO 12 MESES', firmante_nombre: 'FIRMANTE DE PRUEBA', nuevo_titular: 'ÑANDÚ E HIJOS, S.L.',
+        observaciones: 'LÍNEA 1\nLÍNEA 2 CON <B>ETIQUETA</B> & MÁS',
+      },
+    );
+    assert.equal(f.comercial_email, ALIAS, 'El correo del comercial, en minúsculas aunque lo tecleara con mayúsculas');
+    assert.equal(f.email_cliente, EMAIL_CLIENTE, 'El correo del cliente, en minúsculas');
+    assert.equal(f.cambio_titular, true, 'Sigue siendo un booleano');
+    assert.deepEqual(f.potencias, { p1: '4.6', p2: '4.6' }, 'Las potencias no cambian');
+    assert.ok(f.busqueda.includes('juan perez pena sl') && f.busqueda.includes('ana lopez') && f.busqueda.includes('compania de prueba'), 'La búsqueda sigue en minúsculas y sin tildes');
+
+    // el aviso y el acuse que quedan en la base (simulados): asunto, destinatarios y cuerpos
+    const asunto = `Nuevo Contrato - COMPAÑÍA DE PRUEBA - JUAN PÉREZ PEÑA SL - ANA LÓPEZ - ${CUPS}`;
+    const aviso = correoDe(e, 'aviso');
+    const acuse = correoDe(e, 'acuse');
+    assert.equal(aviso.asunto, asunto);
+    assert.equal(acuse.asunto, `Recibido: ${asunto}`);
+    assert.equal(aviso.para, AVISO_DESTINO);
+    assert.equal(aviso.responder_a, ALIAS, 'El aviso responde al correo del comercial, en minúsculas');
+    assert.equal(acuse.para, ALIAS, 'El acuse va al correo del comercial, en minúsculas');
+    assert.equal(acuse.responder_a, AVISO_DESTINO);
+    for (const [formato, cuerpo] of [['html', aviso.cuerpo_html], ['texto', aviso.cuerpo_texto]]) {
+      for (const mayusculas of ['JUAN PÉREZ PEÑA SL', 'CALLE MAYOR 5', 'ANA LÓPEZ', 'PEÑÍSCOLA', 'CASTELLÓN', 'COMPAÑÍA DE PRUEBA', 'ÑANDÚ E HIJOS, S.L.']) {
+        assert.ok(cuerpo.includes(mayusculas), `El aviso (${formato}) lleva «${mayusculas}»`);
+      }
+      for (const minusculas of ['Juan Pérez Peña SL', 'calle mayor 5', 'ana lópez', 'Peñíscola', 'castellón', 'ñandú']) {
+        assert.ok(!cuerpo.includes(minusculas), `El aviso (${formato}) ya no lleva «${minusculas}»`);
+      }
+      assert.ok(cuerpo.includes(ALIAS) && cuerpo.includes(EMAIL_CLIENTE) && !cuerpo.includes('Victor.Molins'), `Los correos electrónicos salen en minúsculas en el aviso (${formato})`);
+    }
+    for (const cuerpo of [acuse.cuerpo_html, acuse.cuerpo_texto]) {
+      assert.ok(cuerpo.includes('JUAN PÉREZ PEÑA SL') && !cuerpo.includes('Juan Pérez Peña SL'), 'El acuse enseña el titular en mayúsculas');
+    }
+
+    // lo que HABRÍA salido por Altavoz, visto por el espía del servidor local: el aviso con el asunto en mayúsculas y el acuse al correo en minúsculas
+    const espiaAviso = await llamar('GET', `/__pruebas/correos?tipo=aviso&asunto=${encodeURIComponent('JUAN PÉREZ PEÑA SL')}`);
+    assert.equal(espiaAviso.status, 200, espiaAviso.texto);
+    assert.equal(espiaAviso.json.espia, true, 'El servidor local debe tener el espía de Altavoz (Node 22.15 o más: module.registerHooks)');
+    const enviadoAviso = espiaAviso.json.envios.at(-1);
+    assert.ok(enviadoAviso, 'El espía debe haber visto el aviso');
+    assert.deepEqual([enviadoAviso.asunto, enviadoAviso.para, enviadoAviso.resultado.estado], [asunto, AVISO_DESTINO.toLowerCase(), 'enviado']);
+    const espiaAcuse = await llamar('GET', `/__pruebas/correos?tipo=acuse&para=${encodeURIComponent(ALIAS)}`);
+    assert.equal(espiaAcuse.status, 200, espiaAcuse.texto);
+    const enviadoAcuse = espiaAcuse.json.envios.at(-1);
+    assert.ok(enviadoAcuse, 'El espía debe haber visto el acuse');
+    assert.deepEqual([enviadoAcuse.para, enviadoAcuse.asunto, enviadoAcuse.resultado.estado], [ALIAS, `Recibido: ${asunto}`, 'enviado']);
+    t.diagnostic(`${ref}: fila, aviso (con su asunto) y acuse en mayúsculas; los correos electrónicos, en minúsculas`);
   });
 
   it('datos corregidos antes de terminar: iniciar de nuevo con la misma ref actualiza la fila y lo apunta (sin datos personales en el historial)', async () => {
@@ -731,11 +807,11 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
     assert.equal(corregido.status, 200, corregido.texto);
     const e = await estadoDe(ref);
     assert.equal(e.tramitacion.cups, CUPS_OTRO);
-    assert.equal(e.tramitacion.titular_nombre, 'Titular Corregido SL');
-    assert.ok(e.tramitacion.busqueda.includes('titular corregido'), 'La búsqueda se actualiza con los datos nuevos');
+    assert.equal(e.tramitacion.titular_nombre, 'TITULAR CORREGIDO SL');
+    assert.ok(e.tramitacion.busqueda.includes('titular corregido'), 'La búsqueda se actualiza con los datos nuevos (siempre en minúsculas, aunque el titular se guarde en mayúsculas)');
     const evento = e.eventos.find((x) => x.tipo === 'datos_actualizados');
     assert.deepEqual(evento.detalle, { campos: ['cups', 'titular_nombre'] });
-    assert.ok(!JSON.stringify(e.eventos).includes('Corregido'));
+    assert.ok(!JSON.stringify(e.eventos).includes('Corregido') && !JSON.stringify(e.eventos).includes('CORREGIDO'));
   });
 
   it('confirmar sobre una tramitación ya recibida a la que le faltan los correos (corte tras el cambio de estado) los crea y los envía', async () => {

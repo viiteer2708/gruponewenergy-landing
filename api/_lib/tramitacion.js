@@ -77,6 +77,11 @@ const multilinea = (v, max) => recortar(
   max,
 );
 const vacioANull = (s) => (s === '' ? null : s);
+// Lo que escribe el comercial se guarda EN MAYÚSCULAS (decisión de Victor, 15-oct-2026: en el CRM todo va en mayúsculas). `toUpperCase()`
+// conserva las tildes y la Ñ («Peñíscola» → «PEÑÍSCOLA»). Se pasa a mayúsculas DESPUÉS de recortar, y siempre DENTRO de `vacioANull`
+// (nunca fuera: `vacioANull` puede devolver null): un campo vacío sigue siendo null.
+const lineaMayus = (v, max) => linea(v, max).toUpperCase();
+const multilineaMayus = (v, max) => multilinea(v, max).toUpperCase();
 const compactarId = (v) => linea(v, 30).toUpperCase().replace(/[\s.-]/g, '');
 const iso = (ms) => new Date(ms).toISOString();
 
@@ -102,9 +107,16 @@ function refNueva(formulario) {
  * propósito: con datos ausentes o raros devuelve '' en los textos obligatorios (los envíos de bots llegan así
  * hasta la fila `descartada`, que tiene columnas NOT NULL). La validación estricta es validarDatos().
  *   · textos de una línea sin saltos ni caracteres de control; cada uno recortado a su máximo
- *   · CUPS, NIF/NIE/CIF e IBAN compactados y en mayúsculas; emails en minúsculas
+ *   · TODO lo que escribe el comercial se guarda EN MAYÚSCULAS, con sus tildes y la Ñ («Peñíscola» → «PEÑÍSCOLA»): nombre del
+ *     comercial, compañía, oferta, tarifa, titular, firmante, dirección, población, provincia, código postal, teléfono, nuevo
+ *     titular y observaciones (que conservan sus saltos de línea). Se pasa a mayúsculas DESPUÉS de recortar y los opcionales
+ *     vacíos siguen siendo null. Decisión de Victor del 15-oct-2026 (en el CRM se escribe todo en mayúsculas). De esta fila
+ *     salen la bandeja, el aviso a backoffice (con su asunto) y el acuse al comercial: por eso el cambio vive SOLO aquí
+ *   · EXCEPCIÓN: los correos electrónicos (comercial_email y email_cliente) van en minúsculas; el acuse se manda a comercial_email
+ *   · CUPS, NIF/NIE/CIF e IBAN compactados y en mayúsculas
  *   · potencias: solo las rellenas, con coma → punto, tal como se tecleó
- *   · MEGA: compañía fija y tipo de suministro deducido de la tarifa
+ *   · MEGA: compañía fija y tipo de suministro deducido de la tarifa TAL CUAL llega (antes de pasarla a mayúsculas) y guardado
+ *     en mayúsculas (LUZ / GAS)
  */
 export function mapearDatos(formulario, datos) {
   const d = esObjeto(datos) ? datos : {};
@@ -113,30 +125,30 @@ export function mapearDatos(formulario, datos) {
     const valor = linea(d[clave], 20).replace(/,/g, '.');
     if (valor) potencias[clave] = valor;
   }
-  const tarifa = linea(d.tarifa, 100);
+  const tarifa = linea(d.tarifa, 100); // tal cual llega: tipoSuministroDe la mira así (la lista de tarifas de MEGA está en mayúsculas)
   return {
-    comercial_nombre: linea(d.quien_eres, 200),
+    comercial_nombre: lineaMayus(d.quien_eres, 200),
     comercial_email: linea(d.email_comercial, 254).toLowerCase(),
-    compania: formulario === 'mega' ? MARCAS.mega.compania : linea(d.compania, 100),
+    compania: formulario === 'mega' ? MARCAS.mega.compania : lineaMayus(d.compania, 100),
     cups: linea(d.cups, 40).toUpperCase().replace(/\s/g, ''),
-    oferta: vacioANull(linea(d.oferta, 200)),
-    tarifa: vacioANull(tarifa),
-    tipo_suministro: formulario === 'mega' ? vacioANull(tipoSuministroDe(tarifa)) : null,
+    oferta: vacioANull(lineaMayus(d.oferta, 200)),
+    tarifa: vacioANull(tarifa.toUpperCase()),
+    tipo_suministro: formulario === 'mega' ? vacioANull(tipoSuministroDe(tarifa).toUpperCase()) : null,
     potencias,
-    titular_nombre: linea(d.titular, 250),
+    titular_nombre: lineaMayus(d.titular, 250),
     titular_nif: compactarId(d.cif_nif),
-    firmante_nombre: vacioANull(linea(d.nombre_firmante, 200)),
+    firmante_nombre: vacioANull(lineaMayus(d.nombre_firmante, 200)),
     firmante_nif: vacioANull(compactarId(d.dni_firmante)),
     iban: linea(d.cuenta_bancaria, 50).toUpperCase().replace(/\s/g, ''),
-    direccion: linea(d.dir_suministro, 300),
-    cp: linea(d.codigo_postal, 10),
-    poblacion: linea(d.poblacion, 100),
-    provincia: linea(d.provincia, 100),
-    telefono: linea(d.movil, 30),
+    direccion: lineaMayus(d.dir_suministro, 300),
+    cp: lineaMayus(d.codigo_postal, 10),
+    poblacion: lineaMayus(d.poblacion, 100),
+    provincia: lineaMayus(d.provincia, 100),
+    telefono: lineaMayus(d.movil, 30),
     email_cliente: linea(d.email_cliente, 254).toLowerCase(),
     cambio_titular: ['si', 'sí'].includes(linea(d.cambio_titular, 10).toLowerCase()),
-    nuevo_titular: vacioANull(linea(d.nuevo_titular, 500)),
-    observaciones: vacioANull(multilinea(d.observaciones, 4000)),
+    nuevo_titular: vacioANull(lineaMayus(d.nuevo_titular, 500)),
+    observaciones: vacioANull(multilineaMayus(d.observaciones, 4000)),
   };
 }
 

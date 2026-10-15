@@ -139,7 +139,8 @@ def caso_1(c):
     assert docs[0]['es_firma'] and docs[0]['nombre'] == 'firma.png'
     assert docs[2]['tamano_declarado'] == TAMANO_PDF and docs[2]['tipo_mime'] == 'application/pdf'
     aviso, acuse = correo_de(e, 'aviso'), correo_de(e, 'acuse')
-    esperado = 'Nuevo Contrato - Compañía de Prueba - Titular de Prueba SL - Comercial de Prueba - ' + CUPS_LUZ
+    # Lo que escribe el comercial se guarda y se envía EN MAYÚSCULAS (el asunto sale de la fila); «Nuevo Contrato» es texto fijo
+    esperado = 'Nuevo Contrato - COMPAÑÍA DE PRUEBA - TITULAR DE PRUEBA SL - COMERCIAL DE PRUEBA - ' + CUPS_LUZ
     assert aviso['asunto'] == esperado, aviso['asunto']
     assert acuse['asunto'] == 'Recibido: ' + esperado, acuse['asunto']
     assert f'/bandeja/c/{ref}' in aviso['cuerpo_html'] and IBAN_COMPACTO in aviso['cuerpo_html'] + aviso['cuerpo_texto']
@@ -265,9 +266,9 @@ def caso_6(c):
     e = esperar_estado(ref, 'recibida')
     comprobar_recibida(e, ref, 'mega', 3)
     t = e['tramitacion']
-    assert t['compania'] == 'MEGA ENERGIA' and t['tipo_suministro'] == 'Luz'
+    assert t['compania'] == 'MEGA ENERGIA' and t['tipo_suministro'] == 'LUZ'  # (el navegador manda «Luz»: se guarda en mayúsculas)
     aviso, acuse = correo_de(e, 'aviso'), correo_de(e, 'acuse')
-    esperado = 'Nuevo Contrato MEGA - Titular Mega de Prueba SL - Comercial de Prueba - ' + CUPS_LUZ
+    esperado = 'Nuevo Contrato MEGA - TITULAR MEGA DE PRUEBA SL - COMERCIAL DE PRUEBA - ' + CUPS_LUZ
     assert aviso['asunto'] == esperado, aviso['asunto']
     assert acuse['asunto'] == 'Recibido: ' + esperado
     assert aviso['marca'] == 'MEGA'

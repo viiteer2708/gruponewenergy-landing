@@ -581,7 +581,7 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
     assert.deepEqual(a.vistas, [], 'Nadie ha abierto todavía la ficha de A: `vistas` va vacía, no ausente');
     assert.deepEqual(
       { formulario: a.formulario, estado: a.estado, compania: a.compania, titular_nombre: a.titular_nombre, cups: a.cups, comercial_nombre: a.comercial_nombre, tarifa: a.tarifa, n_documentos: a.n_documentos },
-      { formulario: 'gnew', estado: 'recibida', compania: 'Compañía de Prueba', titular_nombre: 'Titular de Prueba SL', cups: CUPS, comercial_nombre: 'Comercial de Prueba', tarifa: '2.0TD', n_documentos: 4 },
+      { formulario: 'gnew', estado: 'recibida', compania: 'COMPAÑÍA DE PRUEBA', titular_nombre: 'TITULAR DE PRUEBA SL', cups: CUPS, comercial_nombre: 'COMERCIAL DE PRUEBA', tarifa: '2.0TD', n_documentos: 4 },
     );
     assert.ok(a.creada_en && a.recibida_en);
     assert.deepEqual(
@@ -722,18 +722,18 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
     assert.equal(f.ref, A);
     assert.deepEqual(
       { formulario: f.formulario, estado: f.estado, sospechosa: f.sospechosa, comercial_nombre: f.comercial_nombre, comercial_email: f.comercial_email, compania: f.compania, cups: f.cups },
-      { formulario: 'gnew', estado: 'recibida', sospechosa: false, comercial_nombre: 'Comercial de Prueba', comercial_email: EMAIL_COMERCIAL, compania: 'Compañía de Prueba', cups: CUPS },
+      { formulario: 'gnew', estado: 'recibida', sospechosa: false, comercial_nombre: 'COMERCIAL DE PRUEBA', comercial_email: EMAIL_COMERCIAL, compania: 'COMPAÑÍA DE PRUEBA', cups: CUPS },
     );
     assert.equal(f.iban, IBAN, 'El IBAN sale completo');
     assert.deepEqual(
       { oferta: f.oferta, tarifa: f.tarifa, potencias: f.potencias, titular_nombre: f.titular_nombre, titular_nif: f.titular_nif, firmante_nombre: f.firmante_nombre, firmante_nif: f.firmante_nif },
-      { oferta: 'Fijo 12 meses', tarifa: '2.0TD', potencias: { p1: '4.6', p2: '4.6' }, titular_nombre: 'Titular de Prueba SL', titular_nif: '00000000T', firmante_nombre: 'Firmante de Prueba', firmante_nif: '12345678Z' },
+      { oferta: 'FIJO 12 MESES', tarifa: '2.0TD', potencias: { p1: '4.6', p2: '4.6' }, titular_nombre: 'TITULAR DE PRUEBA SL', titular_nif: '00000000T', firmante_nombre: 'FIRMANTE DE PRUEBA', firmante_nif: '12345678Z' },
     );
     assert.deepEqual(
       { direccion: f.direccion, cp: f.cp, poblacion: f.poblacion, provincia: f.provincia, telefono: f.telefono, email_cliente: f.email_cliente, cambio_titular: f.cambio_titular, nuevo_titular: f.nuevo_titular },
-      { direccion: 'Calle de Prueba 1, 2.º A', cp: '28001', poblacion: 'Madrid', provincia: 'Madrid', telefono: '600000000', email_cliente: EMAIL_CLIENTE, cambio_titular: false, nuevo_titular: null },
+      { direccion: 'CALLE DE PRUEBA 1, 2.º A', cp: '28001', poblacion: 'MADRID', provincia: 'MADRID', telefono: '600000000', email_cliente: EMAIL_CLIENTE, cambio_titular: false, nuevo_titular: null },
     );
-    assert.equal(f.observaciones, 'Línea 1\nLínea 2 con <b>etiqueta</b> & más', 'Los datos viajan tal cual en el JSON; escaparlos es cosa de la página');
+    assert.equal(f.observaciones, 'LÍNEA 1\nLÍNEA 2 CON <B>ETIQUETA</B> & MÁS', 'Los datos viajan tal cual en el JSON (en mayúsculas, como se guardan); escaparlos es cosa de la página');
     assert.ok(f.creada_en && f.recibida_en && f.actualizada_en);
     assert.equal(f.tramitada_en, null);
     assert.equal(f.tramitada_por, null);
@@ -786,7 +786,7 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
   it('ficha de una MEGA, de una que sigue subiendo (sin enlaces), de una abandonada y de una descartada (sin documentos: no revienta)', async () => {
     const m = (await get(`/api/bandeja/ficha?ref=${B}`, autorizado())).json;
     assert.equal(m.tramitacion.formulario, 'mega');
-    assert.equal(m.tramitacion.tipo_suministro, 'Gas');
+    assert.equal(m.tramitacion.tipo_suministro, 'GAS');
     assert.equal(m.tramitacion.compania, 'MEGA ENERGIA');
     assert.deepEqual(m.documentos.map((d) => d.nombre), ['firma.png', 'contrato mega.pdf']);
 

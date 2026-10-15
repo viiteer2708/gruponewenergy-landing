@@ -222,7 +222,9 @@ const filaDe = async (ref) => (await seleccionar('tramitaciones', { select: '*',
 const vencer = (id) => actualizar('tramitacion_correos', { tramitacion_id: `eq.${id}`, estado: 'eq.pendiente' }, { proximo_intento: hace(1) });
 const poner = (id, tipo, cambios) => actualizar('tramitacion_correos', { tramitacion_id: `eq.${id}`, tipo: `eq.${tipo}` }, cambios);
 
-const DATOS_PERSONALES = [EMAIL_COMERCIAL, EMAIL_CLIENTE, IBAN, IBAN_TECLEADO, 'Titular de Prueba', 'Comercial de Prueba', 'Firmante de Prueba', CUPS, '12345678Z', '00000000T'];
+// (los nombres, en las dos formas: los envíos hechos por la API se guardan en MAYÚSCULAS y las filas sintéticas de este fichero, tal cual)
+const DATOS_PERSONALES = [EMAIL_COMERCIAL, EMAIL_CLIENTE, IBAN, IBAN_TECLEADO, 'Titular de Prueba', 'Comercial de Prueba', 'Firmante de Prueba',
+  'TITULAR DE PRUEBA', 'COMERCIAL DE PRUEBA', 'FIRMANTE DE PRUEBA', CUPS, '12345678Z', '00000000T'];
 function sinDatosPersonales(texto, contexto) {
   for (const dato of DATOS_PERSONALES) assert.ok(!texto.includes(dato), `${contexto}: el parte no debe llevar datos personales («${dato.slice(0, 8)}…»)`);
 }
