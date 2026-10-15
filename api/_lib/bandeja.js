@@ -2,8 +2,8 @@
 //
 // FLUJO EN LLANO. Backoffice pide un código con su correo (`pedirCodigo`), lo recibe por email y lo teclea
 // (`entrar`): si es correcto, el servidor le da una cookie de sesión firmada. Con ella ve la lista (`listar`), la ficha
-// de cada contrato con los enlaces de descarga (`ficha`), marca como tramitada o vuelve a pendiente (`cambiarEstado`) y
-// reenvía un correo si hizo falta (`reenviarCorreo`).
+// de cada contrato con los enlaces de descarga (`ficha`), marca como tramitada o vuelve a pendiente (`cambiarEstado`), deja una
+// pendiente «sin abrir» para que la coja otro compañero (`marcarSinAbrir`) y reenvía un correo si hizo falta (`reenviarCorreo`).
 //
 // Las funciones devuelven {status, cuerpo, cabeceras?} y los handlers de api/bandeja/ solo lo escriben en la respuesta
 // (igual que tramitacion.js con iniciar/confirmar). Reglas del módulo:
@@ -52,6 +52,7 @@ export const MENSAJES = Object.freeze({
   demasiadasEntradas: 'Demasiados intentos desde tu conexión. Espera unos minutos.',
   noExiste: 'No encontramos esta tramitación.',
   transicion: 'Esta tramitación ya no está como creías. Recarga la página para ver cómo está ahora.',
+  soloPendiente: 'Solo se puede dejar sin abrir un contrato pendiente.',
   sinCorreo: 'Este envío todavía no está completo, así que no hay correos que reenviar.',
   temporal: 'No hemos podido completar la operación ahora mismo. Inténtalo de nuevo en un momento.',
   interno: 'Ha ocurrido un problema. Inténtalo de nuevo en un momento.',
@@ -307,9 +308,14 @@ export function salir({ https = false } = {}) {
 
 export const PAGINA = 30;
 
-// Cuántas personas distintas enseña `vistas` por tarjeta, y cuántas aperturas (las más recientes) se piden por ficha para armarlas.
+// Cuántas personas distintas enseña `vistas` por tarjeta, y cuántos eventos de apertura (aperturas y marcas «sin abrir», los más
+// recientes) se piden por ficha para armarlas.
 const MAX_VISTAS = 5;
-const MAX_APERTURAS_POR_FICHA = 20;
+const MAX_EVENTOS_DE_APERTURA = 20;
+
+// Los dos eventos que dicen quién ha abierto una ficha: la apertura (`ficha_abierta`) y la marca «sin abrir» (`marcada_sin_abrir`),
+// que anula todas las aperturas anteriores. Filtro de PostgREST para pedirlos juntos.
+const EVENTOS_DE_APERTURA = 'in.(ficha_abierta,marcada_sin_abrir)';
 
 // Qué estados hay detrás de cada chip. «Todas» deja fuera las descartadas (los envíos que ha parado el filtro antibots
 // viven aparte, bajo «Descartadas»).
@@ -321,10 +327,10 @@ const ESTADOS_DE_LA_LISTA = Object.freeze({
   todas: ['recibida', 'tramitada', 'subiendo', 'abandonada'],
 });
 
-// `tramitacion_eventos(actor,creado_en)` trae las aperturas de cada ficha: `listar` le pone el filtro (solo `ficha_abierta`), el
-// orden y el tope con parámetros de la propia consulta (`tramitacion_eventos.tipo`, `.order`, `.limit`), que PostgREST aplica a
-// cada ficha por separado.
-const COLUMNAS_LISTA = 'ref,formulario,estado,compania,titular_nombre,cups,comercial_nombre,tarifa,creada_en,recibida_en,tramitacion_documentos(count),tramitacion_eventos(actor,creado_en)';
+// `tramitacion_eventos(tipo,actor,creado_en)` trae las aperturas y las marcas «sin abrir» de cada ficha: `listar` le pone el filtro
+// (solo `ficha_abierta` y `marcada_sin_abrir`), el orden y el tope con parámetros de la propia consulta (`tramitacion_eventos.tipo`,
+// `.order`, `.limit`), que PostgREST aplica a cada ficha por separado.
+const COLUMNAS_LISTA = 'ref,formulario,estado,compania,titular_nombre,cups,comercial_nombre,tarifa,creada_en,recibida_en,tramitacion_documentos(count),tramitacion_eventos(tipo,actor,creado_en)';
 
 // El cursor es la `creada_en` del último elemento tal como la devolvió la base (con microsegundos): se reutiliza el texto
 // original, no una fecha de JavaScript (que solo llega al milisegundo y podría saltarse filas).
@@ -338,14 +344,18 @@ function palabrasDe(q) {
 }
 
 /**
- * Quién ha abierto una ficha, para la tarjeta de la lista: de sus aperturas (`ficha_abierta`, de más reciente a más antigua)
- * deja UNA por persona —la más reciente— y como mucho MAX_VISTAS. Devuelve [{por, en}] (lista vacía si nadie la ha abierto).
+ * Quién ha abierto una ficha, para la tarjeta de la lista. `eventos` son sus aperturas (`ficha_abierta`) y sus marcas «sin abrir»
+ * (`marcada_sin_abrir`), de más reciente a más antiguo. Solo cuentan las aperturas MÁS NUEVAS que la última marca: se recorre de lo
+ * más nuevo a lo más viejo y se PARA en la primera marca (lo anterior ya no vale). De lo que queda deja UNA apertura por persona
+ * —la más reciente— y como mucho MAX_VISTAS. Devuelve [{por, en}] (lista vacía si nadie la ha abierto desde la última marca, o nunca).
+ * Lo que no es ni apertura ni marca no cuenta.
  */
-function vistasDe(aperturas) {
+export function vistasDe(eventos) {
   const porPersona = new Map();
-  for (const a of Array.isArray(aperturas) ? aperturas : []) {
-    if (typeof a?.actor !== 'string' || !a.actor || porPersona.has(a.actor)) continue;
-    porPersona.set(a.actor, a.creado_en);
+  for (const e of Array.isArray(eventos) ? eventos : []) {
+    if (e?.tipo === 'marcada_sin_abrir') break;
+    if (e?.tipo !== 'ficha_abierta' || typeof e.actor !== 'string' || !e.actor || porPersona.has(e.actor)) continue;
+    porPersona.set(e.actor, e.creado_en);
     if (porPersona.size === MAX_VISTAS) break;
   }
   return [...porPersona].map(([por, en]) => ({ por, en }));
@@ -359,8 +369,9 @@ function vistasDe(aperturas) {
  * `siguiente` es el valor de `antes` para pedir la página siguiente (null si no hay más). `q` busca, palabra a palabra
  * (todas deben aparecer), en titular, CUPS, referencia, comercial y compañía.
  * `vistas` dice quién ha abierto la ficha: una entrada por persona (`por` = su correo, `en` = su apertura MÁS reciente),
- * de más reciente a más antigua y como mucho 5; `[]` si nadie la ha abierto. Sale de los eventos `ficha_abierta` (ver `ficha`);
- * por ficha se leen sus 20 últimas aperturas.
+ * de más reciente a más antigua y como mucho 5; `[]` si nadie la ha abierto. Sale de los eventos `ficha_abierta` (ver `ficha`)
+ * POSTERIORES a la última `marcada_sin_abrir` (ver `marcarSinAbrir`: una marca anula las aperturas de antes, para todo el
+ * equipo); por ficha se leen sus 20 últimos eventos de apertura o marca.
  */
 export async function listar(consulta = {}) {
   const clave = primero(consulta.estado) ?? 'pendientes';
@@ -375,10 +386,10 @@ export async function listar(consulta = {}) {
     estado: estados.length === 1 ? `eq.${estados[0]}` : `in.(${estados.join(',')})`,
     order: 'creada_en.desc',
     limit: PAGINA + 1, // una de más para saber si hay otra página
-    // Lo que va con el nombre de la tabla se aplica a las aperturas embebidas, no a las tramitaciones
-    'tramitacion_eventos.tipo': 'eq.ficha_abierta',
+    // Lo que va con el nombre de la tabla se aplica a los eventos embebidos (aperturas y marcas), no a las tramitaciones
+    'tramitacion_eventos.tipo': EVENTOS_DE_APERTURA,
     'tramitacion_eventos.order': 'creado_en.desc',
-    'tramitacion_eventos.limit': MAX_APERTURAS_POR_FICHA,
+    'tramitacion_eventos.limit': MAX_EVENTOS_DE_APERTURA,
   };
   if (antes) query.creada_en = `lt.${antes}`;
   const palabras = palabrasDe(primero(consulta.q) ?? '');
@@ -435,14 +446,33 @@ async function buscarPorRef(ref, select) {
 }
 
 /**
- * Deja constancia de que `actor` ha abierto la ficha, salvo que ya la abriera hace menos de MINUTOS_ENTRE_APERTURAS minutos.
- * `eventos` son los últimos de la tramitación, de más nuevo a más antiguo (los que `ficha` ya ha leído: no hay consulta extra);
- * se mira la apertura MÁS RECIENTE de esa persona. Devuelve el evento nuevo con la forma de los de la ficha, o null si no
- * hacía falta apuntarlo o no se ha podido: la apertura NUNCA hace fallar la ficha (y el registro lleva una frase fija).
+ * ¿Hay que apuntar una apertura nueva de `actor`? `eventos` son los últimos de la tramitación, de más nuevo a más antiguo. Se
+ * recorren de lo más nuevo a lo más viejo hasta lo primero que importa:
+ *  - una marca «sin abrir» (`marcada_sin_abrir`) → SÍ, aunque la última apertura de esa persona sea de hace un minuto: lo anterior
+ *    a la marca ya no cuenta (si el freno de 15 minutos mirara más allá, marcar y volver a abrir enseguida dejaría la ficha
+ *    «Sin abrir» estando leída);
+ *  - una apertura (`ficha_abierta`) de esa misma persona → SÍ solo si han pasado MINUTOS_ENTRE_APERTURAS minutos de ella (el freno
+ *    de siempre; una fecha ilegible no frena);
+ *  - no queda nada → SÍ.
+ * Las aperturas de otras personas no cuentan.
+ */
+export function hayQueApuntarApertura(eventos, actor, ahora = Date.now()) {
+  for (const e of eventos) {
+    if (e.tipo === 'marcada_sin_abrir') return true;
+    if (e.tipo === 'ficha_abierta' && e.actor === actor) return !(ahora - Date.parse(e.creado_en) < MINUTOS_ENTRE_APERTURAS * 60_000);
+  }
+  return true;
+}
+
+/**
+ * Deja constancia de que `actor` ha abierto la ficha, salvo que no haga falta (ver `hayQueApuntarApertura`: ya la abrió hace menos
+ * de MINUTOS_ENTRE_APERTURAS minutos y nadie la ha dejado «sin abrir» desde entonces). `eventos` son los últimos de la tramitación,
+ * de más nuevo a más antiguo (los que `ficha` ya ha leído: no hay consulta extra). Devuelve el evento nuevo con la forma de los de
+ * la ficha, o null si no hacía falta apuntarlo o no se ha podido: la apertura NUNCA hace fallar la ficha (y el registro lleva una
+ * frase fija).
  */
 async function apuntarApertura(tramitacionId, actor, eventos) {
-  const ultima = eventos.find((e) => e.tipo === 'ficha_abierta' && e.actor === actor);
-  if (ultima && Date.now() - Date.parse(ultima.creado_en) < MINUTOS_ENTRE_APERTURAS * 60_000) return null;
+  if (!hayQueApuntarApertura(eventos, actor)) return null;
   try {
     const [nuevo] = await insertar('tramitacion_eventos', { tramitacion_id: tramitacionId, tipo: 'ficha_abierta', actor, detalle: {} }, { devolver: true });
     return nuevo ? { tipo: nuevo.tipo, actor: nuevo.actor, detalle: nuevo.detalle, creado_en: nuevo.creado_en } : null;
@@ -463,8 +493,9 @@ async function apuntarApertura(tramitacionId, actor, eventos) {
  * con `url: null`.
  * `abrir` (que la página manda solo en la carga de verdad, no en sus refrescos en silencio) apunta la apertura como evento
  * `ficha_abierta` con el correo de la sesión como actor, y ese evento ya sale en `eventos` de esta misma respuesta. Si esa
- * persona ya abrió la ficha hace menos de 15 minutos (MINUTOS_ENTRE_APERTURAS) no se apunta otra. Sin `abrir` no se apunta
- * nada. Es un evento y NO una columna de `tramitaciones`: un UPDATE dispararía el trigger que renueva `actualizada_en`, y el
+ * persona ya abrió la ficha hace menos de 15 minutos (MINUTOS_ENTRE_APERTURAS) no se apunta otra, salvo que desde entonces
+ * alguien la haya dejado «sin abrir» (`marcada_sin_abrir`, ver `marcarSinAbrir`): entonces se apunta siempre. Sin `abrir` no se
+ * apunta nada. Es un evento y NO una columna de `tramitaciones`: un UPDATE dispararía el trigger que renueva `actualizada_en`, y el
  * vigilante abandona las `subiendo` por esa fecha (mirar una subida a medias la mantendría viva). Si no se puede apuntar,
  * la ficha sale igual.
  */
@@ -534,7 +565,8 @@ const ACCIONES = Object.freeze({
  *   200 {ok, estado, tramitada_por, tramitada_en}
  *   400 peticion · 404 no_encontrada · 409 transicion (no estaba en el estado de partida, o alguien se adelantó)
  * Tramitar guarda quién y cuándo; «Volver a pendiente» los borra. En los dos casos queda un evento con el correo de
- * backoffice como autor.
+ * backoffice como autor. Aquí solo van las transiciones de estado: `accion:'sin_abrir'` NO está en ACCIONES (dejar una ficha
+ * «sin abrir» no cambia su estado); la despacha api/bandeja/estado.js a `marcarSinAbrir`.
  */
 export async function cambiarEstado(entrada, email) {
   const e = esObjeto(entrada) ? entrada : {};
@@ -554,6 +586,40 @@ export async function cambiarEstado(entrada, email) {
 
   await registrarEvento(actual.id, accion.evento, email, {});
   return resp(200, { ok: true, estado: filas[0].estado, tramitada_por: filas[0].tramitada_por, tramitada_en: filas[0].tramitada_en });
+}
+
+// ---------------------------------------------------------------------------
+// Dejar una ficha «sin abrir»
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/bandeja/estado {ref, accion:'sin_abrir'} (lo despacha api/bandeja/estado.js; no es una transición de estado, así que
+ * no pasa por `cambiarEstado`). `email` es el de la sesión. Devuelve {status, cuerpo}:
+ *   200 {ok}                  la ficha vuelve a «Sin abrir» para TODO el equipo hasta que alguien la abra otra vez
+ *   400 peticion              falta la referencia o no es texto
+ *   404 no_encontrada         no existe, la referencia no vale, o es de otro modo (prueba / producción)
+ *   409 estado                no está pendiente (`recibida`): solo se puede en una pendiente
+ * Es un EVENTO nuevo, `marcada_sin_abrir`, con el correo de la sesión como actor: no se borra ninguna `ficha_abierta` (el
+ * historial se conserva) y no se toca la fila de `tramitaciones` (un UPDATE dispararía el trigger `tramitacion_tocar`). Lo que
+ * hace que la ficha vuelva a «Sin abrir» es la regla de `vistasDe` y de la ficha: una apertura solo cuenta si es MÁS NUEVA que la
+ * última marca. Marcar dos veces seguidas es lo mismo que una: si lo último que pasó (entre aperturas y marcas) ya es una marca,
+ * responde 200 sin apuntar otra. Aquí el evento ES el cambio, así que NO se usa `registrarEvento` (que se traga los fallos):
+ * si la base no lo guarda, el 503 en llano le dice a quien marcó que no se ha hecho.
+ */
+export async function marcarSinAbrir(entrada, email) {
+  const e = esObjeto(entrada) ? entrada : {};
+  if (e.accion !== 'sin_abrir' || typeof e.ref !== 'string') return fallo(400, 'peticion', MENSAJES.peticion);
+
+  const actual = await buscarPorRef(e.ref, 'id,estado');
+  if (!actual) return noExiste();
+  if (actual.estado !== 'recibida') return fallo(409, 'estado', MENSAJES.soloPendiente);
+
+  const [ultimo] = await seleccionar('tramitacion_eventos', {
+    select: 'tipo', tramitacion_id: `eq.${actual.id}`, tipo: EVENTOS_DE_APERTURA, order: 'id.desc', limit: 1,
+  });
+  if (ultimo?.tipo === 'marcada_sin_abrir') return resp(200, { ok: true }); // ya está «sin abrir»: no se apunta otra marca
+  await insertar('tramitacion_eventos', { tramitacion_id: actual.id, tipo: 'marcada_sin_abrir', actor: email, detalle: {} }, { devolver: false });
+  return resp(200, { ok: true });
 }
 
 // ---------------------------------------------------------------------------

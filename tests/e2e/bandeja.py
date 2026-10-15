@@ -2,7 +2,8 @@
 """tests/e2e/bandeja.py · La bandeja de backoffice con navegador real (orden 4): acceso con código, lista, ficha,
 descargas (una a una y en ZIP), cambio de estado, volver a enviar y las capturas a 390 y 1440 px; (14-oct-2026) quién ha
 abierto cada ficha («Sin abrir» solo en las pendientes / «Abierta por …» en la lista y en la ficha: casos 14, 15 y 16); y
-(15-oct-2026) el interruptor Tarjetas / Lista y la tabla (caso 17; las capturas de la tabla, en el caso 8).
+(15-oct-2026) el interruptor Tarjetas / Lista y la tabla (caso 17; las capturas de la tabla, en el caso 8); y (16-oct-2026)
+«Marcar como sin abrir» (caso 18: devolver una pendiente a «Sin abrir» para que la coja otro compañero).
 
 Uso (lo normal es `bash tests/e2e/run.sh bandeja`, que arranca el servidor y limpia después):
     python tests/e2e/bandeja.py              todos los casos, en serie
@@ -1397,6 +1398,192 @@ def caso_17(c):
     c.sin_jerga()
 
 
+def caso_18(c):
+    """«Marcar como sin abrir»: botón secundario junto a «Marcar como tramitada» solo en las pendientes (hueco entre los dos, sin diálogo de confirmación, «Marcando…» mientras va); al ir bien vuelve a la lista y esa ficha sale «Sin abrir» (raya azul) en Tarjetas y en Lista, sin borrar la apertura ni tocar la fila; abrirla otra vez enseguida la deja leída («Abierta por …» arriba; historial con apertura, marca y apertura); «Abierta por» solo con las aperturas posteriores a la última marca; si falla (sin red, o alguien la tramitó antes) frase en llano y botón usable; marcar dos veces seguidas es marcar una."""
+    marcador = lambda titular: {'titular': titular, 'quien_eres': 'Comercial Marcador18'}
+    ref = crear('gnew', [(1, 'sin-abrir.jpg', JPG.read_bytes())], extra=marcador('Titular Sin Abrir Marcado SL'))
+    ref2 = crear('gnew', [(1, 'dos-marcas.jpg', JPG.read_bytes())], extra=marcador('Titular Dos Marcas SL'))
+    tramitada = crear('gnew', [(1, 'ya-tramitada.jpg', JPG.read_bytes())], extra=marcador('Titular Ya Tramitado SL'))
+    incompleta = crear('gnew', [(1, 'incompleta.pdf', b'%PDF-1.4\n' + b'x' * 2048)], extra=marcador('Titular Incompleto SL'), completo=False)
+    adelantada = crear('gnew', [(1, 'adelantada.jpg', JPG.read_bytes())], extra=marcador('Titular Adelantado SL'))
+    c.con_sesion()
+    p = c.page
+    galleta = {'Cookie': 'bandeja_sesion=' + [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion'][0]['value']}
+    st, _, cuerpo = http('POST', '/api/bandeja/estado', {'ref': tramitada, 'accion': 'tramitar'}, cabeceras=galleta)  # por la API: nadie abre su ficha
+    assert st == 200, cuerpo
+    eventos = lambda r, tipo: [x for x in estado_de(r)['eventos'] if x['tipo'] == tipo]
+    boton = lambda nombre: p.get_by_role('button', name=nombre, exact=True)
+    marcar_por_api = lambda r: http('POST', '/api/bandeja/estado', {'ref': r, 'accion': 'sin_abrir'}, cabeceras=galleta)
+    texto_abierta = lambda: re.fullmatch(rf'Abierta por {re.escape(EMAIL)} \(\d{{1,2}}-\d{{1,2}}-\d{{4}} a las \d{{2}}:\d{{2}}\)', p.inner_text('#abiertaPor'))
+
+    def hace(**tiempo):
+        return (datetime.now(timezone.utc) - timedelta(**tiempo)).strftime('%Y-%m-%dT%H:%M:%S.%f') + '+00:00'
+
+    # 1) la ficha de una pendiente: «Marcar como sin abrir» junto a «Marcar como tramitada», como botón secundario, con hueco entre los dos
+    fila_antes = estado_de(ref)['tramitacion']
+    c.abrir_ficha(ref)
+    assert len(eventos(ref, 'ficha_abierta')) == 1 and eventos(ref, 'marcada_sin_abrir') == []
+    assert texto_abierta(), p.inner_text('#abiertaPor')
+    assert [b.inner_text() for b in p.locator('#acciones button').all()] == ['Marcar como tramitada', 'Marcar como sin abrir']
+    tramitar, sin_abrir = boton('Marcar como tramitada'), boton('Marcar como sin abrir')
+    assert 'primario' in tramitar.get_attribute('class').split() and 'primario' not in sin_abrir.get_attribute('class').split(), 'Es el botón secundario'
+    estilo = sin_abrir.evaluate("e => { const s = getComputedStyle(e); return [s.backgroundColor, s.color, s.borderTopWidth]; }")
+    assert estilo[:2] == ['rgb(255, 255, 255)', 'rgb(11, 110, 79)'] and estilo[2] != '0px', estilo  # fondo blanco, texto verde y su borde (el navegador redondea 1,5 px)
+    a, b = tramitar.bounding_box(), sin_abrir.bounding_box()
+    assert b['y'] >= a['y'] + a['height'] + 4 and abs(a['width'] - b['width']) <= 1, f'En el móvil, uno debajo del otro y con hueco: {a} {b}'
+    assert p.is_hidden('#confirmar'), 'Sin diálogo de confirmación'
+    c.sin_jerga()
+    c.sin_desbordes()
+    # en ordenador, uno al lado del otro y con hueco; y la captura de la ficha con el botón
+    p.set_viewport_size({'width': 1440, 'height': 900})
+    p.mouse.move(2, 2)  # el puntero fuera de la página: ningún botón sale con el aspecto de «ratón encima»
+    p.wait_for_timeout(300)
+    a, b = tramitar.bounding_box(), sin_abrir.bounding_box()
+    assert abs(a['y'] - b['y']) <= 1 and b['x'] >= a['x'] + a['width'] + 4, f'En ordenador, en la misma fila y con hueco: {a} {b}'
+    c.sin_desbordes(1440)
+    SALIDAS.mkdir(parents=True, exist_ok=True)
+    p.screenshot(path=str(SALIDAS / 'bandeja-ficha-sin-abrir-1440.png'), full_page=True, animations='disabled')
+    p.set_viewport_size({'width': 390, 'height': 844})
+    p.wait_for_timeout(300)
+
+    # 2) sin red: frase en llano en la propia ficha, el botón vuelve a poder usarse y no se apunta nada
+    c.rota('/api/bandeja/estado')
+    p.route('**/api/bandeja/estado', lambda route, request: route.abort('connectionreset'))
+    sin_abrir.click()
+    p.wait_for_selector('#errorAccion:not([hidden])')
+    assert p.inner_text('#errorAccion') == 'No se ha podido marcar. Inténtalo de nuevo.'
+    assert boton('Marcar como sin abrir').is_enabled() and boton('Marcar como tramitada').is_enabled() and p.is_hidden('#confirmar')
+    assert p.url == f'{BASE}/bandeja/c/{ref}', 'Si falla, se queda en la ficha'
+    assert eventos(ref, 'marcada_sin_abrir') == [] and len(eventos(ref, 'ficha_abierta')) == 1
+    c.sin_jerga()
+    c.sin_desbordes()
+    p.unroute('**/api/bandeja/estado')
+
+    # 3) mientras va: «Marcando…» y los dos botones deshabilitados (un segundo clic no manda otra petición); al terminar, vuelve a la lista
+    retenidas = []
+    p.route('**/api/bandeja/estado', lambda route, request: retenidas.append(route))
+    boton('Marcar como sin abrir').click()
+    p.wait_for_function("() => document.getElementById('btnSinAbrir')?.textContent === 'Marcando…'")
+    assert p.is_disabled('#btnSinAbrir') and p.is_disabled('#btnEstado'), 'Mientras va, los dos botones deshabilitados'
+    assert p.is_hidden('#confirmar') and p.is_hidden('#errorAccion'), 'Ni diálogo ni mensaje de error'
+    p.locator('#btnSinAbrir').dispatch_event('click')
+    p.wait_for_timeout(300)
+    assert len(retenidas) == 1, f'Un segundo clic no manda otra petición ({len(retenidas)})'
+    retenidas[0].continue_()
+    p.wait_for_url(re.compile(r'/bandeja(\?estado=\w+)?$'))
+    p.unroute('**/api/bandeja/estado')
+    p.wait_for_selector('a.tarjeta')
+    c.esperar_lista()
+
+    # 4) en la lista: esa ficha vuelve a ser «Sin abrir» (raya azul y pastilla) en Tarjetas y en Lista; en la base, UNA marca con el correo de la
+    #    sesión, la apertura sigue y la fila de la tramitación no se ha tocado (ni su `actualizada_en`)
+    c.buscar(ref)
+    tarjeta = p.locator(f'a.tarjeta[href$="{ref}"]')
+    assert tarjeta.count() == 1
+    assert 'sin-abrir' in tarjeta.get_attribute('class').split() and 'Sin abrir' in tarjeta.inner_text() and 'Abierta por' not in tarjeta.inner_text(), tarjeta.inner_text()
+    assert tarjeta.evaluate("e => { const s = getComputedStyle(e); return [s.borderLeftWidth, s.borderLeftColor]; }") == ['4px', 'rgb(37, 99, 235)']
+    assert tarjeta.locator('.t-vista .ins-sin-abrir').inner_text() == 'Sin abrir' and tarjeta.locator('svg').count() == 0
+    marcas = eventos(ref, 'marcada_sin_abrir')
+    assert len(marcas) == 1 and marcas[0]['actor'] == EMAIL and marcas[0]['detalle'] == {}, marcas
+    assert len(eventos(ref, 'ficha_abierta')) == 1, 'La apertura NO se borra'
+    assert estado_de(ref)['tramitacion'] == fila_antes, 'La fila de tramitaciones no se toca'
+    c.sin_jerga()
+    c.sin_desbordes()
+    boton('Lista').click()
+    p.wait_for_selector('a.fila')
+    fila = p.locator(f'a.fila[href$="{ref}"]')
+    assert fila.count() == 1 and 'sin-abrir' in fila.get_attribute('class').split()
+    assert fila.evaluate("e => { const s = getComputedStyle(e); return [s.borderLeftWidth, s.borderLeftColor]; }") == ['4px', 'rgb(37, 99, 235)']
+    assert fila.locator('.c-abierta .ins-sin-abrir').inner_text() == 'Sin abrir' and fila.locator('.c-abierta svg').count() == 0
+    c.sin_jerga()
+    c.sin_desbordes()
+
+    # 5) volver a abrirla ENSEGUIDA (la misma persona, a los pocos segundos de su primera apertura) la deja leída: «Abierta por …» arriba y,
+    #    en la base, apertura + marca + apertura (el freno de 15 minutos no la deja «Sin abrir» estando leída)
+    fila.click()
+    p.wait_for_selector('#ficha:not([hidden])')
+    assert p.is_visible('#abiertaPor') and texto_abierta(), p.inner_text('#abiertaPor')
+    assert [x['tipo'] for x in estado_de(ref)['eventos'] if x['tipo'] in ('ficha_abierta', 'marcada_sin_abrir')] == ['ficha_abierta', 'marcada_sin_abrir', 'ficha_abierta']
+    assert all(x['actor'] == EMAIL for x in estado_de(ref)['eventos'] if x['tipo'] in ('ficha_abierta', 'marcada_sin_abrir'))
+    historial = [x for x in p.locator('#bloqueHistorial .texto').all_inner_texts() if 'abierta' in x or 'sin abrir' in x]
+    assert historial == [f'Ficha abierta por {EMAIL}', f'Marcada como sin abrir por {EMAIL}', f'Ficha abierta por {EMAIL}'], historial
+    c.ver('/bandeja', 'a.fila')
+    c.esperar_lista()
+    c.buscar(ref)
+    fila = p.locator(f'a.fila[href$="{ref}"]')
+    assert 'sin-abrir' not in fila.get_attribute('class').split() and fila.locator('.ins-sin-abrir').count() == 0
+    assert fila.locator('.c-abierta .a-correo').inner_text() == EMAIL
+    boton('Tarjetas').click()
+    p.wait_for_selector('a.tarjeta')
+    tarjeta = p.locator(f'a.tarjeta[href$="{ref}"]')
+    assert re.search(rf'Abierta por {re.escape(EMAIL)} · hace (unos segundos|\d+ min)', tarjeta.inner_text()) and 'Sin abrir' not in tarjeta.inner_text()
+    c.sin_jerga()
+
+    # 6) marcar dos veces seguidas es marcar una: otro compañero la deja «sin abrir» mientras esta persona tiene la ficha abierta; el refresco
+    #    en silencio (sin apertura nueva) ya no enseña «Abierta por»; y pulsar el botón da el mismo resultado sin una segunda marca
+    c.abrir_ficha(ref2)
+    assert p.is_visible('#abiertaPor') and texto_abierta()
+    st, _, cuerpo = marcar_por_api(ref2)
+    assert st == 200, cuerpo
+    p.locator('#bloqueCorreos .correo').nth(0).get_by_role('button', name='Volver a enviar', exact=True).click()
+    p.wait_for_selector('.correo-resultado')
+    assert p.is_hidden('#abiertaPor'), 'Solo cuentan las aperturas posteriores a la última marca: no queda ninguna, la línea no se enseña'
+    assert f'Marcada como sin abrir por {EMAIL}' in p.inner_text('#bloqueHistorial')
+    assert boton('Marcar como sin abrir').is_enabled(), 'Sigue siendo una pendiente: el botón sigue ahí'
+    boton('Marcar como sin abrir').click()
+    p.wait_for_url(re.compile(r'/bandeja(\?estado=\w+)?$'))
+    assert len(eventos(ref2, 'marcada_sin_abrir')) == 1, 'La segunda marca seguida no apunta otra'
+    assert len(eventos(ref2, 'ficha_abierta')) == 1
+    p.wait_for_selector('a.tarjeta')
+    c.esperar_lista()
+    c.buscar(ref2)
+    assert 'Sin abrir' in p.locator(f'a.tarjeta[href$="{ref2}"]').inner_text()
+
+    # 7) una tramitada no tiene el botón (y «Abierta por» de la ficha respeta la marca con varias personas: solo la apertura posterior a ella);
+    #    una que sigue subiendo, tampoco
+    otra = 'victor.molins.10+otra-persona@gmail.com'
+    larga = 'victor.molins.10+una-persona-de-backoffice-con-un-correo-bastante-largo-de-verdad@gmail.com'
+    cuarta = 'victor.molins.10+cuarta-persona@gmail.com'
+
+    def con_marca_en_medio(route, request):
+        real = route.fetch()
+        cuerpo = real.json()
+        cuerpo['eventos'] = [
+            {'tipo': 'ficha_abierta', 'actor': otra, 'detalle': {}, 'creado_en': hace(minutes=60)},
+            {'tipo': 'ficha_abierta', 'actor': larga, 'detalle': {}, 'creado_en': hace(minutes=45)},
+            {'tipo': 'marcada_sin_abrir', 'actor': EMAIL, 'detalle': {}, 'creado_en': hace(minutes=30)},
+            {'tipo': 'ficha_abierta', 'actor': cuarta, 'detalle': {}, 'creado_en': hace(minutes=5)},
+        ]
+        route.fulfill(response=real, json=cuerpo)
+
+    p.route('**/api/bandeja/ficha**', con_marca_en_medio)
+    c.abrir_ficha(tramitada)
+    p.unroute('**/api/bandeja/ficha**')
+    assert boton('Marcar como sin abrir').count() == 0 and boton('Volver a pendiente').is_visible(), 'En una tramitada no hay botón de «sin abrir»'
+    linea = p.inner_text('#abiertaPor')
+    assert p.is_visible('#abiertaPor') and linea.startswith(f'Abierta por {cuarta} (') and otra not in linea and larga not in linea, linea
+    assert linea.count(' · ') == 0, 'Una sola persona: la que abrió DESPUÉS de la marca'
+    historial = [x for x in p.locator('#bloqueHistorial .texto').all_inner_texts() if 'abierta' in x or 'sin abrir' in x]
+    assert historial == [f'Ficha abierta por {otra}', f'Ficha abierta por {larga}', f'Marcada como sin abrir por {EMAIL}', f'Ficha abierta por {cuarta}'], historial
+    c.sin_jerga()
+    c.abrir_ficha(incompleta)
+    assert boton('Marcar como sin abrir').count() == 0 and boton('Marcar como tramitada').count() == 0, 'Una que sigue subiendo no tiene acciones'
+
+    # 8) alguien la tramitó antes de que esta persona pulsara: la frase en llano del servidor, la ficha se pone al día y el botón desaparece
+    c.abrir_ficha(adelantada)
+    assert boton('Marcar como sin abrir').is_visible()
+    st, _, cuerpo = http('POST', '/api/bandeja/estado', {'ref': adelantada, 'accion': 'tramitar'}, cabeceras=galleta)  # otra persona, desde otra pestaña
+    assert st == 200, cuerpo
+    boton('Marcar como sin abrir').click()
+    p.wait_for_selector('#errorAccion:not([hidden])')
+    assert p.inner_text('#errorAccion') == 'Solo se puede dejar sin abrir un contrato pendiente.'
+    p.wait_for_function("() => /Tramitada/.test(document.getElementById('insignias').textContent)")
+    assert boton('Marcar como sin abrir').count() == 0 and boton('Volver a pendiente').is_visible()
+    assert eventos(adelantada, 'marcada_sin_abrir') == []
+    c.sin_jerga()
+    c.sin_desbordes()
+
+
 CASOS = [
     (1, 'Acceso: de /bandeja al login con «volver», código por correo simulado, código malo, código bueno y cookie HttpOnly', caso_1),
     (2, 'Un correo sin acceso ve lo mismo que uno con acceso, sin correo y sin entrar', caso_2),
@@ -1415,6 +1602,7 @@ CASOS = [
     (15, 'Varias personas (3 líneas, «hace …» al día) y lista que se pone al día al volver desde la caché de «atrás»', caso_15),
     (16, '«Sin abrir» solo en las pendientes: tramitada, incompleta y descartada sin abrir no lo enseñan; abiertas, «Abierta por …» en cualquier estado', caso_16),
     (17, 'Modo Lista (tabla): interruptor Tarjetas / Lista que se recuerda, filas con todas las columnas, «Sin abrir», «Cargar más», volver a Tarjetas sin pedir otra vez, clic y «atrás», sin HTML, sin desbordes y a 1440 px sin deslizarse', caso_17),
+    (18, '«Marcar como sin abrir»: botón solo en las pendientes → vuelve a la lista como «Sin abrir» (Tarjetas y Lista) → abrirla otra vez la deja leída; «Abierta por» respeta la marca; si falla, frase en llano', caso_18),
 ]
 
 

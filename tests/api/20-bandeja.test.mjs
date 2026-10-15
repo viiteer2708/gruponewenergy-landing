@@ -1,5 +1,6 @@
 // tests/api/20-bandeja.test.mjs · Pruebas de API de la bandeja de backoffice (orden 4): código de acceso, sesión,
-// lista, ficha, estado y «volver a enviar»; y (14-oct-2026) quién ha abierto cada ficha: evento `ficha_abierta` y `vistas`.
+// lista, ficha, estado y «volver a enviar»; (14-oct-2026) quién ha abierto cada ficha: evento `ficha_abierta` y `vistas`; y
+// (16-oct-2026) «Marcar como sin abrir»: evento `marcada_sin_abrir` (POST /api/bandeja/estado {ref, accion:'sin_abrir'}).
 //
 // Necesita el servidor local en marcha y la base REAL de Supabase (todo lo que se escribe lleva prueba=true y vive bajo
 // pruebas/ en el almacén; se borra con scripts/limpiar-pruebas.mjs --todo):
@@ -16,7 +17,9 @@ import { after, before, describe, it } from 'node:test';
 import { setTimeout as esperar } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-import { MINUTOS_ENTRE_APERTURAS, ficha as fichaEnEsteProceso } from '../../api/_lib/bandeja.js';
+import {
+  MINUTOS_ENTRE_APERTURAS, ficha as fichaEnEsteProceso, marcarSinAbrir as marcarEnEsteProceso, respuestaDeError,
+} from '../../api/_lib/bandeja.js';
 import { FORM_TOKENS, secretoBandeja, supabaseUrl } from '../../api/_lib/config.js';
 import { NOMBRE_COOKIE, firmarSesion, hashCodigo } from '../../api/_lib/sesion.js';
 import { actualizar, borrar, insertar, seleccionar } from '../../api/_lib/supabase.js';
@@ -971,10 +974,11 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
 });
 
 // ---------------------------------------------------------------------------
-// Parte 3 · quién ha abierto cada ficha: evento `ficha_abierta` (ficha?abrir=1) y `vistas` de la lista
+// Parte 3 · quién ha abierto cada ficha: evento `ficha_abierta` (ficha?abrir=1) y `vistas` de la lista; y «Marcar como sin abrir»
+// (evento `marcada_sin_abrir`: una apertura solo cuenta si es más nueva que la última marca)
 // ---------------------------------------------------------------------------
 
-describe('Bandeja · quién ha abierto cada ficha', { timeout: 900_000 }, () => {
+describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)', { timeout: 900_000 }, () => {
   let cookie;
   const autorizado = (extra = {}) => ({ cookie, ...extra });
   const OTRA = 'victor.molins.10+otra-persona@gmail.com'; // otra persona de backoffice (alias de Victor): solo aparece en la base, no entra
@@ -994,15 +998,19 @@ describe('Bandeja · quién ha abierto cada ficha', { timeout: 900_000 }, () => 
     return new Map(r.json.items.map((i) => [i.ref, i]));
   }
 
-  /** Una ficha suelta (sin documentos ni correos) para probar sin pasar por el almacén: de hace 10 días, fuera de la ventana de `conciliar`. */
-  async function fichaSuelta(titulo) {
+  /**
+   * Una ficha suelta (sin documentos ni correos) para probar sin pasar por el almacén: de hace 10 días, fuera de la ventana de
+   * `conciliar`. Pendiente (`recibida`) salvo que se pida otro estado. Devuelve su referencia, su id y la búsqueda (`q`) que solo
+   * la encuentra a ella (la lista da hasta 30 por página).
+   */
+  async function fichaSuelta(titulo, estado = 'recibida') {
     contador += 1;
     const ref = `GNE-20260101-V${lote}${contador}`;
     const fecha = new Date(Date.now() - 10 * 24 * 3_600_000 - contador * 1000).toISOString();
     const [fila] = await insertar('tramitaciones', {
       ref,
       formulario: 'gnew',
-      estado: 'recibida',
+      estado,
       prueba: true,
       carpeta: `pruebas/gnew/2026/01/${ref}-aperturasxx`,
       comercial_nombre: 'Aperturas de Prueba',
@@ -1023,7 +1031,7 @@ describe('Bandeja · quién ha abierto cada ficha', { timeout: 900_000 }, () => 
       recibida_en: fecha,
     });
     sueltas.push(ref);
-    return { ref, id: fila.id };
+    return { ref, id: fila.id, q: `lote${lote} ${titulo.toLowerCase()}` };
   }
 
   const apertura = (id, actor, minutos, tipo = 'ficha_abierta') => ({ tramitacion_id: id, tipo, actor, detalle: {}, creado_en: hace(minutos) });
@@ -1210,5 +1218,268 @@ describe('Bandeja · quién ha abierto cada ficha', { timeout: 900_000 }, () => 
     assert.equal(bien.status, 200);
     assert.deepEqual(pares(bien.cuerpo.eventos), [['ficha_abierta', EMAIL]]);
     assert.equal((await aperturasDe(ref)).length, 1);
+  });
+
+  // ---- «Marcar como sin abrir» (16-oct-2026): POST /api/bandeja/estado {ref, accion:'sin_abrir'} → evento `marcada_sin_abrir` ----
+
+  const MARCA = 'marcada_sin_abrir';
+  const FRASE_SOLO_PENDIENTE = 'Solo se puede dejar sin abrir un contrato pendiente.';
+  const sinAbrir = (ref, extra) => post('/api/bandeja/estado', { ref, accion: 'sin_abrir' }, autorizado(extra));
+  const marcasDe = async (ref) => (await estadoDe(ref)).eventos.filter((e) => e.tipo === MARCA);
+
+  /** La tarjeta de UNA ficha suelta en la lista de ese filtro (null si no sale). */
+  async function tarjetaDe(f, estado = 'todas') {
+    const r = await get(`/api/bandeja/lista?estado=${estado}&q=${encodeURIComponent(f.q)}`, autorizado());
+    assert.equal(r.status, 200, r.texto);
+    return r.json.items.find((i) => i.ref === f.ref) ?? null;
+  }
+
+  /**
+   * Siembra eventos UNO A UNO y del más antiguo al más nuevo: así el orden por `id` (el que mira la ficha para el freno de 15
+   * minutos) y el de `creado_en` (el que mira la lista) son el mismo, como lo son en producción.
+   */
+  async function sembrar(eventos) {
+    for (const e of eventos) await insertar('tramitacion_eventos', e, { devolver: false });
+  }
+
+  it('«Marcar como sin abrir»: 200, evento con el correo de la sesión, la apertura se conserva, la fila no se toca y la lista vuelve a «Sin abrir» (Pendientes y Todas); marcar dos veces seguidas es marcar una', async (t) => {
+    const f = await fichaSuelta('Marcada');
+    const antes = (await estadoDe(f.ref)).tramitacion;
+    assert.equal((await abrirFicha(f.ref)).status, 200);
+    assert.deepEqual((await tarjetaDe(f)).vistas.map((v) => v.por), [EMAIL], 'Antes de marcar, la ha abierto esta sesión');
+
+    const r = await sinAbrir(f.ref);
+    assert.equal(r.status, 200, r.texto);
+    assert.deepEqual(r.json, { ok: true });
+    assert.equal(r.cabeceras.get('cache-control'), 'no-store');
+    const marcas = await marcasDe(f.ref);
+    assert.equal(marcas.length, 1);
+    assert.equal(marcas[0].actor, EMAIL, 'El autor es el correo de la sesión');
+    assert.deepEqual(marcas[0].detalle, {});
+    assert.equal((await aperturasDe(f.ref)).length, 1, 'La apertura NO se borra: el historial se conserva');
+    assert.deepEqual((await estadoDe(f.ref)).tramitacion, antes, 'La fila de tramitaciones no se toca (ni su `actualizada_en`: un UPDATE dispararía el trigger y el vigilante abandona las subidas por esa fecha)');
+
+    for (const estado of ['pendientes', 'todas']) {
+      const tarjeta = await tarjetaDe(f, estado);
+      assert.ok(tarjeta, `Sale en ${estado}`);
+      assert.equal(tarjeta.estado, 'recibida');
+      assert.deepEqual(tarjeta.vistas, [], `En ${estado}, la ficha vuelve a «Sin abrir» (vistas vacía)`);
+    }
+
+    // la ficha enseña la marca en el historial, con la forma de los demás eventos y detrás de la apertura
+    const historial = await abrirFicha(f.ref, '');
+    assert.deepEqual(pares(historial.json.eventos), [['ficha_abierta', EMAIL], [MARCA, EMAIL]]);
+    assert.deepEqual(Object.keys(historial.json.eventos[1]).sort(), ['actor', 'creado_en', 'detalle', 'tipo']);
+
+    // marcar otra vez seguida: 200 y SIN evento duplicado
+    const otra = await sinAbrir(f.ref);
+    assert.equal(otra.status, 200, otra.texto);
+    assert.deepEqual(otra.json, { ok: true });
+    assert.equal((await marcasDe(f.ref)).length, 1, 'Dos marcas seguidas son una sola');
+    assert.deepEqual((await tarjetaDe(f)).vistas, []);
+    t.diagnostic('marcar → 200, UNA marca con el actor, apertura intacta, fila sin tocar, vistas=[] en Pendientes y Todas; repetirla no apunta otra');
+  });
+
+  it('después de marcar, volver a abrirla ENSEGUIDA (menos de 15 minutos) cuenta: es la trampa del freno; otra apertura seguida ya no, y se puede marcar de nuevo', async () => {
+    const f = await fichaSuelta('Reabierta');
+    await abrirFicha(f.ref);
+    assert.equal((await sinAbrir(f.ref)).status, 200);
+    assert.deepEqual((await tarjetaDe(f)).vistas, []);
+
+    const r = await abrirFicha(f.ref); // la misma persona, a los pocos segundos de su primera apertura
+    assert.equal(r.status, 200, r.texto);
+    assert.deepEqual(pares(r.json.eventos), [['ficha_abierta', EMAIL], [MARCA, EMAIL], ['ficha_abierta', EMAIL]], 'Apertura, marca, apertura');
+    const aperturas = await aperturasDe(f.ref);
+    assert.equal(aperturas.length, 2, 'La segunda apertura SÍ se apunta aunque no hayan pasado 15 minutos de la primera');
+    const vistas = (await tarjetaDe(f)).vistas;
+    assert.deepEqual(vistas.map((v) => v.por), [EMAIL], 'Y la lista la vuelve a dar por abierta');
+    assert.equal(Date.parse(vistas[0].en), Date.parse(aperturas[1].creado_en), 'Con la apertura de DESPUÉS de la marca');
+
+    assert.equal((await abrirFicha(f.ref)).json.eventos.filter((e) => e.tipo === 'ficha_abierta').length, 2, 'Otra apertura seguida: el freno de siempre');
+    assert.equal((await aperturasDe(f.ref)).length, 2);
+
+    // lo último que pasó es una apertura, así que marcar de nuevo SÍ apunta otra marca
+    assert.equal((await sinAbrir(f.ref)).status, 200);
+    assert.equal((await marcasDe(f.ref)).length, 2);
+    assert.deepEqual((await tarjetaDe(f)).vistas, []);
+  });
+
+  it('con varias personas, en la lista solo cuentan las aperturas posteriores a la última marca (marca la más nueva, en medio, la más antigua y varias marcas)', async () => {
+    const [p1, p2, p3] = ['a', 'b', 'c'].map((x) => `victor.molins.10+marca-${x}@gmail.com`);
+    const nueva = await fichaSuelta('MarcaNueva');
+    const medio = await fichaSuelta('MarcaMedio');
+    const antigua = await fichaSuelta('MarcaAntigua');
+    const varias = await fichaSuelta('MarcaVarias');
+    await insertar('tramitacion_eventos', [
+      // la marca es lo más nuevo → nadie la ha abierto
+      apertura(nueva.id, p1, 60), apertura(nueva.id, p2, 45), apertura(nueva.id, p3, 30, MARCA),
+      // la marca queda en medio → solo p3 y p1, las de después (p2 abrió ANTES de marcar y ya no cuenta)
+      apertura(medio.id, p1, 60), apertura(medio.id, p2, 45), apertura(medio.id, p3, 30, MARCA), apertura(medio.id, p3, 20), apertura(medio.id, p1, 10),
+      // la marca es lo más antiguo → todas valen
+      apertura(antigua.id, p3, 90, MARCA), apertura(antigua.id, p1, 60), apertura(antigua.id, p2, 45),
+      // dos marcas → manda la más nueva: p2 abrió ENTRE las dos y no cuenta
+      apertura(varias.id, p1, 100), apertura(varias.id, p2, 90, MARCA), apertura(varias.id, p2, 80), apertura(varias.id, p3, 70, MARCA), apertura(varias.id, p3, 60), apertura(varias.id, p1, 50),
+    ], { devolver: false });
+
+    const lista = await tarjetas(`lote${lote} marca`);
+    const mira = (f) => lista.get(f.ref).vistas.map((v) => v.por);
+    assert.deepEqual(mira(nueva), [], 'Marca lo más nuevo: nadie');
+    assert.deepEqual(mira(medio), [p1, p3], 'Marca en medio: las de después, de más reciente a más antigua, sin p2');
+    assert.ok(Math.abs(Date.parse(lista.get(medio.ref).vistas[0].en) - (Date.now() - 10 * 60_000)) < 2 * 60_000, 'De p1 sale su apertura de DESPUÉS de la marca (hace 10 min, no la de hace 60)');
+    assert.deepEqual(mira(antigua), [p2, p1], 'Marca lo más antiguo: valen todas');
+    assert.deepEqual(mira(varias), [p1, p3], 'Dos marcas: manda la más nueva');
+    for (const f of [nueva, medio, antigua, varias]) {
+      assert.deepEqual(Object.keys(lista.get(f.ref)).sort(), [
+        'comercial_nombre', 'compania', 'creada_en', 'cups', 'estado', 'formulario', 'n_documentos', 'recibida_en', 'ref', 'tarifa', 'titular_nombre', 'vistas',
+      ], 'El item sigue llevando solo `vistas`: ni el tipo ni los eventos embebidos se cuelan');
+    }
+  });
+
+  it('el freno de 15 minutos mira la marca: una apertura tuya de hace 8 min no frena si alguien marcó DESPUÉS; una marca anterior a tu apertura reciente no cambia nada', async () => {
+    const despues = await fichaSuelta('FrenoMarcaDespues');
+    const antes = await fichaSuelta('FrenoMarcaAntes');
+    const vieja = await fichaSuelta('FrenoApertura20');
+    const caducado = await fichaSuelta('FrenoMarcaVieja');
+    await sembrar([apertura(despues.id, EMAIL, 8), apertura(despues.id, OTRA, 5, MARCA)]);
+    await sembrar([apertura(antes.id, OTRA, 8, MARCA), apertura(antes.id, EMAIL, 5)]);
+    await sembrar([apertura(vieja.id, EMAIL, 20), apertura(vieja.id, OTRA, 3, MARCA)]);
+    await sembrar([apertura(caducado.id, OTRA, 40, MARCA), apertura(caducado.id, EMAIL, 20)]);
+
+    // tu apertura (hace 8 min) y una marca más nueva (hace 5): se apunta
+    const r1 = await abrirFicha(despues.ref);
+    assert.equal(r1.status, 200, r1.texto);
+    assert.deepEqual(pares(r1.json.eventos), [['ficha_abierta', EMAIL], [MARCA, OTRA], ['ficha_abierta', EMAIL]]);
+    assert.equal((await aperturasDe(despues.ref)).length, 2);
+
+    // una marca (hace 8 min) y luego tu apertura (hace 5): la marca queda detrás de tu apertura reciente, sigue el freno → no se apunta
+    const r2 = await abrirFicha(antes.ref);
+    assert.equal(r2.status, 200, r2.texto);
+    assert.deepEqual(pares(r2.json.eventos), [[MARCA, OTRA], ['ficha_abierta', EMAIL]]);
+    assert.equal((await aperturasDe(antes.ref)).length, 1);
+
+    // tu apertura de hace 20 min y una marca de hace 3: se apunta (de todas formas habría pasado el freno, y con la marca más)
+    assert.equal(pares((await abrirFicha(vieja.ref)).json.eventos).length, 3);
+    assert.equal((await aperturasDe(vieja.ref)).length, 2);
+
+    // una marca de hace 40 min y tu apertura de hace 20 (pasados los 15): se apunta, como siempre
+    assert.equal((await abrirFicha(caducado.ref)).json.eventos.filter((e) => e.tipo === 'ficha_abierta').length, 2);
+    assert.equal((await aperturasDe(caducado.ref)).length, 2);
+
+    // sin `abrir` no se apunta nada, ni con marca
+    const sinAbrirParam = await fichaSuelta('FrenoSinAbrirParam');
+    await sembrar([apertura(sinAbrirParam.id, OTRA, 5, MARCA)]);
+    assert.deepEqual(pares((await abrirFicha(sinAbrirParam.ref, '')).json.eventos), [[MARCA, OTRA]]);
+    assert.deepEqual(await aperturasDe(sinAbrirParam.ref), []);
+  });
+
+  it('«Marcar como sin abrir» solo vale en una pendiente: 409 con su frase en llano en tramitada, subiendo, abandonada y descartada; tras «Volver a pendiente» vuelve a valer', async () => {
+    for (const estado of ['tramitada', 'subiendo', 'abandonada', 'descartada']) {
+      const f = await fichaSuelta(`Sin abrir ${estado}`, estado);
+      const r = await sinAbrir(f.ref);
+      assert.equal(r.status, 409, `${estado}: ${r.texto}`);
+      assert.deepEqual(r.json, { ok: false, codigo: 'estado', mensaje: FRASE_SOLO_PENDIENTE, retryable: false });
+      assert.deepEqual(await marcasDe(f.ref), [], `${estado}: no deja ninguna marca`);
+    }
+
+    // el recorrido real: pendiente → tramitada (409) → vuelta a pendiente (200)
+    const f = await fichaSuelta('Recorrido');
+    assert.equal((await post('/api/bandeja/estado', { ref: f.ref, accion: 'tramitar' }, autorizado())).status, 200);
+    assert.equal((await sinAbrir(f.ref)).status, 409, 'Ya tramitada: no se puede dejar sin abrir');
+    assert.deepEqual(await marcasDe(f.ref), []);
+    assert.equal((await post('/api/bandeja/estado', { ref: f.ref, accion: 'reabrir' }, autorizado())).status, 200);
+    assert.equal((await sinAbrir(f.ref)).status, 200, 'De nuevo pendiente: sí');
+    assert.equal((await marcasDe(f.ref)).length, 1);
+    assert.equal((await estadoDe(f.ref)).tramitacion.estado, 'recibida', 'Dejarla sin abrir no cambia su estado');
+  });
+
+  it('«Marcar como sin abrir»: cuerpo malo o acción desconocida → 400; referencia que no existe o de otro modo → 404; sin sesión → 401; y nada de eso deja una marca', async () => {
+    const f = await fichaSuelta('Peticiones');
+    await abrirFicha(f.ref);
+    const malos = [
+      { accion: 'sin_abrir' }, { ref: 7, accion: 'sin_abrir' }, { ref: null, accion: 'sin_abrir' }, { ref: [f.ref], accion: 'sin_abrir' },
+      { ref: f.ref, accion: 'Sin_abrir' }, { ref: f.ref, accion: 'sin abrir' }, { ref: f.ref, accion: ['sin_abrir'] }, { ref: f.ref, accion: '' },
+      { ref: f.ref }, {}, [],
+    ];
+    for (const cuerpo of malos) {
+      const r = await post('/api/bandeja/estado', cuerpo, autorizado());
+      assert.equal(r.status, 400, JSON.stringify(cuerpo));
+      assert.equal(r.json.codigo, 'peticion');
+    }
+    const plano = await llamar('POST', '/api/bandeja/estado', { cuerpo: JSON.stringify({ ref: f.ref, accion: 'sin_abrir' }), tipo: 'text/plain', cookie });
+    assert.equal(plano.status, 415, 'Un formulario ajeno (text/plain) no puede marcar nada');
+    assert.equal((await llamar('POST', '/api/bandeja/estado', { cuerpo: '{"ref":', cookie })).status, 400);
+
+    for (const ref of [nuevaRef(), nuevaRef('mega'), 'nada', '../../etc/passwd', `${f.ref}&select=*`]) {
+      const r = await sinAbrir(ref);
+      assert.equal(r.status, 404, `«${ref}»: ${r.texto}`);
+      assert.deepEqual(r.json, { ok: false, codigo: 'no_encontrada', mensaje: 'No encontramos esta tramitación.', retryable: false });
+    }
+
+    const sinSesion = await post('/api/bandeja/estado', { ref: f.ref, accion: 'sin_abrir' });
+    assert.equal(sinSesion.status, 401, sinSesion.texto);
+    assert.equal(sinSesion.json.codigo, 'sesion');
+    assert.equal((await get('/api/bandeja/estado', autorizado())).status, 405, 'Solo POST');
+
+    // con TRAMITACION_PRUEBA=0 las filas de prueba no existen para la bandeja (la misma regla que la ficha). El servidor local no
+    // deja ESCRIBIR en ese modo (solo atiende lecturas), así que se mira en este proceso: el 404 sale antes de escribir nada
+    const modo = process.env.TRAMITACION_PRUEBA;
+    process.env.TRAMITACION_PRUEBA = '0';
+    try {
+      const r = await marcarEnEsteProceso({ ref: f.ref, accion: 'sin_abrir' }, EMAIL);
+      assert.equal(r.status, 404);
+      assert.equal(r.cuerpo.codigo, 'no_encontrada');
+    } finally {
+      if (modo === undefined) delete process.env.TRAMITACION_PRUEBA;
+      else process.env.TRAMITACION_PRUEBA = modo;
+    }
+
+    assert.deepEqual(await marcasDe(f.ref), [], 'Nada de lo anterior ha dejado una marca');
+    assert.equal((await sinAbrir(f.ref)).status, 200, 'Y con todo en orden, marcar vale');
+    assert.equal((await marcasDe(f.ref)).length, 1);
+  });
+
+  it('si la base no guarda la marca, NO se contesta 200: se lanza y el handler lo convierte en el 503 en llano (no se traga el fallo como `registrarEvento`)', async () => {
+    const f = await fichaSuelta('FalloMarca');
+    const fetchReal = globalThis.fetch;
+    const consolaReal = console.error;
+    const registro = [];
+    const casos = [
+      ['la base rechaza la escritura (503)', () => new Response(JSON.stringify({ message: `texto con datos ${EMAIL} ${f.ref}` }), { status: 503, headers: { 'Content-Type': 'application/json' } })],
+      ['no hay red', () => { throw new TypeError(`fetch failed ${EMAIL}`); }],
+    ];
+    for (const [motivo, fallar] of casos) {
+      // Solo se estropea la ESCRITURA de eventos; lo demás (buscar la ficha, mirar su último evento) va a la base de verdad
+      globalThis.fetch = async (url, opciones) => (String(url).includes('/rest/v1/tramitacion_eventos') && opciones?.method === 'POST' ? fallar() : fetchReal(url, opciones));
+      console.error = (...partes) => registro.push(partes.join(' '));
+      let lanzado = null;
+      let respuesta = null;
+      try {
+        try {
+          await marcarEnEsteProceso({ ref: f.ref, accion: 'sin_abrir' }, EMAIL);
+        } catch (error) {
+          lanzado = error;
+          respuesta = respuestaDeError(error, 'estado'); // lo que hace el handler de api/bandeja/estado.js
+        }
+      } finally {
+        globalThis.fetch = fetchReal;
+        console.error = consolaReal;
+      }
+      assert.ok(lanzado, `${motivo}: tiene que lanzar, no contestar 200 sin haber apuntado nada`);
+      assert.equal(respuesta.status, 503, motivo);
+      assert.equal(respuesta.cuerpo.codigo, 'temporal');
+      assert.equal(respuesta.cuerpo.retryable, true);
+      assert.equal(respuesta.cuerpo.mensaje, 'No hemos podido completar la operación ahora mismo. Inténtalo de nuevo en un momento.', 'En llano');
+    }
+    assert.equal(registro.length, 2, 'Una línea por fallo');
+    for (const linea of registro) {
+      assert.match(linea, /^\[bandeja\/estado\] \S/);
+      assert.ok(!linea.includes(EMAIL) && !linea.includes(f.ref) && !linea.includes('datos'), `Ni correos, ni referencias, ni el cuerpo de la respuesta en el registro: ${linea}`);
+    }
+    assert.deepEqual(await marcasDe(f.ref), [], 'No se apuntó nada');
+
+    // y sin el fallo, la misma llamada sí la apunta (la prueba no se engaña)
+    const bien = await marcarEnEsteProceso({ ref: f.ref, accion: 'sin_abrir' }, EMAIL);
+    assert.deepEqual([bien.status, bien.cuerpo], [200, { ok: true }]);
+    assert.equal((await marcasDe(f.ref)).length, 1);
   });
 });

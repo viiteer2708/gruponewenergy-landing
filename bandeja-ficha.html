@@ -252,6 +252,9 @@
 
         .acciones {
             margin-top: .9rem;
+            display: flex;
+            flex-wrap: wrap;
+            gap: .6rem;
         }
 
         .acciones:empty {
@@ -642,6 +645,7 @@
     const ETIQUETA_ESTADO = { recibida: 'Pendiente', tramitada: 'Tramitada', subiendo: 'Subiendo', abandonada: 'Incompleta', descartada: 'Descartada' };
     const ETIQUETA_MARCA = { gnew: 'GNEW', mega: 'MEGA' };
     const FRASE_RED = 'No hemos podido conectar. Comprueba tu conexión e inténtalo de nuevo.';
+    const FRASE_MARCAR = 'No se ha podido marcar. Inténtalo de nuevo.';
     const VIDA_ENLACES_MS = 9 * 60 * 1000; // 9 de los 10 minutos que vale cada enlace: un minuto de margen
 
     // La referencia es el último tramo de /bandeja/c/<ref>
@@ -652,6 +656,7 @@
     let caducaMs = 0;          // cuándo se dan por caducados los enlaces de descarga (con el reloj de ESTE ordenador)
     let confirmando = null;    // 'tramitar' | 'reabrir' | null
     let cambiando = false;     // hay un cambio de estado en curso
+    let marcando = false;      // hay un «Marcar como sin abrir» en curso
     let descargas = 0;         // descargas en curso (no se refresca la ficha mientras tanto)
     let temporizador = null;
 
@@ -830,12 +835,14 @@
     }
 
     // «Abierta por a@b (14-10-2026 a las 10:32) · c@d (…)»: una entrada por persona, con su apertura más reciente y la última
-    // primero. Sale de los eventos `ficha_abierta` del historial; si no hay ninguno, la línea no se enseña.
+    // primero. Sale de los eventos `ficha_abierta` del historial POSTERIORES a la última `marcada_sin_abrir` (una marca «sin abrir»
+    // anula las aperturas de antes, para todo el equipo); si no queda ninguno, la línea no se enseña.
     function pintarAbiertaPor() {
         const linea = $('abiertaPor');
         const porPersona = new Map(); // correo → su apertura más reciente (los eventos llegan de más antiguo a más nuevo)
         for (const ev of datos.eventos) {
-            if (ev.tipo === 'ficha_abierta' && typeof ev.actor === 'string' && ev.actor && partes(ev.creado_en)) porPersona.set(ev.actor, ev.creado_en);
+            if (ev.tipo === 'marcada_sin_abrir') porPersona.clear();
+            else if (ev.tipo === 'ficha_abierta' && typeof ev.actor === 'string' && ev.actor && partes(ev.creado_en)) porPersona.set(ev.actor, ev.creado_en);
         }
         const gente = [...porPersona].sort((a, b) => Date.parse(b[1]) - Date.parse(a[1]));
         linea.textContent = gente.length > 0 ? 'Abierta por ' + gente.map(([quien, cuando]) => `${quien} (${fechaHora(cuando)})`).join(' · ') : '';
@@ -851,9 +858,19 @@
             const b = el('button', 'btn ancho ' + (accion === 'tramitar' ? 'primario' : ''), accion === 'tramitar' ? 'Marcar como tramitada' : 'Volver a pendiente');
             b.type = 'button';
             b.id = 'btnEstado';
-            b.disabled = cambiando;
+            b.disabled = cambiando || marcando;
             b.addEventListener('click', () => { confirmando = accion; avisar($('errorAccion'), ''); pintarAcciones(); $('btnConfirmar').focus(); });
             if (confirmando !== accion) cont.appendChild(b);
+        }
+        // «Marcar como sin abrir»: solo en una pendiente, junto a «Marcar como tramitada» y como botón secundario. Sin confirmación
+        // (es reversible: abrir la ficha otra vez la deja leída). Mientras se pide la confirmación de «tramitada», manda ese panel.
+        if (t.estado === 'recibida' && confirmando !== 'tramitar') {
+            const s = el('button', 'btn ancho', marcando ? 'Marcando…' : 'Marcar como sin abrir');
+            s.type = 'button';
+            s.id = 'btnSinAbrir';
+            s.disabled = marcando || cambiando;
+            s.addEventListener('click', dejarSinAbrir);
+            cont.appendChild(s);
         }
         const panel = $('confirmar');
         panel.hidden = !(accion && confirmando === accion);
@@ -887,6 +904,23 @@
         avisar($('errorAccion'), mensajeDe(r, 'No hemos podido guardar el cambio. Inténtalo de nuevo en un momento.'));
         if (r.status === 409) await cargar(true); // otra persona la cambió: se enseña cómo está ahora
         else pintarAcciones();
+    }
+
+    // «Marcar como sin abrir»: el servidor apunta la marca y la ficha vuelve a «Sin abrir» para todo el equipo; al ir bien se vuelve
+    // a la lista (el filtro vuelve de sessionStorage y Tarjetas / Lista de localStorage). Si no va, la frase en llano sale aquí y el
+    // botón vuelve. En el éxito el botón se queda en «Marcando…» hasta que cambia la página: así un doble clic no marca dos veces.
+    async function dejarSinAbrir() {
+        if (marcando || cambiando) return;
+        marcando = true;
+        avisar($('errorAccion'), '');
+        pintarAcciones();
+        const r = await api('/api/bandeja/estado', { ref, accion: 'sin_abrir' });
+        if (!r.red && r.status === 401) { irALogin(); return; }
+        if (!r.red && r.status === 200) { location.assign('/bandeja'); return; }
+        marcando = false;
+        avisar($('errorAccion'), mensajeDe(r, FRASE_MARCAR));
+        pintarAcciones();
+        if (!r.red && r.status === 409) await cargar(true); // otra persona la cambió (ya no es una pendiente): se enseña cómo está ahora
     }
 
     // ----- datos del contrato -----
@@ -1190,6 +1224,7 @@
             case 'aviso_reenviado': return `Aviso reenviado${por}`;
             case 'acuse_reenviado': return `Acuse reenviado${por}`;
             case 'ficha_abierta': return `Ficha abierta${por}`;
+            case 'marcada_sin_abrir': return `Marcada como sin abrir${por}`;
             case 'adjuntos_no_descargados': return 'Algún documento no se pudo adjuntar al aviso; está en la bandeja';
             case 'adjuntos_rechazados': return 'Altavoz no aceptó los adjuntos: el aviso salió sin ellos; los documentos están en la bandeja';
             default: return 'Cambio registrado';
