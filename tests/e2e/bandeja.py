@@ -1393,7 +1393,7 @@ CASOS = [
     (5, 'Marcar como tramitada / Volver a pendiente, con confirmación y quién lo hizo', caso_5),
     (6, 'Correos: «Volver a enviar» (también con Altavoz caído)', caso_6),
     (7, 'Enlace directo a una ficha sin sesión → login → vuelve a la ficha; «volver» ajeno ignorado', caso_7),
-    (8, 'Capturas a 390 y 1440 px de acceso, lista y ficha', caso_8),
+    (8, 'Capturas a 390 y 1440 px de acceso, lista (tarjetas y tabla) y ficha', caso_8),
     (9, 'Lo que escribe el comercial se pinta como texto (nada de HTML)', caso_9),
     (10, 'Fichas incompleta, descartada, inexistente y mal escrita', caso_10),
     (11, 'Salir cierra la sesión', caso_11),
