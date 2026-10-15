@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """tests/e2e/bandeja.py · La bandeja de backoffice con navegador real (orden 4): acceso con código, lista, ficha,
-descargas (una a una y en ZIP), cambio de estado, volver a enviar y las capturas a 390 y 1440 px; y (14-oct-2026) quién ha
-abierto cada ficha («Sin abrir» solo en las pendientes / «Abierta por …» en la lista y en la ficha: casos 14, 15 y 16).
+descargas (una a una y en ZIP), cambio de estado, volver a enviar y las capturas a 390 y 1440 px; (14-oct-2026) quién ha
+abierto cada ficha («Sin abrir» solo en las pendientes / «Abierta por …» en la lista y en la ficha: casos 14, 15 y 16); y
+(15-oct-2026) el interruptor Tarjetas / Lista y la tabla (caso 17; las capturas de la tabla, en el caso 8).
 
 Uso (lo normal es `bash tests/e2e/run.sh bandeja`, que arranca el servidor y limpia después):
     python tests/e2e/bandeja.py              todos los casos, en serie
@@ -195,6 +196,10 @@ class CasoBandeja(Caso):
 
     def refs_en_lista(self):
         return [a.get_attribute('href').rsplit('/', 1)[1] for a in self.page.locator('a.tarjeta').all()]
+
+    def refs_en_filas(self):
+        """Lo mismo que refs_en_lista(), pero con la lista en modo Lista (tabla): las filas son `a.fila`."""
+        return [a.get_attribute('href').rsplit('/', 1)[1] for a in self.page.locator('a.fila').all()]
 
     def elegir_filtro(self, nombre):
         self.page.get_by_role('button', name=nombre, exact=True).click()
@@ -668,16 +673,20 @@ def caso_7(c):
 
 
 def caso_8(c):
-    """Capturas a 390 y 1440 px de las tres pantallas (acceso, lista y ficha), sin desbordes y con 0 errores de consola."""
+    """Capturas a 390 y 1440 px de las tres pantallas (acceso, lista —en Tarjetas y en Lista— y ficha), sin desbordes y con 0 errores de consola."""
     ref = SEMILLAS['A']
     SALIDAS.mkdir(parents=True, exist_ok=True)
     p = c.page
 
-    def capturar(nombre):
+    def capturar(nombre, tabla=False):
         for ancho, alto in ((390, 844), (1440, 900)):
             p.set_viewport_size({'width': ancho, 'height': alto})
+            p.mouse.move(2, 2)  # el puntero fuera de la página: ninguna fila ni botón sale con el aspecto de «ratón encima»
             p.wait_for_timeout(300)
             assert p.evaluate('() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)') <= ancho, f'{nombre}: desborde a {ancho} px'
+            if tabla and ancho == 1440:  # en ordenador ancho la tabla cabe entera: la caja no necesita deslizarse
+                caja = p.evaluate("() => { const e = document.getElementById('cajaLista'); return [e.scrollWidth, e.clientWidth]; }")
+                assert caja[0] <= caja[1], f'{nombre}: a {ancho} px la tabla se desliza dentro de su caja ({caja[0]} > {caja[1]})'
             p.screenshot(path=str(SALIDAS / f'bandeja-{nombre}-{ancho}.png'), full_page=True, animations='disabled')
         p.set_viewport_size({'width': 390, 'height': 844})
 
@@ -693,6 +702,15 @@ def caso_8(c):
     c.esperar_lista()
     p.wait_for_function("() => document.getElementById('correo').textContent.length > 0")
     capturar('lista')
+
+    # El modo Lista (tabla): con una pendiente que nadie ha abierto (su raya azul) además de las de antes; las capturas de arriba no cambian
+    crear('gnew', [(1, 'captura.jpg', JPG.read_bytes())], extra={'titular': 'Titular Sin Abrir de Prueba SL'})
+    p.get_by_role('button', name='Actualizar la lista').click()
+    c.esperar_lista()
+    p.get_by_role('button', name='Lista', exact=True).click()
+    p.wait_for_selector('a.fila')
+    assert p.locator('a.fila.sin-abrir').count() >= 1, 'La tabla enseña la pendiente sin abrir'
+    capturar('lista-tabla', tabla=True)
 
     c.abrir_ficha(ref)
     capturar('ficha')
@@ -1129,6 +1147,244 @@ def caso_16(c):
     c.sin_desbordes()
 
 
+def caso_17(c):
+    """El modo Lista (tabla): el interruptor Tarjetas / Lista (por defecto Tarjetas; se recuerda al recargar), la cabecera y las filas con todas sus columnas, «Sin abrir» con su raya azul, «Abierta por …» con +N, «Cargar más» en la tabla, volver a Tarjetas sin pedir otra vez la lista, clic en una fila y «atrás», lo que escribe el comercial como texto, sin jerga, sin desbordes a 390 px y, a 1440 px, la tabla entera sin deslizarse."""
+    ref_a, ref_b = SEMILLAS['A'], SEMILLAS['B']
+    marcador = lambda titular: {'titular': titular, 'quien_eres': 'Comercial Marcador17'}  # la búsqueda `marcador17` encuentra solo estas dos
+    sin_abrir = crear('gnew', [(1, 'lista-sin-abrir.jpg', JPG.read_bytes())], extra=marcador('Titular Lista Sin Abrir SL'))
+    abierta = crear('mega', [(1, 'lista-abierta.jpg', JPG.read_bytes()), (2, 'lista-abierta.png', PNG.read_bytes())], extra=marcador('Titular Lista Abierta SL'))
+    peligro = crear('gnew', [(1, 'lista-peligro.jpg', JPG.read_bytes())], extra={'titular': XSS_TITULAR, 'quien_eres': XSS_COMERCIAL})
+    c.con_sesion()
+    p = c.page
+    galleta = {'Cookie': 'bandeja_sesion=' + [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion'][0]['value']}
+    st, _, cuerpo = http('GET', f'/api/bandeja/ficha?ref={abierta}&abrir=1', cabeceras=galleta)  # alguien abre esa ficha: saldrá «Abierta por …»
+    assert st == 200, cuerpo
+    pedidas = []  # peticiones a la lista (las de «quién soy» no cuentan)
+    p.on('request', lambda r: pedidas.append(r.url) if '/api/bandeja/lista' in r.url else None)
+    boton = lambda nombre: p.get_by_role('button', name=nombre, exact=True)
+    fila = lambda ref: p.locator(f'a.fila[href$="{ref}"]')
+    en_lista = lambda: p.evaluate("() => document.body.classList.contains('vista-lista')")
+    guardado = lambda: p.evaluate("() => localStorage.getItem('bandeja.vista')")
+    caja_se_desliza = lambda: p.evaluate("() => { const e = document.getElementById('cajaLista'); return [e.scrollWidth, e.clientWidth]; }")
+    p.set_viewport_size({'width': 1440, 'height': 900})
+
+    # 1) por defecto, Tarjetas (como siempre): el interruptor a la derecha de los filtros, sin cabecera de tabla y sin guardar nada
+    c.ver('/bandeja', 'a.tarjeta')
+    c.esperar_lista()
+    assert p.get_by_role('group', name='Filtrar por estado').count() == 1 and p.get_by_role('group', name='Modo de visualización').count() == 1
+    assert boton('Tarjetas').get_attribute('aria-pressed') == 'true' and boton('Lista').get_attribute('aria-pressed') == 'false'
+    assert not en_lista() and guardado() is None, 'Sin elegir nada: Tarjetas, y no se guarda nada'
+    assert p.locator('a.fila').count() == 0 and p.is_hidden('.tabla-cabecera'), 'En Tarjetas no hay filas ni cabecera de tabla'
+    barra, vistas, mas = p.locator('.barra').bounding_box(), p.locator('.vistas').bounding_box(), p.locator('#chipMas').bounding_box()
+    assert abs((vistas['x'] + vistas['width']) - (barra['x'] + barra['width'])) <= 1, 'El interruptor, pegado a la derecha'
+    assert vistas['x'] >= mas['x'] + mas['width'] and abs((vistas['y'] + vistas['height'] / 2) - (mas['y'] + mas['height'] / 2)) <= 6, 'A la derecha de los filtros, en su misma franja'
+    assert boton('Tarjetas').inner_text().strip() == 'Tarjetas' and boton('Lista').inner_text().strip() == 'Lista', 'En ordenador, icono y texto'
+    refs_tarjetas = c.refs_en_lista()
+    assert ref_a in refs_tarjetas and ref_b in refs_tarjetas
+
+    # 2) pasar a Lista: cabecera, filas con los mismos contratos y sin pedir nada más; se guarda la elección
+    antes = len(pedidas)
+    boton('Lista').click()
+    p.wait_for_selector('a.fila')
+    p.wait_for_timeout(400)
+    assert len(pedidas) == antes, 'Cambiar de modo repinta lo ya cargado: no vuelve a pedir la lista'
+    assert boton('Lista').get_attribute('aria-pressed') == 'true' and boton('Tarjetas').get_attribute('aria-pressed') == 'false'
+    assert en_lista() and guardado() == 'lista' and p.locator('a.tarjeta').count() == 0
+    assert c.refs_en_filas() == refs_tarjetas, 'Los mismos contratos, en el mismo orden'
+    cabecera = p.locator('#cajaLista .tabla-cabecera')
+    assert cabecera.is_visible() and cabecera.get_attribute('aria-hidden') == 'true'
+    assert [x.inner_text() for x in cabecera.locator('span').all()] == ['Referencia', 'Titular', 'Compañía', 'CUPS', 'Comercial', 'Recibida', 'Docs', 'Abierta', 'Estado', '']
+    assert p.evaluate("() => document.querySelector('.contenedor').getBoundingClientRect().width") == 1400, 'En modo Lista la página se ensancha a 1400 px'
+
+    # 3) una fila de GNEW y una de MEGA: todas sus columnas (lo que escribe el comercial, como texto)
+    fa = fila(ref_a)
+    assert fa.get_attribute('href') == f'/bandeja/c/{ref_a}', 'Toda la fila es un enlace a su ficha'
+    assert fa.locator('.c-ref').inner_text() == ref_a
+    assert fa.locator('.pildora-nombre').inner_text() == 'Titular de Prueba SL'
+    assert fa.locator('.avatar').inner_text() == 'TP' and 'avatar-gnew' in fa.locator('.avatar').get_attribute('class').split()
+    assert fa.locator('.c-compania .marca-gnew').inner_text() == 'GNEW' and fa.locator('.c-compania .c-txt').inner_text() == 'Compañía de Prueba · 2.0TD'
+    assert fa.locator('.c-cups').inner_text() == 'ES0021000000000001RK' and 'monospace' in fa.locator('.c-cups').evaluate("e => getComputedStyle(e).fontFamily")
+    assert fa.locator('.c-comercial').inner_text() == 'Comercial de Prueba'
+    assert re.fullmatch(r'hace (unos segundos|\d+ min|\d+ h)', fa.locator('.c-recibida').inner_text()), fa.locator('.c-recibida').inner_text()
+    assert re.match(r'\d{4}-\d{2}-\d{2}T', fa.locator('.c-recibida.t-cuando').get_attribute('data-fecha') or ''), 'El «hace …» lleva su fecha: se mantiene al día solo'
+    assert fa.locator('.c-docs').inner_text() == '4' and fa.locator('.c-docs').evaluate("e => getComputedStyle(e).fontWeight") == '700'
+    assert fa.locator('.c-estado .estado-recibida').inner_text() == 'Pendiente'
+    assert fa.locator('.c-estado .estado-recibida').evaluate("e => getComputedStyle(e).borderTopWidth") == '1px', 'La pastilla del estado lleva su borde fino'
+    fb = fila(ref_b)
+    assert fb.locator('.marca-mega').inner_text() == 'MEGA' and '2.0TD' in fb.locator('.c-compania').inner_text()
+    assert fb.locator('.avatar').inner_text() == 'TM' and 'avatar-mega' in fb.locator('.avatar').get_attribute('class').split()
+    assert fb.locator('.c-docs').inner_text() == '2'
+
+    # 4) «Sin abrir» (raya azul de 4 px, pastilla, titular en negrita) y «Abierta por …» (ojo, correo, «hace …»), con la misma regla que las tarjetas
+    c.buscar('marcador17')
+    assert sorted(c.refs_en_filas()) == sorted([sin_abrir, abierta]), c.refs_en_filas()
+    fs, fo = fila(sin_abrir), fila(abierta)
+    assert 'sin-abrir' in fs.get_attribute('class').split()
+    assert fs.evaluate("e => { const s = getComputedStyle(e); return [s.borderLeftWidth, s.borderLeftColor]; }") == ['4px', 'rgb(37, 99, 235)']
+    pastilla = fs.locator('.c-abierta .ins-sin-abrir')
+    assert pastilla.inner_text() == 'Sin abrir'
+    assert pastilla.evaluate("e => { const s = getComputedStyle(e); return [s.color, s.backgroundColor]; }") == ['rgb(29, 78, 216)', 'rgb(219, 234, 254)']
+    assert fs.locator('.c-abierta svg').count() == 0 and fs.locator('.pildora-nombre').evaluate("e => getComputedStyle(e).fontWeight") == '700'
+    assert 'sin-abrir' not in fo.get_attribute('class').split() and fo.locator('.ins-sin-abrir').count() == 0
+    assert fo.evaluate("e => getComputedStyle(e).borderLeftColor") == 'rgba(0, 0, 0, 0)', 'Abierta no lleva la raya azul'
+    assert fo.locator('.pildora-nombre').evaluate("e => getComputedStyle(e).fontWeight") == '500'
+    celda = fo.locator('.c-abierta')
+    assert celda.locator('svg.t-ojo[aria-hidden="true"]').count() == 1 and celda.locator('.a-correo').inner_text() == EMAIL
+    assert re.fullmatch(r'hace (unos segundos|\d+ min)', celda.locator('.a-linea').inner_text().strip()), celda.locator('.a-linea').inner_text()
+    assert celda.locator('.a-linea .t-cuando').get_attribute('data-fecha') and celda.locator('.a-mas').count() == 0
+    assert celda.get_attribute('title') == f'Abierta por {EMAIL}'
+    # varias personas: la más reciente en la celda, «+N» y todas en el title
+    otra, larga = 'victor.molins.10+otra-persona@gmail.com', 'victor.molins.10+una-persona-de-backoffice-con-un-correo-bastante-largo-de-verdad@gmail.com'
+
+    def hace(**tiempo):
+        return (datetime.now(timezone.utc) - timedelta(**tiempo)).strftime('%Y-%m-%dT%H:%M:%S.%f') + '+00:00'
+
+    def con_tres_personas(route, request):
+        real = route.fetch()
+        cuerpo = real.json()
+        for item in cuerpo['items']:
+            if item['ref'] == abierta:
+                item['vistas'] = [{'por': EMAIL, 'en': hace(minutes=4)}, {'por': otra, 'en': hace(hours=2)}, {'por': larga, 'en': hace(days=3)}]
+        route.fulfill(response=real, json=cuerpo)
+
+    p.route('**/api/bandeja/lista**', con_tres_personas)
+    c.buscar('marcador17')
+    celda = fila(abierta).locator('.c-abierta')
+    assert celda.locator('.a-correo').inner_text() == EMAIL, 'La persona más reciente'
+    assert celda.locator('.a-linea .t-cuando').inner_text() == 'hace 4 min' and celda.locator('.a-mas').inner_text() == '+2'
+    assert celda.get_attribute('title') == f'Abierta por {EMAIL}, {otra}, {larga}'
+    p.unroute('**/api/bandeja/lista**')
+    c.buscar('')
+
+    # 5) «Cargar más» en la tabla añade filas; y volver a Tarjetas (y otra vez a Lista) conserva TODOS los contratos sin pedir nada
+    visto = {'antes': None}
+
+    def paginar(route, request):
+        consulta = urllib.parse.parse_qs(urllib.parse.urlparse(request.url).query)
+        if 'antes' in consulta:
+            visto['antes'] = consulta['antes'][0]
+            falsa = {'ref': 'GNE-20260101-PAGINA', 'formulario': 'gnew', 'estado': 'recibida', 'compania': 'Compañía de otra página', 'titular_nombre': 'Titular de la segunda página',
+                     'cups': 'ES0021000000000001RK', 'comercial_nombre': 'Comercial', 'tarifa': '2.0TD', 'creada_en': '2026-01-01T10:00:00.000000+00:00',
+                     'recibida_en': '2026-01-01T10:00:00.000000+00:00', 'n_documentos': 1, 'vistas': []}
+            route.fulfill(status=200, content_type='application/json', body=json.dumps({'ok': True, 'items': [falsa], 'siguiente': None}))
+        else:
+            real = route.fetch()
+            cuerpo = real.json()
+            cuerpo['siguiente'] = '2026-10-09T20:11:12.123456+00:00'
+            route.fulfill(response=real, json=cuerpo)
+
+    p.route('**/api/bandeja/lista**', paginar)
+    c.elegir_filtro('Todas')
+    assert p.is_visible('#mas'), '«Cargar más» aparece también con la tabla'
+    antes_n = p.locator('a.fila').count()
+    boton('Cargar más').click()
+    p.wait_for_function(f"() => document.querySelectorAll('a.fila').length === {antes_n + 1}")
+    assert visto['antes'] == '2026-10-09T20:11:12.123456+00:00', f'El cursor viaja entero (con el +): {visto["antes"]!r}'
+    nueva = fila('GNE-20260101-PAGINA')
+    assert nueva.locator('.pildora-nombre').inner_text() == 'Titular de la segunda página' and nueva.locator('.c-docs').inner_text() == '1'
+    assert p.is_hidden('#mas'), 'Sin siguiente, el botón desaparece'
+    p.unroute('**/api/bandeja/lista**')
+    refs_filas = c.refs_en_filas()
+    assert 'GNE-20260101-PAGINA' in refs_filas and len(refs_filas) == antes_n + 1
+    antes = len(pedidas)
+    boton('Tarjetas').click()
+    p.wait_for_selector('a.tarjeta')
+    p.wait_for_timeout(400)
+    assert len(pedidas) == antes, 'Volver a Tarjetas no vuelve a pedir la lista'
+    assert c.refs_en_lista() == refs_filas, 'Los mismos contratos, con las dos páginas de «Cargar más»'
+    assert not en_lista() and guardado() == 'tarjetas' and boton('Tarjetas').get_attribute('aria-pressed') == 'true'
+    assert p.locator('a.fila').count() == 0 and p.is_hidden('.tabla-cabecera') and p.locator('#lista svg:not(.t-ojo)').count() == 0
+    assert 'Titular de la segunda página' in p.inner_text('#lista') and p.is_hidden('#mas')
+    assert p.get_by_role('button', name='Todas', exact=True).get_attribute('aria-pressed') == 'true', 'El filtro se conserva'
+    boton('Lista').click()
+    p.wait_for_selector('a.fila')
+    assert c.refs_en_filas() == refs_filas and len(pedidas) == antes, 'Y otra vez a Lista, sin pedir nada'
+
+    # 6) recargar la página: sigue en Lista (y con el mismo filtro)
+    p.reload(wait_until='load')
+    p.wait_for_selector('a.fila')
+    c.esperar_lista()
+    assert en_lista() and guardado() == 'lista' and boton('Lista').get_attribute('aria-pressed') == 'true' and p.locator('a.tarjeta').count() == 0
+    assert p.get_by_role('button', name='Todas', exact=True).get_attribute('aria-pressed') == 'true'
+
+    # 7) clic en una fila → su ficha; «atrás» → la Lista
+    c.buscar(ref_a)
+    fila(ref_a).click()
+    p.wait_for_selector('#ficha:not([hidden])')
+    assert p.url == f'{BASE}/bandeja/c/{ref_a}', p.url
+    assert p.inner_text('#ref') == ref_a
+    p.go_back()
+    p.wait_for_url(re.compile(r'/bandeja(\?estado=todas)?$'))
+    c.esperar_lista()
+    c.buscar(ref_a)
+    assert en_lista() and fila(ref_a).count() == 1 and p.locator('a.tarjeta').count() == 0, 'Atrás vuelve a la Lista'
+
+    # 8) lo que escribe el comercial se pinta como TEXTO también en la fila (ni HTML ni scripts ni más SVG que los ojos)
+    c.buscar(peligro)
+    fp = fila(peligro)
+    assert fp.count() == 1
+    assert XSS_TITULAR in fp.locator('.pildora-nombre').inner_text() and XSS_COMERCIAL in fp.locator('.c-comercial').inner_text()
+    assert fp.locator('img, script, svg, iframe, b, u').count() == 0, 'La fila no ha creado ningún elemento con lo que escribió el comercial'
+    assert p.locator('#lista img, #lista script, #lista iframe, #lista b, #lista u').count() == 0
+    assert p.locator('#lista svg:not(.t-ojo)').count() == 0, 'En la tabla no hay más SVG que los ojos'
+    assert p.evaluate("() => typeof window.__xss") == 'undefined', 'Se ha ejecutado algo del contenido del comercial'
+    assert re.fullmatch(r'[A-Z0-9]{1,2}', fp.locator('.avatar').inner_text()), 'Las iniciales salen de las letras del nombre, no de los signos'
+    c.sin_jerga()
+
+    # 9) sin filas no hay tabla ni cabecera: solo el mensaje
+    c.buscar('zzzinexistente')
+    assert p.inner_text('#estadoLista') == 'No hay tramitaciones que coincidan.'
+    assert p.locator('a.fila').count() == 0 and p.is_hidden('#cajaLista') and p.is_hidden('.tabla-cabecera')
+    c.buscar('')
+    p.wait_for_selector('a.fila')
+    assert p.is_visible('#cajaLista .tabla-cabecera')
+
+    # 10) a 1440 px la tabla cabe ENTERA (la caja no se desliza), cada celda bajo su cabecera y lo corto no se recorta
+    assert caja_se_desliza()[0] <= caja_se_desliza()[1], f'A 1440 px la tabla se desliza dentro de su caja: {caja_se_desliza()}'
+    c.sin_desbordes(1440)
+    columnas = p.evaluate("""() => {
+        const izq = (e) => e.getBoundingClientRect().left;
+        const cabecera = [...document.querySelectorAll('.tabla-cabecera > span')].map(izq);
+        const desalineadas = [], recortadas = [];
+        const filas = document.querySelectorAll('a.fila');
+        filas.forEach((fila) => {
+            [...fila.children].forEach((celda, i) => { if (Math.abs(izq(celda) - cabecera[i]) > 1) desalineadas.push(i); });
+            ['.c-cups', '.c-recibida', '.c-docs', '.c-estado'].forEach((s) => {
+                const e = fila.querySelector(s);
+                if (e && e.scrollWidth > e.clientWidth + 1) recortadas.push(s);
+            });
+        });
+        return { columnas: cabecera.length, filas: filas.length, desalineadas, recortadas };
+    }""")
+    assert columnas['columnas'] == 10 and columnas['filas'] >= 5, columnas
+    assert columnas['desalineadas'] == [], 'Cada celda, bajo su cabecera (también en las filas con raya azul)'
+    assert columnas['recortadas'] == [], 'CUPS, «hace …», docs y estado caben enteros (solo se recortan titular, compañía, comercial y correo)'
+    c.sin_jerga()
+
+    # 11) a 390 px la PÁGINA no se sale por los lados: es la tabla la que se desliza, dentro de su caja; y el interruptor, solo con iconos (con su nombre)
+    p.set_viewport_size({'width': 390, 'height': 844})
+    p.wait_for_timeout(300)
+    c.sin_desbordes()
+    assert caja_se_desliza()[0] > caja_se_desliza()[1], 'En el móvil la tabla se desliza de lado dentro de su caja'
+    assert boton('Lista').inner_text().strip() == '' and boton('Tarjetas').inner_text().strip() == '', 'En el móvil, solo iconos'
+    assert boton('Lista').get_attribute('aria-label') == 'Lista' and boton('Tarjetas').get_attribute('aria-label') == 'Tarjetas'
+    c.sin_jerga()
+
+    # 12) sin almacenamiento (modo privado o datos bloqueados) funciona igual: Tarjetas al abrir, y el interruptor sirve en esa visita
+    c.ctx.add_init_script("Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('bloqueado', 'SecurityError'); } });")
+    p.reload(wait_until='load')
+    p.wait_for_selector('a.tarjeta')
+    c.esperar_lista()
+    assert not en_lista() and boton('Tarjetas').get_attribute('aria-pressed') == 'true'
+    boton('Lista').click()
+    p.wait_for_selector('a.fila')
+    assert en_lista() and boton('Lista').get_attribute('aria-pressed') == 'true' and p.locator('a.tarjeta').count() == 0
+    boton('Tarjetas').click()
+    p.wait_for_selector('a.tarjeta')
+    assert not en_lista() and p.locator('a.fila').count() == 0
+    c.sin_jerga()
+
+
 CASOS = [
     (1, 'Acceso: de /bandeja al login con «volver», código por correo simulado, código malo, código bueno y cookie HttpOnly', caso_1),
     (2, 'Un correo sin acceso ve lo mismo que uno con acceso, sin correo y sin entrar', caso_2),
@@ -1146,6 +1402,7 @@ CASOS = [
     (14, 'Quién ha abierto cada ficha: «Sin abrir» → ficha → «Abierta por …» (arriba y en el historial) → de vuelta en la lista', caso_14),
     (15, 'Varias personas (3 líneas, «hace …» al día) y lista que se pone al día al volver desde la caché de «atrás»', caso_15),
     (16, '«Sin abrir» solo en las pendientes: tramitada, incompleta y descartada sin abrir no lo enseñan; abiertas, «Abierta por …» en cualquier estado', caso_16),
+    (17, 'Modo Lista (tabla): interruptor Tarjetas / Lista que se recuerda, filas con todas las columnas, «Sin abrir», «Cargar más», volver a Tarjetas sin pedir otra vez, clic y «atrás», sin HTML, sin desbordes y a 1440 px sin deslizarse', caso_17),
 ]
 
 

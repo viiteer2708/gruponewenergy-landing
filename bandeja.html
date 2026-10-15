@@ -187,12 +187,69 @@
             box-shadow: 0 0 0 3px rgba(11, 110, 79, .18);
         }
 
+        /* Barra: los filtros a la izquierda y, a la derecha, el interruptor Tarjetas / Lista */
+        .barra {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: .5rem .75rem;
+            margin: .85rem 0 1rem;
+        }
+
         .filtros {
             display: flex;
             align-items: center;
             flex-wrap: wrap;
+            flex: 1 1 auto;
             gap: .5rem;
-            margin: .85rem 0 1rem;
+        }
+
+        /* Mismo lenguaje que los chips (píldora, borde fino, activo en verde), en un solo grupo de dos botones */
+        .vistas {
+            display: inline-flex;
+            flex: none;
+            gap: .15rem;
+            margin-left: auto;
+            padding: 3px;
+            border: 1.5px solid var(--border);
+            border-radius: 999px;
+            background: #fff;
+        }
+
+        .vista-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: .4rem;
+            min-height: 30px; /* con el relleno y el borde del grupo, 38 px: lo mismo que un chip */
+            padding: .2rem .75rem;
+            border: 0;
+            border-radius: 999px;
+            background: transparent;
+            font-size: .875rem;
+            font-weight: 600;
+            color: var(--text);
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .vista-btn svg {
+            flex: none;
+            width: 1rem;
+            height: 1rem;
+        }
+
+        .vista-btn:hover {
+            background: #F0FAF6;
+        }
+
+        .vista-btn[aria-pressed="true"] {
+            background: var(--primary);
+            color: #fff;
+        }
+
+        .vista-texto {
+            display: none; /* en el móvil, solo el icono (el botón lleva su aria-label) */
         }
 
         .chip {
@@ -426,9 +483,258 @@
             display: none;
         }
 
+        /* ===== MODO LISTA (tabla) ===== */
+        /* <body class="vista-lista"> lo activa; en Tarjetas no se usa nada de esto. La cabecera y cada fila comparten --cols-lista:
+           las columnas quedan alineadas sin <table> y cada fila sigue siendo UN enlace a su ficha. */
+        :root {
+            --margen-lista: .75rem;
+            --hueco-lista: .5rem;
+            /* Referencia · Titular · Compañía · CUPS · Comercial · Recibida · Docs · Abierta · Estado · › */
+            --cols-lista: 9.75rem minmax(9rem, 1.5fr) minmax(8.5rem, 1.3fr) 9.5rem minmax(5.5rem, .7fr) 7.5rem 2.75rem minmax(11rem, 1.4fr) 6.25rem .875rem;
+            /* Por debajo de este ancho la caja se desliza de lado: la suma de los mínimos de --cols-lista (70,625 rem) + los 9 huecos + los márgenes + la raya */
+            --ancho-lista: calc(70.625rem + 9 * var(--hueco-lista) + 2 * var(--margen-lista) + 4px);
+        }
+
+        .caja-lista[hidden] {
+            display: none;
+        }
+
+        .tabla-cabecera {
+            display: none;
+        }
+
+        body.vista-lista .cabecera-in,
+        body.vista-lista .contenedor {
+            max-width: 1400px;
+        }
+
+        body.vista-lista .caja-lista {
+            overflow-x: auto;
+            background: #fff;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+        }
+
+        body.vista-lista .lista {
+            display: block;
+        }
+
+        body.vista-lista .tabla-cabecera,
+        body.vista-lista .lista {
+            min-width: var(--ancho-lista);
+        }
+
+        body.vista-lista .tabla-cabecera {
+            display: grid;
+            grid-template-columns: var(--cols-lista);
+            column-gap: var(--hueco-lista);
+            align-items: center;
+            padding: .7rem var(--margen-lista) .7rem calc(var(--margen-lista) + 4px); /* los 4 px de más son la raya de las filas: columnas alineadas */
+            background: #F8FAFC;
+            border-bottom: 1px solid #EEF2F6;
+            font-size: .75rem;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        .tabla-cabecera span {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .fila {
+            display: grid;
+            grid-template-columns: var(--cols-lista);
+            column-gap: var(--hueco-lista);
+            align-items: center;
+            min-height: 56px;
+            padding: .4rem var(--margen-lista);
+            border-left: 4px solid transparent; /* en todas las filas, para que las columnas no se muevan; azul en «Sin abrir» */
+            border-bottom: 1px solid #EEF2F6;
+            font-size: .8125rem;
+            color: #374151;
+            text-decoration: none;
+            transition: background-color .15s;
+        }
+
+        .lista li:last-child .fila {
+            border-bottom: 0;
+        }
+
+        .fila:hover {
+            background: #F8FAFC;
+        }
+
+        .fila:focus-visible {
+            outline-offset: -3px; /* hacia dentro: la caja se desliza y recortaría el aro de fuera */
+        }
+
+        .fila.sin-abrir {
+            border-left-color: #2563EB;
+        }
+
+        .fila > .c {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .c-titular, .c-compania, .c-abierta, .c-estado, .c-ir {
+            display: flex;
+            align-items: center;
+        }
+
+        .c-ref, .c-recibida {
+            font-size: .7rem;
+            color: var(--text-muted);
+        }
+
+        .c-cups {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: .7rem;
+            color: #4B5563;
+        }
+
+        .c-docs {
+            font-weight: 700;
+            color: var(--text);
+        }
+
+        /* Titular: una píldora con borde, el círculo de las iniciales y el nombre (con «…» si no cabe) */
+        .pildora {
+            display: inline-flex;
+            align-items: center;
+            gap: .45rem;
+            min-width: 0;
+            max-width: 100%;
+            padding: .15rem .75rem .15rem .2rem;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: #fff;
+            box-shadow: 0 1px 2px rgba(15, 23, 42, .05);
+        }
+
+        .avatar {
+            flex: none;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 1.5rem;
+            height: 1.5rem;
+            border-radius: 50%;
+            font-size: .625rem;
+            font-weight: 700;
+            line-height: 1;
+        }
+
+        .avatar-gnew { background: var(--primary); color: #fff; }
+        .avatar-mega { background: #14B8A6; color: #042F2E; }
+
+        .pildora-nombre {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 500;
+            color: var(--text);
+        }
+
+        .fila.sin-abrir .pildora-nombre {
+            font-weight: 700;
+        }
+
+        .c-compania {
+            gap: .4rem;
+        }
+
+        .c-txt {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Abierta: el ojo y, en dos líneas, el correo (lo que se recorta con «…») y debajo su «hace 5 min» y «+N» si hubo más personas */
+        .c-abierta {
+            gap: .4rem;
+            color: #166534;
+        }
+
+        .c-abierta .t-ojo {
+            margin-top: 0;
+        }
+
+        .a-texto {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            line-height: 1.3;
+        }
+
+        .a-correo {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 600;
+        }
+
+        .a-linea {
+            display: flex;
+            align-items: center;
+            gap: .4rem;
+            font-size: .72rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+
+        .a-mas {
+            padding: 0 .4rem;
+            border-radius: 999px;
+            background: #F1F5F9;
+            font-weight: 600;
+        }
+
+        /* Pastillas de la tabla: fondo claro y borde fino del mismo tono */
+        .fila .ins { border: 1px solid transparent; }
+        .fila .estado-recibida { border-color: #FCD34D; }
+        .fila .estado-tramitada { border-color: #86EFAC; }
+        .fila .estado-subiendo { border-color: #93C5FD; }
+        .fila .estado-abandonada { border-color: #FDBA74; }
+        .fila .estado-descartada { border-color: #FCA5A5; }
+        .fila .marca-gnew { border-color: #A7D7C3; }
+        .fila .marca-mega { border-color: #5EEAD4; }
+        .fila .ins-sin-abrir { border-color: #93C5FD; }
+
+        /* ›: lo dibuja el CSS (sin SVG: en la tabla el único dibujo es el ojo) */
+        .c-ir {
+            justify-content: flex-end;
+            color: #9CA3AF;
+        }
+
+        .c-ir::after {
+            content: '';
+            width: .45rem;
+            height: .45rem;
+            margin-right: .2rem;
+            border-top: 2px solid currentColor;
+            border-right: 2px solid currentColor;
+            transform: rotate(45deg);
+        }
+
+        .fila:hover .c-ir {
+            color: var(--primary);
+        }
+
         @media (min-width: 700px) {
             .lista { grid-template-columns: repeat(2, 1fr); }
             .cabecera-in, .contenedor { padding-left: 1.5rem; padding-right: 1.5rem; }
+            .vista-texto { display: inline; }
+            .vista-btn { padding: .2rem .95rem; }
         }
 
         @media (min-width: 1100px) {
@@ -462,17 +768,43 @@
         <input id="q" type="search" placeholder="Buscar por titular, CUPS, referencia o comercial" autocomplete="off" autocapitalize="none" spellcheck="false" aria-label="Buscar por titular, CUPS, referencia o comercial">
     </div>
 
-    <div class="filtros" id="filtros" role="group" aria-label="Filtrar por estado">
-        <button class="chip" type="button" data-estado="pendientes" aria-pressed="true">Pendientes</button>
-        <button class="chip" type="button" data-estado="tramitadas" aria-pressed="false">Tramitadas</button>
-        <button class="chip" type="button" data-estado="incompletas" aria-pressed="false">Incompletas</button>
-        <button class="chip" type="button" data-estado="todas" aria-pressed="false">Todas</button>
-        <button class="chip chip-mas" type="button" id="chipMas" aria-expanded="false">Más</button>
-        <button class="chip" type="button" data-estado="descartadas" aria-pressed="false" id="chipDescartadas" hidden>Descartadas</button>
+    <div class="barra">
+        <div class="filtros" id="filtros" role="group" aria-label="Filtrar por estado">
+            <button class="chip" type="button" data-estado="pendientes" aria-pressed="true">Pendientes</button>
+            <button class="chip" type="button" data-estado="tramitadas" aria-pressed="false">Tramitadas</button>
+            <button class="chip" type="button" data-estado="incompletas" aria-pressed="false">Incompletas</button>
+            <button class="chip" type="button" data-estado="todas" aria-pressed="false">Todas</button>
+            <button class="chip chip-mas" type="button" id="chipMas" aria-expanded="false">Más</button>
+            <button class="chip" type="button" data-estado="descartadas" aria-pressed="false" id="chipDescartadas" hidden>Descartadas</button>
+        </div>
+        <div class="vistas" role="group" aria-label="Modo de visualización">
+            <button class="vista-btn" type="button" id="btnVistaTarjetas" data-vista="tarjetas" aria-pressed="true" aria-label="Tarjetas">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+                <span class="vista-texto">Tarjetas</span>
+            </button>
+            <button class="vista-btn" type="button" id="btnVistaLista" data-vista="lista" aria-pressed="false" aria-label="Lista">
+                <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>
+                <span class="vista-texto">Lista</span>
+            </button>
+        </div>
     </div>
 
     <p class="mensaje" id="estadoLista" role="status" aria-live="polite">Cargando…</p>
-    <ul class="lista" id="lista"></ul>
+    <div class="caja-lista" id="cajaLista" hidden>
+        <div class="tabla-cabecera" aria-hidden="true">
+            <span>Referencia</span>
+            <span>Titular</span>
+            <span>Compañía</span>
+            <span>CUPS</span>
+            <span>Comercial</span>
+            <span>Recibida</span>
+            <span>Docs</span>
+            <span>Abierta</span>
+            <span>Estado</span>
+            <span></span>
+        </div>
+        <ul class="lista" id="lista"></ul>
+    </div>
     <div class="mas" id="mas" hidden>
         <button class="btn" type="button" id="btnMas">Cargar más</button>
     </div>
@@ -485,6 +817,7 @@
     var ETIQUETA_ESTADO = { recibida: 'Pendiente', tramitada: 'Tramitada', subiendo: 'Subiendo', abandonada: 'Incompleta', descartada: 'Descartada' };
     var ETIQUETA_MARCA = { gnew: 'GNEW', mega: 'MEGA' };
     var FILTROS = ['pendientes', 'tramitadas', 'incompletas', 'todas', 'descartadas'];
+    var VISTAS = ['tarjetas', 'lista'];
     var MAX_VISTAS = 3;      // personas que se enseñan en una tarjeta («Abierta por …»)
 
     var inputQ = document.getElementById('q');
@@ -492,13 +825,17 @@
     var chips = cajaFiltros.querySelectorAll('.chip[data-estado]');
     var chipMas = document.getElementById('chipMas');
     var chipDescartadas = document.getElementById('chipDescartadas');
+    var btnsVista = document.querySelectorAll('.vistas [data-vista]');
     var btnActualizar = document.getElementById('btnActualizar');
+    var cajaLista = document.getElementById('cajaLista');
     var listaEl = document.getElementById('lista');
     var estadoLista = document.getElementById('estadoLista');
     var cajaMas = document.getElementById('mas');
     var btnMas = document.getElementById('btnMas');
 
     var estado = 'pendientes';
+    var vista = 'tarjetas';  // cómo se enseña la lista: 'tarjetas' o 'lista' (tabla); se recuerda en este navegador
+    var cargados = [];       // lo ya recibido (con las páginas de «Cargar más»): cambiar de modo lo repinta sin volver a pedirlo
     var siguiente = null;
     var ticket = 0;          // para ignorar respuestas viejas si el usuario cambia de filtro mientras se carga
     var ultimaCarga = 0;
@@ -644,6 +981,130 @@
         return li;
     }
 
+    // ---------- filas (modo Lista) ----------
+    var PALABRAS_SUELTAS = ['de', 'del', 'la', 'las', 'el', 'los', 'y', 'e', 'en']; // no dan inicial: «Casa de Pepe» → CP
+
+    // Las iniciales del titular para el círculo («Titular de Prueba SL» → TP): la primera letra o cifra de cada palabra, dos como máximo
+    function iniciales(nombre) {
+        var palabras = String(nombre || '').split(/\s+/);
+        var letras = '';
+        for (var k = 0; k < palabras.length && letras.length < 2; k++) {
+            if (PALABRAS_SUELTAS.indexOf(palabras[k].toLowerCase()) !== -1) continue;
+            var m = palabras[k].match(/[A-Za-z0-9À-ÖØ-öø-ÿ]/);
+            if (m) letras += m[0];
+        }
+        return letras ? letras.toUpperCase() : '?';
+    }
+
+    // Una fila de la tabla: lo mismo que la tarjeta, en columnas (Referencia · Titular · Compañía · CUPS · Comercial · Recibida · Docs · Abierta · Estado · ›)
+    function fila(it) {
+        var vistas = Array.isArray(it.vistas) ? it.vistas : [];
+        // La MISMA regla que la tarjeta: «Sin abrir» solo en las pendientes
+        var sinAbrir = vistas.length === 0 && it.estado === 'recibida';
+        var li = el('li');
+        var a = el('a', 'fila' + (sinAbrir ? ' sin-abrir' : ''));
+        a.href = '/bandeja/c/' + encodeURIComponent(it.ref);
+
+        a.appendChild(el('span', 'c c-ref', it.ref));
+
+        // Titular: una píldora con el círculo de las iniciales (verde GNEW / turquesa MEGA) y el nombre
+        var nombre = it.titular_nombre || 'Sin titular';
+        var celdaTitular = el('span', 'c c-titular');
+        var pildora = el('span', 'pildora');
+        pildora.title = nombre;
+        pildora.appendChild(el('span', 'avatar avatar-' + (it.formulario === 'mega' ? 'mega' : 'gnew'), it.titular_nombre ? iniciales(it.titular_nombre) : '?'));
+        pildora.appendChild(el('span', 'pildora-nombre', nombre));
+        celdaTitular.appendChild(pildora);
+        a.appendChild(celdaTitular);
+
+        // Compañía: la pastilla GNEW / MEGA y «Compañía · Tarifa»
+        var empresa = [it.compania, it.tarifa].filter(Boolean).join(' · ');
+        var celdaCompania = el('span', 'c c-compania');
+        if (ETIQUETA_MARCA[it.formulario]) celdaCompania.appendChild(el('span', 'ins marca-' + it.formulario, ETIQUETA_MARCA[it.formulario]));
+        if (empresa) {
+            celdaCompania.appendChild(el('span', 'c-txt', empresa));
+            celdaCompania.title = empresa;
+        }
+        a.appendChild(celdaCompania);
+
+        a.appendChild(el('span', 'c c-cups', it.cups || ''));
+        var celdaComercial = el('span', 'c c-comercial', it.comercial_nombre || '');
+        if (it.comercial_nombre) celdaComercial.title = it.comercial_nombre;
+        a.appendChild(celdaComercial);
+
+        // Recibida: el «hace …» lleva su fecha en data-fecha, así actualizarHoras() lo mantiene al día también aquí
+        var cuando = el('span', 'c c-recibida t-cuando', hace(it.recibida_en || it.creada_en));
+        cuando.setAttribute('data-fecha', it.recibida_en || it.creada_en || '');
+        a.appendChild(cuando);
+
+        a.appendChild(el('span', 'c c-docs', String(Number(it.n_documentos) || 0)));
+
+        // Abierta: una pendiente que nadie ha abierto → «Sin abrir»; si alguien la ha abierto (en cualquier estado) → el ojo, la persona
+        // más reciente, su «hace …» y «+N» si fueron más (todas, en el title); cualquier otra que nadie ha abierto → celda vacía
+        var celdaAbierta = el('span', 'c c-abierta');
+        if (sinAbrir) {
+            celdaAbierta.appendChild(el('span', 'ins ins-sin-abrir', 'Sin abrir'));
+        } else if (vistas.length > 0) {
+            var ultima = vistas[0];
+            var texto = el('span', 'a-texto');
+            texto.appendChild(el('span', 'a-correo', String((ultima && ultima.por) || '')));
+            var linea = el('span', 'a-linea');
+            if (ultima && ultima.en) {
+                var cuandoAbierta = el('span', 't-cuando', hace(ultima.en));
+                cuandoAbierta.setAttribute('data-fecha', ultima.en);
+                linea.appendChild(cuandoAbierta);
+            }
+            if (vistas.length > 1) linea.appendChild(el('span', 'a-mas', '+' + (vistas.length - 1)));
+            if (linea.firstChild) texto.appendChild(linea);
+            celdaAbierta.appendChild(ojo());
+            celdaAbierta.appendChild(texto);
+            celdaAbierta.title = 'Abierta por ' + vistas.map(function (v) { return String((v && v.por) || ''); }).join(', ');
+        }
+        a.appendChild(celdaAbierta);
+
+        var celdaEstado = el('span', 'c c-estado');
+        celdaEstado.appendChild(el('span', 'ins estado-' + it.estado, ETIQUETA_ESTADO[it.estado] || ''));
+        a.appendChild(celdaEstado);
+
+        a.appendChild(el('span', 'c c-ir')); // el › lo dibuja el CSS
+
+        li.appendChild(a);
+        return li;
+    }
+
+    // ---------- modo de visualización ----------
+    function pintar(it) {
+        return vista === 'lista' ? fila(it) : tarjeta(it);
+    }
+
+    // Vuelve a dibujar lo ya cargado en el modo elegido, sin volver a pedirlo (siguen las páginas de «Cargar más», el filtro y la búsqueda)
+    function repintar() {
+        listaEl.textContent = '';
+        for (var n = 0; n < cargados.length; n++) listaEl.appendChild(pintar(cargados[n]));
+    }
+
+    function leerVista() {
+        var v = null;
+        try { v = localStorage.getItem('bandeja.vista'); } catch (e) { /* sin almacenamiento: Tarjetas, como siempre */ }
+        return VISTAS.indexOf(v) === -1 ? 'tarjetas' : v;
+    }
+
+    function aplicarVista() {
+        if (vista === 'lista') document.body.classList.add('vista-lista');
+        else document.body.classList.remove('vista-lista');
+        for (var n = 0; n < btnsVista.length; n++) {
+            btnsVista[n].setAttribute('aria-pressed', btnsVista[n].getAttribute('data-vista') === vista ? 'true' : 'false');
+        }
+    }
+
+    function elegirVista(nueva) {
+        if (VISTAS.indexOf(nueva) === -1 || nueva === vista) return;
+        vista = nueva;
+        try { localStorage.setItem('bandeja.vista', nueva); } catch (e) { /* idem: vale para esta visita */ }
+        aplicarVista();
+        repintar();
+    }
+
     function actualizarHoras() {
         var celdas = listaEl.querySelectorAll('.t-cuando');
         for (var i = 0; i < celdas.length; i++) {
@@ -677,6 +1138,8 @@
 
         if (reiniciar) {
             listaEl.textContent = '';
+            cargados = [];
+            cajaLista.hidden = true;
             cajaMas.hidden = true;
             mostrarMensaje('Cargando…', false, false);
         }
@@ -698,10 +1161,14 @@
             }
             ultimaCarga = Date.now();
             var items = r.json.items;
-            for (var i = 0; i < items.length; i++) listaEl.appendChild(tarjeta(items[i]));
+            for (var i = 0; i < items.length; i++) {
+                cargados.push(items[i]);
+                listaEl.appendChild(pintar(items[i]));
+            }
             siguiente = r.json.siguiente || null;
             cajaMas.hidden = !siguiente;
-            if (listaEl.children.length === 0) mostrarMensaje('No hay tramitaciones que coincidan.', false, false);
+            cajaLista.hidden = cargados.length === 0; // sin filas no hay tabla (ni su cabecera): solo el mensaje
+            if (cargados.length === 0) mostrarMensaje('No hay tramitaciones que coincidan.', false, false);
             else estadoLista.hidden = true;
         });
     }
@@ -743,6 +1210,13 @@
     chipMas.addEventListener('click', function () {
         abrirMas(chipDescartadas.hidden);
     });
+
+    // ---------- Tarjetas / Lista ----------
+    for (var v = 0; v < btnsVista.length; v++) {
+        btnsVista[v].addEventListener('click', function () {
+            elegirVista(this.getAttribute('data-vista'));
+        });
+    }
 
     // ---------- búsqueda ----------
     inputQ.addEventListener('input', function () {
@@ -805,6 +1279,8 @@
     estado = inicial;
     pintarFiltros();
     if (estado === 'descartadas') abrirMas(true);
+    vista = leerVista();
+    aplicarVista();
     cargar(true);
 })();
 </script>
