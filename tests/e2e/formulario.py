@@ -13,6 +13,11 @@ Todo lo de Google Apps Script está interceptado; la base se lee siempre por /__
 El interruptor V2_ACTIVO de los html se despliega APAGADO: los casos 1-9 (y los extras) prueban la v2 abriendo la página con
 `?v2=1` (lo pone `Caso.ir`); el 10 prueba lo que ve un comercial SIN ese parámetro; el 11 comprueba que `?v2=1` convive con el
 prefill por URL del comparador DPC; el 12 prueba el cambio de titular (se piden los datos del titular ANTERIOR, obligatorios con «Sí»).
+
+El respaldo de Apps Script (RESPALDO_APPS_SCRIPT) está APAGADO en los html desde el 16-oct-2026: el caso 4 prueba lo que ve el comercial con la API
+caída («No hemos podido terminar el envío», sin tocar el Apps Script) y, para conservar la cobertura de la palanca, lo que prueba el respaldo (parte 2
+del caso 4, paso 5 del 12 y extras 7 y 9) sirve el html ACTUAL con la constante forzada a true (`_abrir_forzado`: `_html_con` + `page.route`); el fichero
+de producción no se toca.
 """
 import base64
 import json
@@ -201,27 +206,137 @@ def caso_3(c):
     assert not c.google
 
 
-def caso_4(c):
-    """`iniciar` da 503 tres veces → respaldo (Apps Script, interceptado) con la MISMA referencia → gracias; sin fila nueva."""
+def _html_con(formulario, **constantes):
+    """El html ACTUAL de `formulario` con constantes `const NOMBRE = …;` forzadas (p. ej. `RESPALDO_APPS_SCRIPT=True`). Solo para servirlo con
+    `page.route`, como hace el caso 10 con el html de antes de la v2: el fichero de producción no se toca. Falla si una constante no aparece
+    EXACTAMENTE una vez (así un cambio en el html no deja la prueba probando otra cosa sin avisar)."""
+    texto = (RAIZ / f'{formulario}.html').read_text(encoding='utf-8')
+    for nombre, valor in constantes.items():
+        texto, n = re.subn(rf'^([ \t]*const {nombre} = )(?:true|false);', rf'\g<1>{"true" if valor else "false"};', texto, flags=re.M)
+        assert n == 1, f'{formulario}.html: «const {nombre}» aparece {n} veces (tenía que ser 1)'
+    return texto
+
+
+def _abrir_forzado(c, formulario, **constantes):
+    """Abre `/<formulario>` (con `?v2=1`, como `Caso.ir`) sirviendo el html ACTUAL con esas constantes forzadas: `page.route` lo sirve en lugar del
+    fichero. Comprueba que la página abierta lleva de verdad los valores forzados (si el patrón no casara se serviría el html real y la prueba
+    fallaría muchos segundos después sin decir por qué). Devuelve el patrón de la ruta, para `c.page.unroute(...)` cuando ya no haga falta."""
+    html = _html_con(formulario, **constantes)
+    ruta = '/' + formulario
+
+    def es_la_pagina(url):  # con o sin `?v2=1`: un patrón `BASE + ruta` sin comodín no casaría con la consulta
+        return url.startswith(BASE + '/') and urllib.parse.urlparse(url).path == ruta
+
+    c.page.route(es_la_pagina, lambda r, _q: r.fulfill(status=200, content_type='text/html; charset=utf-8', body=html))
+    try:
+        c.ir(ruta)
+        contenido = c.page.content()
+        for nombre, valor in constantes.items():
+            linea = f'const {nombre} = {"true" if valor else "false"};'
+            assert linea in contenido, f'{formulario}: la página abierta no lleva «{linea}» (no casó la ruta servida)'
+    except Exception:
+        c.page.unroute(es_la_pagina)
+        raise
+    return es_la_pagina
+
+
+def _api_caida(c):
+    """`iniciar` contesta 503 mientras `estado['caida']` sea True; con False la petición pasa al servidor de verdad (la API «vuelve»)."""
+    estado = {'caida': True}
     c.rota('/api/tramitacion/iniciar')
-    c.page.route(BASE + '/api/tramitacion/iniciar', lambda route, request: route.fulfill(
-        status=503, content_type='application/json',
-        body='{"ok":false,"codigo":"temporal","mensaje":"No hemos podido guardar el envío ahora mismo.","retryable":true}'))
-    c.ir('/gnew')
-    c.rellenar('gnew')
-    c.adjuntar(JPG, PNG)
-    c.firmar()
-    c.enviar()
-    ref = c.esperar_gracias()
-    assert len(c.iniciar) == 3, f'{len(c.iniciar)} intentos de iniciar (tenían que ser 3)'
-    assert {x['ref'] for x in c.iniciar} == {ref}, 'El respaldo tiene que usar la misma referencia'
-    assert len(c.google) == 1, f'{len(c.google)} peticiones al Apps Script (tenía que ser 1)'
-    g = c.google[0]
-    assert g['ref_id'] == ref and g['n_archivos'] == 2 and g['archivos_con_base64'] and g['token'] == 'GNE-2026-w7k4q9x2'
-    assert g['hp'] == '' and not g['tiene_terminos'] and g['compania'] == 'Compañía de Prueba'
-    assert not c.puts, 'En el respaldo no se sube nada al almacén'
+
+    def manejador(route, request):
+        if estado['caida']:
+            route.fulfill(status=503, content_type='application/json',
+                          body='{"ok":false,"codigo":"temporal","mensaje":"No hemos podido guardar el envío ahora mismo.","retryable":true}')
+        else:
+            route.continue_()
+
+    c.page.route(BASE + '/api/tramitacion/iniciar', manejador)
+    return estado
+
+
+def caso_4(c):
+    """`iniciar` da 503 tres veces. PARTE 1, con el RESPALDO APAGADO (`RESPALDO_APPS_SCRIPT = false`: el html tal como se despliega desde el 16-oct-2026),
+    en GNEW y en MEGA: NO se llama al Apps Script (0 peticiones: la guardia de `Caso` aborta cualquiera y la da por violación), sale «No hemos podido
+    terminar el envío» con «Reintentar» y «Enviar por email», y al volver la API «Reintentar» termina con la MISMA referencia y SIN duplicar (una fila,
+    un aviso, un acuse; sin volver a rellenar nada). PARTE 2, la palanca: con el respaldo forzado a true en la prueba (el html se sirve con la constante
+    cambiada; el fichero no se toca) el Apps Script (interceptado) recibe el envío con la MISMA referencia, sin fila nueva (GNEW)."""
+    caida = _api_caida(c)
+
+    # --- Parte 1: respaldo apagado, tal como está en producción ---
+    for formulario, prefijo in (('gnew', 'GNE'), ('mega', 'MEGA')):
+        caida['caida'] = True
+        n_iniciar, n_confirmar, n_puts = len(c.iniciar), len(c.confirmar), len(c.puts)
+        c.ir(f'/{formulario}')
+        c.rellenar(formulario)
+        c.adjuntar(JPG, PNG)
+        c.firmar()
+        url_formulario = c.page.url
+        c.enviar()
+        c.page.wait_for_selector('#overlayEnvio', timeout=60_000)
+
+        refs = c.refs_iniciar()[n_iniciar:]
+        assert len(refs) == 3 and len(set(refs)) == 1, f'{formulario}: {len(refs)} intentos de iniciar con {len(set(refs))} referencias (3 con la misma)'
+        ref = refs[0]
+        assert ref.startswith(prefijo + '-'), ref
+        texto = c.overlay()
+        assert 'No hemos podido terminar el envío' in texto, f'{formulario}: {texto}'
+        assert 'Error al enviar el formulario' not in texto, f'{formulario}: ese es el aviso del respaldo fallido, no el de «terminar el envío»'
+        assert 'pulsa «Reintentar» y seguiremos por donde se quedó' in texto and 'Detalle' not in texto, texto
+        assert 'puedes enviar los datos y los documentos por email a escaneos@gruponew.energy.' in texto, texto
+        assert f'Referencia: {ref}' in texto, texto
+        overlay = c.page.locator('#overlayEnvio')
+        assert overlay.get_by_role('button', name='Reintentar', exact=True).count() == 1, f'{formulario}: falta «Reintentar»'
+        por_email = overlay.get_by_role('link', name='Enviar por email', exact=True)
+        assert por_email.count() == 1, f'{formulario}: falta «Enviar por email»'
+        mailto = por_email.get_attribute('href')
+        assert mailto.startswith('mailto:escaneos@gruponew.energy?subject=') and ref in mailto, mailto
+        assert not c.google, f'{formulario}: con el respaldo apagado no se llama al Apps Script'
+        assert len(c.puts) == n_puts and len(c.confirmar) == n_confirmar, f'{formulario}: con la API caída no se sube ni se confirma nada'
+        assert estado_de(ref) is None, f'{formulario}: la API caída no deja fila'
+        assert c.page.url == url_formulario, 'El comercial sigue en el formulario (no ha salido a ninguna gracias)'
+        assert c.page.is_enabled('#submitBtn') and c.texto_boton() == '', 'El botón vuelve a estar disponible y sin texto de «enviando»'
+
+        # La API vuelve: «Reintentar» sigue por donde se quedó, con la MISMA referencia y sin duplicar nada
+        caida['caida'] = False
+        c.page.get_by_role('button', name='Reintentar', exact=True).click()
+        ref2 = c.esperar_gracias()
+        assert ref2 == ref, f'{formulario}: Reintentar tiene que seguir con la MISMA referencia ({ref} → {ref2})'
+        assert ('/gracias-mega.html' if formulario == 'mega' else '/gracias.html') in c.page.url
+        intentos = c.iniciar[n_iniciar:]
+        assert len(intentos) == 4 and {x['ref'] for x in intentos} == {ref} and all(x['ref_anterior'] is None for x in intentos), \
+            f'{formulario}: 3 intentos caídos + 1 al volver, todos con la misma referencia y sin `ref_anterior`'
+        assert len(c.confirmar) - n_confirmar == 1 and len(c.puts) - n_puts == 2, f'{formulario}: un confirmar y 2 subidas (cada documento una vez)'
+        assert not c.google, f'{formulario}: tampoco al reintentar se toca el Apps Script'
+        e = esperar_estado(ref, 'recibida')
+        comprobar_recibida(e, ref, formulario, 3)  # incluye: UNA fila (un «creada», un «recibida»), UN aviso y UN acuse; 2 documentos + la firma
+        comprobar_gracias(c, ref, prefijo + '-')
+
+    # --- Parte 2: la palanca. Respaldo forzado a true en la prueba: entra el Apps Script con la misma referencia ---
+    recibidos = _simular_apps_script(c)  # DESPUÉS de la parte 1: así en ella cualquier petición a Google habría sido violación
+    caida['caida'] = True
+    n_iniciar, n_confirmar, n_puts = len(c.iniciar), len(c.confirmar), len(c.puts)
+    pagina = _abrir_forzado(c, 'gnew', RESPALDO_APPS_SCRIPT=True)
+    try:
+        c.rellenar('gnew')
+        c.adjuntar(JPG, PNG)
+        c.firmar()
+        c.enviar()
+        ref = c.esperar_gracias()
+    finally:
+        c.page.unroute(pagina)
+    intentos = c.iniciar[n_iniciar:]
+    assert len(intentos) == 3, f'{len(intentos)} intentos de iniciar (tenían que ser 3)'
+    assert {x['ref'] for x in intentos} == {ref}, 'El respaldo tiene que usar la misma referencia'
+    assert len(recibidos) == 1, f'{len(recibidos)} peticiones al Apps Script (tenía que ser 1)'
+    g = recibidos[0]
+    assert g['ref_id'] == ref and len(g['archivos']) == 2 and all(a['data'] for a in g['archivos']) and g['token'] == 'GNE-2026-w7k4q9x2', g.keys()
+    assert g['hp'] == '' and 'terminos' not in g and g['compania'] == 'Compañía de Prueba'
+    assert len(c.puts) == n_puts, 'En el respaldo no se sube nada al almacén'
     assert estado_de(ref) is None, 'El respaldo no debe dejar fila en la base nueva'
-    assert not c.confirmar
+    assert len(c.confirmar) == n_confirmar
+    assert not c.google, 'El Apps Script se atendió en page.route'
     comprobar_gracias(c, ref, 'GNE-')
 
 
@@ -618,12 +733,14 @@ def _capturar_titular_anterior(c, formulario, sufijo=''):
 
 
 def _envio_por_respaldo(c, formulario, recibidos, **extra):
-    """Un envío con la API de tramitación «caída» (iniciar da 503 tres veces): entra el respaldo de Apps Script (simulado en page.route) con la
-    MISMA referencia. Devuelve el cuerpo que llegó al Apps Script."""
+    """Un envío con la API de tramitación «caída» (iniciar da 503 tres veces) y el respaldo FORZADO a encendido en la prueba (el html se sirve con
+    `RESPALDO_APPS_SCRIPT = true`; el de producción lo lleva apagado y el fichero no se toca): entra el respaldo de Apps Script (simulado en
+    page.route) con la MISMA referencia. Devuelve el cuerpo que llegó al Apps Script."""
     c.page.route(BASE + '/api/tramitacion/iniciar', lambda route, _q: route.fulfill(
         status=503, content_type='application/json', body='{"ok":false,"codigo":"temporal","mensaje":"x","retryable":true}'))
+    pagina = None
     try:
-        c.ir(f'/{formulario}')
+        pagina = _abrir_forzado(c, formulario, RESPALDO_APPS_SCRIPT=True)
         c.rellenar(formulario, **extra)
         c.adjuntar(JPG, PNG)
         antes = len(recibidos)
@@ -631,6 +748,8 @@ def _envio_por_respaldo(c, formulario, recibidos, **extra):
         ref = c.esperar_gracias()
     finally:
         c.page.unroute(BASE + '/api/tramitacion/iniciar')
+        if pagina is not None:
+            c.page.unroute(pagina)
     assert len(recibidos) == antes + 1, f'{len(recibidos) - antes} peticiones al Apps Script (tenía que ser 1)'
     cuerpo = recibidos[-1]
     assert cuerpo['ref_id'] == ref and estado_de(ref) is None, 'El respaldo usa la misma referencia y no deja fila en la base nueva'
@@ -641,7 +760,8 @@ def caso_12(c):
     """CAMBIO DE TITULAR (Victor, 16-oct-2026): con «Sí» se piden los datos del titular ANTERIOR (el nuevo ya lo rellena el comercial), obligatorios; con
     «No» no se exige ni viaja lo escrito. GNEW y MEGA: «Sí» → «Datos del titular anterior *» (y ninguna casilla de «nuevo titular») · vacío → no envía y
     avisa en llano · relleno → v2: la fila lo guarda (columna `nuevo_titular`, nombre histórico) y el aviso lo llama «Titular anterior», sin «Nuevo titular» ·
-    «No» con texto escrito → no viaja · respaldo de Apps Script (sin tocar) → `nuevo_titular: «TITULAR ANTERIOR: …»`. Capturas a 390 px del bloque con «Sí»."""
+    «No» con texto escrito → no viaja · respaldo de Apps Script (sin tocar; con el respaldo forzado a encendido en la prueba, porque en los html está
+    apagado) → `nuevo_titular: «TITULAR ANTERIOR: …»`. Capturas a 390 px del bloque con «Sí»."""
     p = c.page
     recibidos = _simular_apps_script(c)  # el respaldo (Apps Script) se atiende en page.route, con el cuerpo entero a la vista
     c.rota('/api/tramitacion/iniciar')   # (los 503 provocados del respaldo)
@@ -725,7 +845,8 @@ def caso_12(c):
         aviso = correo_de(e, 'aviso')
         assert 'Titular anterior' not in aviso['cuerpo_html'] and 'LO QUE NO DEBE VIAJAR' not in aviso['cuerpo_html'] + aviso['cuerpo_texto']
 
-        # --- 5) Respaldo de Apps Script: el Code.gs publicado (sin tocar) espera `nuevo_titular`; el dato va ahí con el prefijo ---
+        # --- 5) Respaldo de Apps Script (forzado a encendido en la prueba): el Code.gs publicado (sin tocar) espera `nuevo_titular`; el dato va ahí
+        #        con el prefijo. Lo usan la palanca `V2_ACTIVO = false` y `RESPALDO_APPS_SCRIPT = true` ---
         cuerpo = _envio_por_respaldo(c, formulario, recibidos, cambio_titular='Si', titular_anterior=escrito)
         assert cuerpo['nuevo_titular'] == 'TITULAR ANTERIOR: ' + escrito, cuerpo['nuevo_titular']
         assert 'titular_anterior' not in cuerpo and cuerpo['cambio_titular'] == 'Si', 'El Apps Script no conoce `titular_anterior`'
@@ -742,7 +863,7 @@ CASOS = [
     (1, 'GNEW completo: 3 archivos (uno de 5,5 MB) + firma, progreso real y gracias con referencia', caso_1),
     (2, 'Corte de red en confirmar (respuesta perdida) → reintento, una sola fila y un solo aviso', caso_2),
     (3, 'Primera subida al almacén cortada → reintento del archivo con la misma dirección', caso_3),
-    (4, 'iniciar 503 ×3 → respaldo por Apps Script (simulado) con la misma referencia, sin fila nueva', caso_4),
+    (4, 'iniciar 503 ×3 con el respaldo apagado → «No hemos podido terminar el envío» sin tocar Apps Script y Reintentar con la misma referencia (GNEW y MEGA); respaldo forzado a true → Apps Script', caso_4),
     (5, 'Foto grande generada en la página → comprimido, tamaño original mayor, .jpg', caso_5),
     (6, 'MEGA completo → gracias-mega y asunto «Nuevo Contrato MEGA - …»', caso_6),
     (7, 'CUPS inválido → error en línea; errores del servidor (campos, documentación, firma) en línea', caso_7),
@@ -753,8 +874,9 @@ CASOS = [
     (12, 'Cambio de titular: con «Sí» se piden los datos del titular ANTERIOR (obligatorios; «No», ni se exige ni viaja); fila, aviso «Titular anterior» y respaldo', caso_12),
 ]
 
-# Qué casos esperan hablar con el Apps Script (respuesta simulada); los demás lo ven abortado y fallan si lo intentan
-GOOGLE_SIMULADO = {4: GOOGLE_RESPUESTA_OK}
+# Qué casos esperan hablar con el Apps Script a nivel de `Caso` (respuesta simulada); los demás lo ven abortado y fallan si lo intentan. Ninguno de los
+# 12: los que lo simulan lo hacen con `_simular_apps_script` (page.route) cuando toca, y el resto (el 4, en su parte 1) quedan protegidos por la guardia.
+GOOGLE_SIMULADO = {}
 
 
 def correr(numeros, lista=None, google_simulado=None, etiqueta='caso'):
@@ -959,11 +1081,12 @@ def extra_6(c):
 
 
 def extra_7(c):
-    """MEGA con la API caída (503 ×3): respaldo con el payload antiguo de MEGA (compañía MEGA, tipo de suministro, token propio) y la MISMA referencia."""
+    """MEGA con la API caída (503 ×3) y el respaldo FORZADO a encendido en la prueba (en el html está apagado; el fichero no se toca): respaldo con el
+    payload antiguo de MEGA (compañía MEGA, tipo de suministro, token propio) y la MISMA referencia."""
     c.rota('/api/tramitacion/iniciar')
     c.page.route(BASE + '/api/tramitacion/iniciar', lambda route, request: route.fulfill(
         status=503, content_type='application/json', body='{"ok":false,"codigo":"temporal","mensaje":"x","retryable":true}'))
-    c.ir('/mega')
+    _abrir_forzado(c, 'mega', RESPALDO_APPS_SCRIPT=True)
     c.rellenar('mega')
     c.adjuntar(JPG, PNG)
     c.enviar()
@@ -1007,7 +1130,9 @@ def extra_8(c):
 
 
 def extra_9(c):
-    """Si la referencia YA estaba en la base y `iniciar` deja de contestar, NO entra el respaldo (dejaría un envío a medias): sale «No hemos podido terminar el envío»."""
+    """Si la referencia YA estaba en la base y `iniciar` deja de contestar, NO entra el respaldo (dejaría un envío a medias): sale «No hemos podido terminar el envío».
+    Con el respaldo FORZADO a encendido en la prueba (en el html está apagado y entonces esto sería trivialmente cierto): así sigue probando la guarda
+    `p.refOk === currentRefId` de `enviarPorLaApi`, que es la que importaría si alguien volviera a encender el respaldo."""
     c.rota('.supabase.co/storage', '/api/tramitacion/iniciar')
     modo = {'cortar_subidas': True, 'iniciar_caido': False}
     c.page.route(lambda url: '.supabase.co/storage/' in url, lambda route, request: route.abort('connectionreset') if modo['cortar_subidas'] else route.continue_())
@@ -1019,7 +1144,7 @@ def extra_9(c):
             route.continue_()
 
     c.page.route(BASE + '/api/tramitacion/iniciar', iniciar)
-    c.ir('/gnew')
+    _abrir_forzado(c, 'gnew', RESPALDO_APPS_SCRIPT=True)
     c.rellenar('gnew')
     c.adjuntar(JPG, PNG)
     c.enviar()
@@ -1064,9 +1189,9 @@ EXTRAS = [
     (4, 'iniciar dice «lista distinta» (409): referencia nueva con ref_anterior', extra_4),
     (5, 'Archivo borrado tras adjuntarlo: aviso de siempre y fuera de la lista', extra_5),
     (6, 'Honeypot relleno: éxito falso, fila descartada, sin nada más', extra_6),
-    (7, 'MEGA con la API caída: respaldo con el payload antiguo de MEGA', extra_7),
+    (7, 'MEGA con la API caída y el respaldo forzado a true: respaldo con el payload antiguo de MEGA', extra_7),
     (8, 'confirmar falla 4 veces → Reintentar sin resubir y misma referencia', extra_8),
-    (9, 'Con la referencia ya en la base, si iniciar cae NO entra el respaldo', extra_9),
+    (9, 'Con la referencia ya en la base, si iniciar cae NO entra el respaldo (forzado a true: prueba la guarda)', extra_9),
     (10, 'Archivo de 26 MB: el servidor lo rechaza con su frase en llano, sin subir nada', extra_10),
 ]
 GOOGLE_EXTRAS = {7: GOOGLE_RESPUESTA_OK}

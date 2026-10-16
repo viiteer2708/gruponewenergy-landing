@@ -1233,9 +1233,9 @@
     // siempre el mismo valor.
     const V2_ACTIVO = true;
     const USAR_V2 = V2_ACTIVO || new URLSearchParams(window.location.search).get('v2') === '1';
-    // Interruptor del respaldo (solo cuenta cuando se usa la v2): pasada la primera semana
-    // sin incidencias, a false.
-    const RESPALDO_APPS_SCRIPT = true;
+    // Interruptor del respaldo (solo cuenta cuando se usa la v2). Apagado el 16-oct-2026 (tanda C,
+    // OK de Victor tras auditar 66 contratos reales sin incidencias). Para volver a encenderlo: true + push.
+    const RESPALDO_APPS_SCRIPT = false;
     const CORREO_TRAMITACION = 'escaneos@gruponew.energy';
     const COLOR_PRIMARIO = '#0B6E4F';
     const COLOR_TEXTO = '#6B7280';
