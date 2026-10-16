@@ -1,10 +1,15 @@
 // Pruebas de api/_lib/bandeja.js que no necesitan base ni entorno: la regla de «quién ha abierto una ficha» con la marca
 // «sin abrir» (16-oct-2026). `vistasDe` arma el `vistas` de la lista y `hayQueApuntarApertura` decide el freno de 15 minutos
 // al abrir una ficha; las dos obedecen a lo mismo: una apertura solo cuenta si es MÁS NUEVA que la última `marcada_sin_abrir`.
-import { test } from 'node:test';
+// Y (16-oct-2026) el «quién» de la bandeja: el nombre que cada persona escribe la primera vez (`actorDe`, `exigirSesion`,
+// `ponerNombre`; solo necesitan dos variables de entorno falsas, que la propia prueba pone y quita).
+import { after, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { MINUTOS_ENTRE_APERTURAS, hayQueApuntarApertura, vistasDe } from '../../api/_lib/bandeja.js';
+import {
+  MENSAJES, MINUTOS_ENTRE_APERTURAS, actorDe, exigirSesion, hayQueApuntarApertura, ponerNombre, vistasDe,
+} from '../../api/_lib/bandeja.js';
+import { NOMBRE_COOKIE, cookieSesion, firmarSesion, verificarSesion } from '../../api/_lib/sesion.js';
 
 const AHORA = Date.UTC(2026, 9, 16, 12, 0, 0); // 16-oct-2026 12:00 UTC
 const ANA = 'victor.molins.10+ana@gmail.com';
@@ -109,4 +114,126 @@ test('hayQueApuntarApertura: una marca ANTERIOR a tu última apertura no cambia 
 test('hayQueApuntarApertura: una fecha ilegible no frena (se apunta, como antes)', () => {
   assert.equal(apunta([{ tipo: 'ficha_abierta', actor: ANA, creado_en: 'no es una fecha' }]), true);
   assert.equal(apunta([{ tipo: 'ficha_abierta', actor: ANA, creado_en: null }]), true);
+});
+
+// ---------------------------------------------------------------------------
+// El «quién» de la bandeja: actorDe, exigirSesion y ponerNombre
+// ---------------------------------------------------------------------------
+
+const SECRETO = 'secreto-de-prueba-de-la-bandeja-con-mas-de-32-caracteres';
+const CORREO = 'victor.molins.10+nombre@gmail.com';
+const CORREO_FUERA = 'victor.molins.10+sin-acceso@gmail.com';
+
+const entornoPrevio = {};
+before(() => {
+  for (const nombre of ['BANDEJA_SECRETO', 'BANDEJA_EMAILS']) entornoPrevio[nombre] = process.env[nombre];
+  process.env.BANDEJA_SECRETO = SECRETO;
+  process.env.BANDEJA_EMAILS = `${CORREO}, otro@ejemplo.es`;
+});
+after(() => {
+  for (const [nombre, valor] of Object.entries(entornoPrevio)) {
+    if (valor === undefined) delete process.env[nombre];
+    else process.env[nombre] = valor;
+  }
+});
+
+/** Una respuesta de mentira (lo justo de http.ServerResponse) y una petición con esa cookie. */
+const respuestaFalsa = () => ({
+  statusCode: 200, cabeceras: {}, cuerpo: undefined, headersSent: false,
+  setHeader(nombre, valor) { this.cabeceras[nombre.toLowerCase()] = valor; },
+  end(texto) { this.cuerpo = texto; this.headersSent = true; },
+});
+const peticionCon = (valor) => ({ headers: valor === undefined ? {} : { cookie: `${NOMBRE_COOKIE}=${valor}` } });
+/** El valor de la cookie que un `Set-Cookie` manda guardar. */
+const valorDe = (setCookie) => setCookie.split(';')[0].split('=').slice(1).join('=');
+
+test('actorDe: el nombre de la sesión; sin nombre, el correo (en minúsculas), como antes del nombre', () => {
+  assert.equal(actorDe({ email: CORREO, nombre: 'LAURA GARCÍA' }), 'LAURA GARCÍA');
+  assert.equal(actorDe({ email: CORREO, nombre: null }), CORREO);
+  assert.equal(actorDe({ email: CORREO }), CORREO);
+  assert.equal(actorDe({ email: '  Victor.Molins.10+Nombre@GMAIL.com ', nombre: null }), CORREO, 'El correo, normalizado');
+  for (const sinNombre of ['', '   ', undefined, 5, [], {}]) assert.equal(actorDe({ email: CORREO, nombre: sinNombre }), CORREO, JSON.stringify(sinNombre));
+  assert.equal(actorDe({ email: CORREO, nombre: '  ANA  ' }), 'ANA', 'Sin espacios de los lados');
+});
+
+test('actorDe: es el nombre O el correo, nunca los dos juntos ni un formato inventado', () => {
+  const quien = actorDe({ email: CORREO, nombre: 'LAURA GARCÍA' });
+  assert.ok(!quien.includes('@') && !quien.includes('<') && !quien.includes(CORREO), quien);
+  assert.equal(actorDe({ email: CORREO, nombre: null }).includes('LAURA'), false);
+});
+
+test('actorDe: una sesión sin correo ni nombre es un fallo de quien llama (lanza, no inventa un actor)', () => {
+  for (const mala of [undefined, null, {}, { nombre: null }, { email: '', nombre: '' }, { email: '   ' }, 'texto', 5]) {
+    assert.throws(() => actorDe(mala), /sesi/i, JSON.stringify(mala));
+  }
+});
+
+test('exigirSesion: con nombre devuelve {email, nombre}; con una cookie de antes del nombre, {email, nombre: null}', () => {
+  const res = respuestaFalsa();
+  assert.deepEqual(exigirSesion(peticionCon(firmarSesion(CORREO, SECRETO, { nombre: 'LAURA GARCÍA' })), res), { email: CORREO, nombre: 'LAURA GARCÍA' });
+  assert.deepEqual(exigirSesion(peticionCon(firmarSesion(CORREO, SECRETO)), res), { email: CORREO, nombre: null });
+  assert.equal(res.headersSent, false, 'Una sesión buena no toca la respuesta');
+});
+
+test('exigirSesion: sin cookie, con una rota o de un correo que ya no tiene acceso → 401 «sesion» y devuelve null', () => {
+  for (const [motivo, valor] of [
+    ['sin cookie', undefined],
+    ['basura', 'esto.no.vale'],
+    ['firmada con otro secreto', firmarSesion(CORREO, 'otro-secreto-de-prueba-distinto-y-con-mas-de-32-caracteres', { nombre: 'LAURA' })],
+    ['un correo sin acceso (bien firmada y con nombre)', firmarSesion(CORREO_FUERA, SECRETO, { nombre: 'LAURA' })],
+  ]) {
+    const res = respuestaFalsa();
+    assert.equal(exigirSesion(peticionCon(valor), res), null, motivo);
+    assert.equal(res.statusCode, 401, motivo);
+    assert.deepEqual(JSON.parse(res.cuerpo), { ok: false, codigo: 'sesion', mensaje: MENSAJES.sesion, retryable: false }, motivo);
+    assert.equal('set-cookie' in res.cabeceras, valor !== undefined, `${motivo}: se borra la cookie rota solo si había una`);
+  }
+});
+
+test('ponerNombre: limpia el nombre, firma la cookie con él (365 días nuevos) y responde {ok, email, nombre}', () => {
+  const r = ponerNombre({ nombre: '  laura   garcía ' }, { email: CORREO, nombre: null });
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.cuerpo, { ok: true, email: CORREO, nombre: 'LAURA GARCÍA' });
+  const galleta = r.cabeceras['Set-Cookie'];
+  assert.ok(galleta.startsWith(`${NOMBRE_COOKIE}=`));
+  for (const atributo of ['HttpOnly', 'SameSite=Lax', 'Path=/', 'Max-Age=31536000']) assert.ok(galleta.split('; ').includes(atributo), `${atributo}: ${galleta}`);
+  assert.ok(!galleta.includes('Secure'), 'Sin https no lleva Secure');
+  assert.ok(ponerNombre({ nombre: 'ana' }, { email: CORREO }, { https: true }).cabeceras['Set-Cookie'].endsWith('; Secure'));
+  const sesion = verificarSesion(valorDe(galleta), SECRETO);
+  assert.equal(sesion.email, CORREO);
+  assert.equal(sesion.nombre, 'LAURA GARCÍA');
+  assert.ok(sesion.exp - Math.floor(Date.now() / 1000) > 364 * 24 * 3600, '365 días nuevos');
+  // la cookie nueva pasa por exigirSesion como la de cualquiera
+  assert.deepEqual(exigirSesion(peticionCon(valorDe(galleta)), respuestaFalsa()), { email: CORREO, nombre: 'LAURA GARCÍA' });
+});
+
+test('ponerNombre: se puede cambiar el nombre (otra persona en el mismo ordenador): la cookie nueva lleva el nombre nuevo', () => {
+  const primera = ponerNombre({ nombre: 'laura garcía' }, { email: CORREO, nombre: null });
+  const segunda = ponerNombre({ nombre: 'pedro ñandú' }, exigirSesion(peticionCon(valorDe(primera.cabeceras['Set-Cookie'])), respuestaFalsa()));
+  assert.equal(segunda.status, 200);
+  assert.equal(segunda.cuerpo.nombre, 'PEDRO ÑANDÚ');
+  assert.equal(verificarSesion(valorDe(segunda.cabeceras['Set-Cookie']), SECRETO).nombre, 'PEDRO ÑANDÚ');
+  assert.equal(verificarSesion(valorDe(primera.cabeceras['Set-Cookie']), SECRETO).nombre, 'LAURA GARCÍA', 'La anterior sigue siendo la que era (se firma otra, no se toca la vieja)');
+});
+
+test('ponerNombre: un nombre que no vale → 400 «nombre» con su frase en llano, sin cookie', () => {
+  for (const malo of ['', '   ', 'a', 'ana2', 'ana@gmail.com', 'a'.repeat(41), '<b>', undefined, null, 5, ['ana'], { nombre: 'ana' }]) {
+    const r = ponerNombre({ nombre: malo }, { email: CORREO, nombre: null });
+    assert.equal(r.status, 400, JSON.stringify(malo));
+    assert.deepEqual(r.cuerpo, { ok: false, codigo: 'nombre', mensaje: 'Escribe tu nombre (solo letras, de 2 a 40).', retryable: false });
+    assert.equal(r.cabeceras, undefined, 'Un fallo no manda cookie');
+  }
+  for (const sinCuerpo of [undefined, null, [], 'texto', 5]) assert.equal(ponerNombre(sinCuerpo, { email: CORREO }).status, 400, 'Sin un cuerpo con `nombre`');
+  assert.equal(MENSAJES.nombre, 'Escribe tu nombre (solo letras, de 2 a 40).');
+});
+
+test('ponerNombre: el correo de la cookie nueva es el de la sesión, no el que mande el cliente', () => {
+  const r = ponerNombre({ nombre: 'ana', email: 'otro@ejemplo.es' }, { email: CORREO, nombre: null });
+  assert.equal(r.cuerpo.email, CORREO);
+  assert.equal(verificarSesion(valorDe(r.cabeceras['Set-Cookie']), SECRETO).email, CORREO);
+});
+
+test('cookieSesion acepta la cookie con nombre (solo caracteres seguros aunque el nombre lleve tildes y Ñ)', () => {
+  const valor = firmarSesion(CORREO, SECRETO, { nombre: 'JOSÉ MARÍA PEÑA NÚÑEZ' });
+  assert.doesNotThrow(() => cookieSesion(valor));
 });

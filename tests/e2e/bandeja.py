@@ -3,7 +3,8 @@
 descargas (una a una y en ZIP), cambio de estado, volver a enviar y las capturas a 390 y 1440 px; (14-oct-2026) quién ha
 abierto cada ficha («Sin abrir» solo en las pendientes / «Abierta por …» en la lista y en la ficha: casos 14, 15 y 16); y
 (15-oct-2026) el interruptor Tarjetas / Lista y la tabla (caso 17; las capturas de la tabla, en el caso 8); y (16-oct-2026)
-«Marcar como sin abrir» (caso 18: devolver una pendiente a «Sin abrir» para que la coja otro compañero).
+«Marcar como sin abrir» (caso 18: devolver una pendiente a «Sin abrir» para que la coja otro compañero) y el NOMBRE de quien entra
+(caso 19: cada persona lo escribe la primera vez y es el «quién» de abrir, marcar y tramitar; sin nombre no se apunta ninguna apertura).
 
 Uso (lo normal es `bash tests/e2e/run.sh bandeja`, que arranca el servidor y limpia después):
     python tests/e2e/bandeja.py              todos los casos, en serie
@@ -45,6 +46,12 @@ FUERA = 'victor.molins.10+fuera@gmail.com'  # alias SIN acceso a la bandeja
 
 FRASE_CODIGO = 'Si tu correo tiene acceso, te hemos enviado un código de 6 cifras. Caduca en 10 minutos. Revisa también el spam.'
 FRASE_CODIGO_MALO = 'El código no es correcto o ha caducado. Pide uno nuevo.'
+FRASE_NOMBRE = 'Escribe tu nombre (solo letras, de 2 a 40).'
+FRASE_SESION = 'Tu sesión ha caducado o no es válida. Vuelve a entrar.'
+
+# El nombre con el que entran las sesiones de estos casos (se escribe con POST /api/bandeja/yo): es el «quién» de todo lo que se apunta.
+# Los casos que prueban el paso del nombre, o quieren una sesión SIN nombre (como las de antes del nombre), lo piden con `nombre=None`.
+NOMBRE_PRUEBA = 'PRUEBA BANDEJA'
 
 # Texto que nunca puede ver backoffice: nada de jerga técnica, de valores vacíos de JavaScript ni de nombres de sistemas
 JERGA = re.compile(
@@ -117,16 +124,28 @@ def codigos_enviados_a(email):
     return como_json(cuerpo)['correos']
 
 
-def cookie_de_sesion(email=EMAIL):
-    """Entra por la API (pide el código, lo lee del correo simulado y lo teclea) y devuelve el valor de la cookie."""
+def _cookie_de(cab):
+    for valor in cab.get_all('Set-Cookie') or []:
+        if valor.startswith('bandeja_sesion='):
+            return valor.split(';')[0].split('=', 1)[1]
+    raise AssertionError('No ha llegado la cookie de sesión')
+
+
+def cookie_de_sesion(email=EMAIL, nombre=NOMBRE_PRUEBA):
+    """Entra por la API (pide el código, lo lee del correo simulado y lo teclea) y devuelve el valor de la cookie. Con `nombre` (por
+    defecto el de las pruebas) escribe también el nombre —POST /api/bandeja/yo— y devuelve la cookie NUEVA, la que lo lleva: es lo que ya
+    han hecho las personas de backoffice cuando una página les deja pasar. Con `nombre=None` devuelve la de `entrar`, sin nombre (como las de
+    antes del nombre): las páginas mandan a escribirlo."""
     st, _, cuerpo = http('POST', '/api/bandeja/codigo', {'email': email})
     assert st == 200, cuerpo
     st, cab, cuerpo = http('POST', '/api/bandeja/entrar', {'email': email, 'codigo': ultimo_codigo(email)})
     assert st == 200, cuerpo
-    for valor in cab.get_all('Set-Cookie') or []:
-        if valor.startswith('bandeja_sesion='):
-            return valor.split(';')[0].split('=', 1)[1]
-    raise AssertionError('Entrar no ha dado la cookie de sesión')
+    valor = _cookie_de(cab)
+    if nombre is None:
+        return valor
+    st, cab, cuerpo = http('POST', '/api/bandeja/yo', {'nombre': nombre}, cabeceras={'Cookie': f'bandeja_sesion={valor}'})
+    assert st == 200, cuerpo
+    return _cookie_de(cab)
 
 
 # ---------------------------------------------------------------------------
@@ -187,9 +206,10 @@ class CasoBandeja(Caso):
             self.respuestas_almacen.append(req.url)
 
     # -- navegación ----------------------------------------------------------------------------------
-    def con_sesion(self, email=EMAIL):
-        """Mete la cookie de una sesión abierta por la API (los casos que no prueban el acceso no repiten el login)."""
-        self.ctx.add_cookies([{'name': 'bandeja_sesion', 'value': cookie_de_sesion(email), 'url': BASE}])
+    def con_sesion(self, email=EMAIL, nombre=NOMBRE_PRUEBA):
+        """Mete la cookie de una sesión abierta por la API (los casos que no prueban el acceso no repiten el login), con el nombre de las
+        pruebas (`nombre=None`: sin nombre, como las sesiones de antes del nombre)."""
+        self.ctx.add_cookies([{'name': 'bandeja_sesion', 'value': cookie_de_sesion(email, nombre), 'url': BASE}])
 
     def ver(self, ruta, selector=None):
         self.page.goto(BASE + ruta, wait_until='load')
@@ -219,14 +239,19 @@ class CasoBandeja(Caso):
     def abrir_ficha(self, ref):
         self.ver(f'/bandeja/c/{ref}', '#ficha:not([hidden])')
 
-    def entrar_por_pantalla(self, email=EMAIL, volver=None):
-        """Teclea el correo y el código en la pantalla de acceso (el código se lee del correo simulado)."""
+    def entrar_por_pantalla(self, email=EMAIL, volver=None, nombre=NOMBRE_PRUEBA):
+        """Teclea el correo y el código en la pantalla de acceso (el código se lee del correo simulado) y, después, el nombre en el paso 3
+        (con `nombre=None` se queda en ese paso, sin escribirlo)."""
         p = self.page
         p.fill('#email', email)
         p.click('#btnCodigo')
         p.wait_for_selector('#formCodigo:not([hidden])')
         p.fill('#codigo', ultimo_codigo(email))
         p.click('#btnEntrar')
+        p.wait_for_selector('#formNombre:not([hidden])')
+        if nombre is not None:
+            p.fill('#nombre', nombre)
+            p.click('#btnNombre')
 
     # -- comprobaciones ------------------------------------------------------------------------------
     def sin_jerga(self):
@@ -293,13 +318,34 @@ def caso_1(c):
     assert p.inner_text('#errorCodigo') == 'El código tiene 6 cifras.'
     assert len([r for r in c.respuestas if r['ruta'].endswith('/entrar')]) == antes
 
-    # el bueno (con un espacio en medio, como lo agrupan algunos teclados) entra y vuelve a donde iba
+    # el bueno (con un espacio en medio, como lo agrupan algunos teclados) abre la puerta, pero falta decir QUIÉN es (paso 3: el nombre)
     p.fill('#codigo', real[:3] + ' ' + real[3:])
     p.click('#btnEntrar')
+    p.wait_for_selector('#formNombre:not([hidden])')
+    assert p.is_hidden('#formCodigo') and p.is_hidden('#formCorreo')
+    assert '/bandeja/entrar' in p.url, 'Todavía no ha entrado en la bandeja: falta el nombre'
+    assert p.inner_text('label[for="nombre"]') == '¿Cómo te llamas?'
+    assert p.inner_text('#ayudaNombre') == 'Así el equipo sabe quién ha abierto cada contrato. Si hay otro compañero con tu nombre, añade el apellido.'
+    assert p.get_attribute('#nombre', 'placeholder') == 'Ej.: LAURA GARCÍA' and p.get_attribute('#nombre', 'autocapitalize') == 'characters'
+    assert p.evaluate("() => getComputedStyle(document.getElementById('nombre')).fontSize") == '16px', 'A 16 px el móvil no hace zoom al escribir'
+    assert p.inner_text('#btnNombre') == 'Guardar y entrar'
+    c.sin_jerga()
+    c.sin_desbordes()
+    # un nombre que no vale (vacío, de una letra, con cifras o con @) no entra: su frase en llano y la pantalla sigue ahí
+    for malo in ['', 'a', 'Juan2', 'ana@gmail.com']:
+        p.fill('#nombre', malo)
+        p.click('#btnNombre')
+        p.wait_for_selector('#errorNombre:not([hidden])')
+        assert p.inner_text('#errorNombre') == FRASE_NOMBRE, malo
+        assert '/bandeja/entrar' in p.url and p.is_visible('#formNombre')
+    # el bueno se guarda en MAYÚSCULAS y entra, volviendo a donde iba
+    p.fill('#nombre', 'laura garcía')
+    p.click('#btnNombre')
     p.wait_for_url(BASE + '/bandeja')
     p.wait_for_selector('a.tarjeta')
     p.wait_for_function("() => document.getElementById('correo').textContent.length > 0")
     assert p.inner_text('#correo') == EMAIL
+    assert p.inner_text('#nombre') == 'LAURA GARCÍA', 'La cabecera enseña el nombre, y el correo detrás'
 
     # la cookie: HttpOnly (el JavaScript no la ve), SameSite=Lax y para toda la web
     galletas = [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion']
@@ -546,14 +592,14 @@ def caso_5(c):
     p.wait_for_function("() => /Tramitada/.test(document.getElementById('insignias').textContent)")
     p.wait_for_selector('#tramitadaPor:not([hidden])')
     linea = p.inner_text('#tramitadaPor')
-    assert re.fullmatch(rf'Tramitada por {re.escape(EMAIL)} el \d{{1,2}}-\d{{1,2}}-\d{{4}} a las \d{{2}}:\d{{2}}', linea), linea
+    assert re.fullmatch(rf'Tramitada por {re.escape(NOMBRE_PRUEBA)} el \d{{1,2}}-\d{{1,2}}-\d{{4}} a las \d{{2}}:\d{{2}}', linea), linea
     assert p.inner_text('#okAccion') == 'Marcada como tramitada.'
     assert p.get_by_role('button', name='Volver a pendiente', exact=True).is_visible()
     assert p.get_by_role('button', name='Marcar como tramitada', exact=True).count() == 0
     e = estado_de(ref)
-    assert e['tramitacion']['estado'] == 'tramitada' and e['tramitacion']['tramitada_por'] == EMAIL and e['tramitacion']['tramitada_en']
-    assert [x['actor'] for x in e['eventos'] if x['tipo'] == 'tramitada'] == [EMAIL]
-    assert 'Marcada como tramitada por ' + EMAIL in p.inner_text('#bloqueHistorial')
+    assert e['tramitacion']['estado'] == 'tramitada' and e['tramitacion']['tramitada_por'] == NOMBRE_PRUEBA and e['tramitacion']['tramitada_en']
+    assert [x['actor'] for x in e['eventos'] if x['tipo'] == 'tramitada'] == [NOMBRE_PRUEBA]
+    assert 'Marcada como tramitada por ' + NOMBRE_PRUEBA in p.inner_text('#bloqueHistorial')
 
     # la lista lo refleja: ya no está en Pendientes y sí en Tramitadas
     c.ver('/bandeja', 'a.tarjeta')
@@ -574,7 +620,7 @@ def caso_5(c):
     assert p.inner_text('#okAccion') == 'Vuelve a estar pendiente.'
     e = estado_de(ref)
     assert e['tramitacion']['estado'] == 'recibida' and e['tramitacion']['tramitada_por'] is None and e['tramitacion']['tramitada_en'] is None
-    assert [x['actor'] for x in e['eventos'] if x['tipo'] == 'reabierta'] == [EMAIL]
+    assert [x['actor'] for x in e['eventos'] if x['tipo'] == 'reabierta'] == [NOMBRE_PRUEBA]
 
     # alguien se adelantó (la tramitó desde otra pestaña): la página lo dice en llano y se pone al día
     http_estado = lambda accion: http('POST', '/api/bandeja/estado', {'ref': ref, 'accion': accion}, cabeceras={'Cookie': f'bandeja_sesion={cookie_de_sesion()}'})
@@ -610,8 +656,8 @@ def caso_6(c):
     aviso = [x for x in despues['correos'] if x['tipo'] == 'aviso'][0]
     assert aviso['estado'] == 'enviado' and aviso['intentos'] == 1 and aviso['altavoz_id'] != aviso_antes['altavoz_id']
     nuevos = despues['eventos'][len(antes['eventos']):]
-    assert [(x['tipo'], x['actor']) for x in nuevos] == [('aviso_reenviado', EMAIL), ('aviso_enviado', EMAIL)], nuevos
-    assert 'Aviso reenviado por ' + EMAIL in p.inner_text('#bloqueHistorial')
+    assert [(x['tipo'], x['actor']) for x in nuevos] == [('aviso_reenviado', NOMBRE_PRUEBA), ('aviso_enviado', NOMBRE_PRUEBA)], nuevos
+    assert 'Aviso reenviado por ' + NOMBRE_PRUEBA in p.inner_text('#bloqueHistorial')
 
     # con Altavoz caído el acuse no sale: pendiente, con su explicación, y sin ningún mensaje técnico
     http('POST', '/__pruebas/altavoz', {'caido': True})
@@ -981,10 +1027,10 @@ def caso_14(c):
     assert len(pedidas) == 2 and all(u.endswith(f'ref={ref}&abrir=1') for u in pedidas), pedidas
     linea = p.inner_text('#abiertaPor')
     assert p.is_visible('#abiertaPor')
-    assert re.fullmatch(rf'Abierta por {re.escape(EMAIL)} \(\d{{1,2}}-\d{{1,2}}-\d{{4}} a las \d{{2}}:\d{{2}}\)', linea), linea
-    assert f'Ficha abierta por {EMAIL}' in p.inner_text('#bloqueHistorial')
+    assert re.fullmatch(rf'Abierta por {re.escape(NOMBRE_PRUEBA)} \(\d{{1,2}}-\d{{1,2}}-\d{{4}} a las \d{{2}}:\d{{2}}\)', linea), linea
+    assert f'Ficha abierta por {NOMBRE_PRUEBA}' in p.inner_text('#bloqueHistorial')
     hechas = aperturas()
-    assert len(hechas) == 1 and hechas[0]['actor'] == EMAIL and hechas[0]['detalle'] == {}, hechas
+    assert len(hechas) == 1 and hechas[0]['actor'] == NOMBRE_PRUEBA and hechas[0]['detalle'] == {}, hechas
     c.sin_jerga()
     c.sin_desbordes()
 
@@ -1002,12 +1048,12 @@ def caso_14(c):
     c.buscar(ref)
     tarjeta = p.locator(f'a.tarjeta[href$="{ref}"]')
     texto = tarjeta.inner_text()
-    assert re.search(rf'Abierta por {re.escape(EMAIL)} · hace (unos segundos|\d+ min)', texto), texto
+    assert re.search(rf'Abierta por {re.escape(NOMBRE_PRUEBA)} · hace (unos segundos|\d+ min)', texto), texto
     assert 'Sin abrir' not in texto
     assert 'sin-abrir' not in tarjeta.get_attribute('class').split()
     assert tarjeta.evaluate("e => getComputedStyle(e).borderLeftWidth") == '1px', 'Sin la raya azul'
     assert tarjeta.locator('.t-vista svg[aria-hidden="true"]').count() == 1
-    assert tarjeta.locator('.t-vista strong').inner_text() == EMAIL
+    assert tarjeta.locator('.t-vista strong').inner_text() == NOMBRE_PRUEBA
     assert len(aperturas()) == 1
     c.sin_jerga()
     c.sin_desbordes()
@@ -1078,7 +1124,7 @@ def caso_15(c):
     p.wait_for_function("(r) => /Abierta por/.test(document.querySelector(`a.tarjeta[href$='${r}']`)?.textContent || '')", arg=ref2, polling=250)
     assert listas() == antes + 1
     texto = tarjeta2.inner_text()
-    assert re.search(rf'Abierta por {re.escape(EMAIL)} · hace (unos segundos|\d+ min)', texto) and 'Sin abrir' not in texto, texto
+    assert re.search(rf'Abierta por {re.escape(NOMBRE_PRUEBA)} · hace (unos segundos|\d+ min)', texto) and 'Sin abrir' not in texto, texto
     assert p.input_value('#q') == ref2, 'La búsqueda se conserva'
     assert p.get_by_role('button', name='Todas', exact=True).get_attribute('aria-pressed') == 'true', 'El filtro se conserva'
     c.sin_jerga()
@@ -1114,7 +1160,7 @@ def caso_16(c):
     def abierta_por_sin_raya(ref):
         t = tarjeta(ref)
         assert t.count() == 1, f'{ref} debería estar en la lista'
-        assert re.search(rf'Abierta por {re.escape(EMAIL)} · hace (unos segundos|\d+ min)', t.inner_text()), t.inner_text()
+        assert re.search(rf'Abierta por {re.escape(NOMBRE_PRUEBA)} · hace (unos segundos|\d+ min)', t.inner_text()), t.inner_text()
         assert 'Sin abrir' not in t.inner_text() and 'sin-abrir' not in t.get_attribute('class').split()
         assert t.locator('.t-vista svg[aria-hidden="true"]').count() == 1
         assert raya(ref)[0] == '1px', 'Abierta no lleva la raya azul'
@@ -1242,10 +1288,10 @@ def caso_17(c):
     assert fo.evaluate("e => getComputedStyle(e).borderLeftColor") == 'rgba(0, 0, 0, 0)', 'Abierta no lleva la raya azul'
     assert fo.locator('.pildora-nombre').evaluate("e => getComputedStyle(e).fontWeight") == '500'
     celda = fo.locator('.c-abierta')
-    assert celda.locator('svg.t-ojo[aria-hidden="true"]').count() == 1 and celda.locator('.a-correo').inner_text() == EMAIL
+    assert celda.locator('svg.t-ojo[aria-hidden="true"]').count() == 1 and celda.locator('.a-correo').inner_text() == NOMBRE_PRUEBA
     assert re.fullmatch(r'hace (unos segundos|\d+ min)', celda.locator('.a-linea').inner_text().strip()), celda.locator('.a-linea').inner_text()
     assert celda.locator('.a-linea .t-cuando').get_attribute('data-fecha') and celda.locator('.a-mas').count() == 0
-    assert celda.get_attribute('title') == f'Abierta por {EMAIL}'
+    assert celda.get_attribute('title') == f'Abierta por {NOMBRE_PRUEBA}'
     # varias personas: la más reciente en la celda, «+N» y todas en el title
     otra, larga = 'victor.molins.10+otra-persona@gmail.com', 'victor.molins.10+una-persona-de-backoffice-con-un-correo-bastante-largo-de-verdad@gmail.com'
 
@@ -1414,7 +1460,7 @@ def caso_18(c):
     eventos = lambda r, tipo: [x for x in estado_de(r)['eventos'] if x['tipo'] == tipo]
     boton = lambda nombre: p.get_by_role('button', name=nombre, exact=True)
     marcar_por_api = lambda r: http('POST', '/api/bandeja/estado', {'ref': r, 'accion': 'sin_abrir'}, cabeceras=galleta)
-    texto_abierta = lambda: re.fullmatch(rf'Abierta por {re.escape(EMAIL)} \(\d{{1,2}}-\d{{1,2}}-\d{{4}} a las \d{{2}}:\d{{2}}\)', p.inner_text('#abiertaPor'))
+    texto_abierta = lambda: re.fullmatch(rf'Abierta por {re.escape(NOMBRE_PRUEBA)} \(\d{{1,2}}-\d{{1,2}}-\d{{4}} a las \d{{2}}:\d{{2}}\)', p.inner_text('#abiertaPor'))
 
     def hace(**tiempo):
         return (datetime.now(timezone.utc) - timedelta(**tiempo)).strftime('%Y-%m-%dT%H:%M:%S.%f') + '+00:00'
@@ -1484,7 +1530,7 @@ def caso_18(c):
     assert tarjeta.evaluate("e => { const s = getComputedStyle(e); return [s.borderLeftWidth, s.borderLeftColor]; }") == ['4px', 'rgb(37, 99, 235)']
     assert tarjeta.locator('.t-vista .ins-sin-abrir').inner_text() == 'Sin abrir' and tarjeta.locator('svg').count() == 0
     marcas = eventos(ref, 'marcada_sin_abrir')
-    assert len(marcas) == 1 and marcas[0]['actor'] == EMAIL and marcas[0]['detalle'] == {}, marcas
+    assert len(marcas) == 1 and marcas[0]['actor'] == NOMBRE_PRUEBA and marcas[0]['detalle'] == {}, marcas
     assert len(eventos(ref, 'ficha_abierta')) == 1, 'La apertura NO se borra'
     assert estado_de(ref)['tramitacion'] == fila_antes, 'La fila de tramitaciones no se toca'
     c.sin_jerga()
@@ -1504,19 +1550,19 @@ def caso_18(c):
     p.wait_for_selector('#ficha:not([hidden])')
     assert p.is_visible('#abiertaPor') and texto_abierta(), p.inner_text('#abiertaPor')
     assert [x['tipo'] for x in estado_de(ref)['eventos'] if x['tipo'] in ('ficha_abierta', 'marcada_sin_abrir')] == ['ficha_abierta', 'marcada_sin_abrir', 'ficha_abierta']
-    assert all(x['actor'] == EMAIL for x in estado_de(ref)['eventos'] if x['tipo'] in ('ficha_abierta', 'marcada_sin_abrir'))
+    assert all(x['actor'] == NOMBRE_PRUEBA for x in estado_de(ref)['eventos'] if x['tipo'] in ('ficha_abierta', 'marcada_sin_abrir'))
     historial = [x for x in p.locator('#bloqueHistorial .texto').all_inner_texts() if 'abierta' in x or 'sin abrir' in x]
-    assert historial == [f'Ficha abierta por {EMAIL}', f'Marcada como sin abrir por {EMAIL}', f'Ficha abierta por {EMAIL}'], historial
+    assert historial == [f'Ficha abierta por {NOMBRE_PRUEBA}', f'Marcada como sin abrir por {NOMBRE_PRUEBA}', f'Ficha abierta por {NOMBRE_PRUEBA}'], historial
     c.ver('/bandeja', 'a.fila')
     c.esperar_lista()
     c.buscar(ref)
     fila = p.locator(f'a.fila[href$="{ref}"]')
     assert 'sin-abrir' not in fila.get_attribute('class').split() and fila.locator('.ins-sin-abrir').count() == 0
-    assert fila.locator('.c-abierta .a-correo').inner_text() == EMAIL
+    assert fila.locator('.c-abierta .a-correo').inner_text() == NOMBRE_PRUEBA
     boton('Tarjetas').click()
     p.wait_for_selector('a.tarjeta')
     tarjeta = p.locator(f'a.tarjeta[href$="{ref}"]')
-    assert re.search(rf'Abierta por {re.escape(EMAIL)} · hace (unos segundos|\d+ min)', tarjeta.inner_text()) and 'Sin abrir' not in tarjeta.inner_text()
+    assert re.search(rf'Abierta por {re.escape(NOMBRE_PRUEBA)} · hace (unos segundos|\d+ min)', tarjeta.inner_text()) and 'Sin abrir' not in tarjeta.inner_text()
     c.sin_jerga()
 
     # 6) marcar dos veces seguidas es marcar una: otro compañero la deja «sin abrir» mientras esta persona tiene la ficha abierta; el refresco
@@ -1528,7 +1574,7 @@ def caso_18(c):
     p.locator('#bloqueCorreos .correo').nth(0).get_by_role('button', name='Volver a enviar', exact=True).click()
     p.wait_for_selector('.correo-resultado')
     assert p.is_hidden('#abiertaPor'), 'Solo cuentan las aperturas posteriores a la última marca: no queda ninguna, la línea no se enseña'
-    assert f'Marcada como sin abrir por {EMAIL}' in p.inner_text('#bloqueHistorial')
+    assert f'Marcada como sin abrir por {NOMBRE_PRUEBA}' in p.inner_text('#bloqueHistorial')
     assert boton('Marcar como sin abrir').is_enabled(), 'Sigue siendo una pendiente: el botón sigue ahí'
     boton('Marcar como sin abrir').click()
     p.wait_for_url(re.compile(r'/bandeja(\?estado=\w+)?$'))
@@ -1584,6 +1630,147 @@ def caso_18(c):
     c.sin_desbordes()
 
 
+def caso_19(c):
+    """El nombre de quien entra: una sesión SIN nombre (como las de antes) no puede abrir la lista ni una ficha sin pasar por el paso del
+    nombre, y mientras tanto NO se pide la ficha (ni con abrir=1) ni se apunta ninguna apertura; un nombre que no vale da su frase en llano; el
+    bueno («laura garcía») se guarda en MAYÚSCULAS, vuelve a la ficha y es el «quién» (arriba, en el historial y en la lista, en Tarjetas y
+    en Lista); «Cambiar nombre» (otra persona en el mismo ordenador) deja el nombre de ahora escrito y la siguiente apertura sale con el nombre
+    nuevo; con la sesión caducada a medias, vuelta al correo; y a 390 y 1440 px, sin jerga ni desbordes (capturas del paso del nombre)."""
+    c.rota('/api/bandeja/')  # los 400 de los nombres malos y los 401 de una sesión sin sesión son a propósito
+    ref = crear('gnew', [(1, 'nombre.jpg', JPG.read_bytes())], extra={'titular': 'Titular Con Nombre SL', 'quien_eres': 'Comercial Marcador19'})
+    aperturas = lambda: [x for x in estado_de(ref)['eventos'] if x['tipo'] == 'ficha_abierta']
+    yo = lambda: c.ctx.request.get(BASE + '/api/bandeja/yo').json()  # «quién soy» según el servidor, con la cookie de este navegador
+    c.con_sesion(nombre=None)
+    p = c.page
+    pedidas = []  # direcciones (enteras) de las peticiones a la ficha
+    p.on('request', lambda r: pedidas.append(r.url) if '/api/bandeja/ficha' in r.url else None)
+    assert yo() == {'ok': True, 'email': EMAIL, 'nombre': None}, 'La sesión entra, pero sin nombre'
+
+    # 1) la lista, sin nombre: al paso del nombre (directo: ya hay sesión, no vuelve a pedir el correo ni el código) y con «volver» a la lista
+    p.goto(BASE + '/bandeja', wait_until='load')
+    p.wait_for_url(re.compile(r'/bandeja/entrar\?paso=nombre&volver=%2Fbandeja$'))
+    p.wait_for_selector('#formNombre:not([hidden])')
+    assert p.is_hidden('#formCorreo') and p.is_hidden('#formCodigo'), 'Con sesión, solo el paso del nombre'
+    assert p.input_value('#nombre') == '', 'Sin nombre todavía, el campo vacío'
+
+    # 2) la ficha, sin nombre: aterriza en el paso del nombre SIN haber pedido la ficha (ni con abrir=1 ni sin él) y sin apuntar nada
+    p.goto(BASE + f'/bandeja/c/{ref}', wait_until='load')
+    p.wait_for_url(re.compile(r'/bandeja/entrar\?paso=nombre&volver=%2Fbandeja%2Fc%2F' + re.escape(ref) + '$'))
+    p.wait_for_selector('#formNombre:not([hidden])')
+    assert pedidas == [], f'Antes de tener el nombre no se pide la ficha: {pedidas}'
+    assert aperturas() == [], 'Y no se apunta ninguna apertura'
+    assert p.inner_text('label[for="nombre"]') == '¿Cómo te llamas?'
+    assert p.get_attribute('#nombre', 'placeholder') == 'Ej.: LAURA GARCÍA' and p.get_attribute('#nombre', 'autocapitalize') == 'characters'
+    assert p.evaluate("() => getComputedStyle(document.getElementById('nombre')).fontSize") == '16px'
+    assert p.inner_text('#btnNombre') == 'Guardar y entrar'
+    c.sin_jerga()
+    c.sin_desbordes()
+    SALIDAS.mkdir(parents=True, exist_ok=True)
+    for ancho, alto in ((390, 844), (1440, 900)):  # las capturas del paso del nombre
+        p.set_viewport_size({'width': ancho, 'height': alto})
+        p.mouse.move(2, 2)
+        p.wait_for_timeout(300)
+        c.sin_desbordes(ancho)
+        p.screenshot(path=str(SALIDAS / f'bandeja-entrar-nombre-{ancho}.png'), full_page=True, animations='disabled')
+    p.set_viewport_size({'width': 390, 'height': 844})
+    p.wait_for_timeout(300)
+
+    # 3) un nombre que no vale: su frase en llano, sigue en el mismo paso, la sesión no cambia y no se apunta nada
+    p.fill('#nombre', 'y' * 50)
+    assert len(p.input_value('#nombre')) == 40, 'El campo no deja escribir más de 40 letras'
+    for malo in ['', 'a', 'Juan2', 'ana@gmail.com', 'x' * 41]:
+        if len(malo) > 40:  # a mano no se puede escribir: se fuerza el valor para que sea el servidor quien diga que no
+            p.evaluate("(valor) => { document.getElementById('nombre').value = valor; }", malo)
+        else:
+            p.fill('#nombre', malo)
+        p.click('#btnNombre')
+        p.wait_for_selector('#errorNombre:not([hidden])')
+        assert p.inner_text('#errorNombre') == FRASE_NOMBRE, malo
+        assert p.is_visible('#formNombre') and '/bandeja/entrar' in p.url
+        assert p.is_enabled('#btnNombre'), 'El botón vuelve a servir'
+    c.sin_jerga()
+    c.sin_desbordes()
+    assert [r['status'] for r in c.respuestas if r['ruta'] == '/api/bandeja/yo' and r['status'] != 200] == [400] * 4, 'El vacío ni sale del navegador; los otros cuatro, 400'
+    assert yo()['nombre'] is None and aperturas() == [] and pedidas == []
+
+    # 4) el nombre bueno (con espacios de más y en minúsculas) vuelve a LA FICHA, que ahora SÍ se pide con abrir=1, y apunta ese nombre
+    p.fill('#nombre', '  laura   garcía ')
+    p.click('#btnNombre')
+    p.wait_for_url(f'{BASE}/bandeja/c/{ref}')
+    p.wait_for_selector('#ficha:not([hidden])')
+    assert len(pedidas) == 1 and pedidas[0].endswith(f'ref={ref}&abrir=1'), pedidas
+    assert yo() == {'ok': True, 'email': EMAIL, 'nombre': 'LAURA GARCÍA'}
+    assert re.fullmatch(r'Abierta por LAURA GARCÍA \(\d{1,2}-\d{1,2}-\d{4} a las \d{2}:\d{2}\)', p.inner_text('#abiertaPor')), p.inner_text('#abiertaPor')
+    assert 'Ficha abierta por LAURA GARCÍA' in p.inner_text('#bloqueHistorial')
+    hechas = aperturas()
+    assert len(hechas) == 1 and hechas[0]['actor'] == 'LAURA GARCÍA' and hechas[0]['detalle'] == {}, hechas
+    assert EMAIL not in p.inner_text('#ficha'), 'El correo común no sale en ningún sitio de la ficha: el «quién» es el nombre'
+    assert p.inner_text('#quien') == 'LAURA GARCÍA' and p.inner_text('#cambiarNombre') == 'Cambiar nombre'
+    c.sin_jerga()
+    c.sin_desbordes()
+
+    # 5) la lista: «Abierta por LAURA GARCÍA» en Tarjetas y en Lista; la cabecera, «NOMBRE · correo» y «Cambiar nombre»
+    c.ver('/bandeja', 'a.tarjeta')
+    c.esperar_lista()
+    c.buscar(ref)
+    tarjeta = p.locator(f'a.tarjeta[href$="{ref}"]')
+    assert re.search(r'Abierta por LAURA GARCÍA · hace (unos segundos|\d+ min)', tarjeta.inner_text()), tarjeta.inner_text()
+    assert 'Sin abrir' not in tarjeta.inner_text() and tarjeta.locator('.t-vista strong').inner_text() == 'LAURA GARCÍA'
+    p.wait_for_function("() => document.getElementById('correo').textContent.length > 0")
+    assert p.inner_text('#nombre') == 'LAURA GARCÍA' and p.inner_text('#correo') == EMAIL
+    assert p.inner_text('#quien') == f'LAURA GARCÍA · {EMAIL}'
+    assert p.inner_text('#cambiarNombre') == 'Cambiar nombre' and p.is_visible('#cambiarNombre')
+    assert p.get_attribute('#cambiarNombre', 'href') == '/bandeja/entrar?paso=nombre&volver=%2Fbandeja'
+    c.sin_jerga()
+    c.sin_desbordes()  # a 390 px la línea del nombre se recorta con «…» y el enlace baja a su línea: la página no se sale
+    p.get_by_role('button', name='Lista', exact=True).click()
+    p.wait_for_selector('a.fila')
+    celda = p.locator(f'a.fila[href$="{ref}"] .c-abierta')
+    assert celda.locator('.a-correo').inner_text() == 'LAURA GARCÍA' and celda.get_attribute('title') == 'Abierta por LAURA GARCÍA'
+    c.sin_desbordes()
+    p.get_by_role('button', name='Tarjetas', exact=True).click()
+    p.wait_for_selector('a.tarjeta')
+    # al cambiar el filtro, «Cambiar nombre» vuelve a la lista con ESE filtro
+    c.elegir_filtro('Todas')
+    assert p.get_attribute('#cambiarNombre', 'href') == '/bandeja/entrar?paso=nombre&volver=%2Fbandeja%3Festado%3Dtodas'
+
+    # 6) «Cambiar nombre», desde la ficha: solo el paso del nombre, con el de ahora escrito; con otro, vuelve a la ficha y la apertura sale con el nuevo
+    c.abrir_ficha(ref)
+    assert len(aperturas()) == 1, 'La misma persona, a los pocos segundos: no se apunta otra (la ventana de 15 minutos)'
+    p.get_by_role('link', name='Cambiar nombre', exact=True).click()
+    p.wait_for_url(re.compile(r'/bandeja/entrar\?paso=nombre&volver=%2Fbandeja%2Fc%2F' + re.escape(ref) + '$'))
+    p.wait_for_selector('#formNombre:not([hidden])')
+    assert p.is_hidden('#formCorreo') and p.is_hidden('#formCodigo')
+    assert p.input_value('#nombre') == 'LAURA GARCÍA', 'El nombre de ahora, ya escrito, para cambiarlo'
+    p.fill('#nombre', 'pedro ñandú')
+    p.click('#btnNombre')
+    p.wait_for_url(f'{BASE}/bandeja/c/{ref}')
+    p.wait_for_selector('#ficha:not([hidden])')
+    assert yo()['nombre'] == 'PEDRO ÑANDÚ'
+    assert [x['actor'] for x in aperturas()] == ['LAURA GARCÍA', 'PEDRO ÑANDÚ'], 'Otra persona: se apunta al momento, y lo de antes no se reescribe'
+    linea = p.inner_text('#abiertaPor')
+    assert re.fullmatch(r'Abierta por PEDRO ÑANDÚ \(.+\) · LAURA GARCÍA \(.+\)', linea), linea
+    assert p.inner_text('#quien') == 'PEDRO ÑANDÚ'
+    historial = [x for x in p.locator('#bloqueHistorial .texto').all_inner_texts() if 'abierta' in x]
+    assert historial == ['Ficha abierta por LAURA GARCÍA', 'Ficha abierta por PEDRO ÑANDÚ'], historial
+    c.sin_jerga()
+    c.sin_desbordes()
+
+    # 7) la sesión caduca con el nombre a medio escribir: vuelta al paso del correo con su frase en llano; y sin sesión, ?paso=nombre empieza por el correo
+    p.goto(BASE + '/bandeja/entrar?paso=nombre&volver=%2Fbandeja', wait_until='load')
+    p.wait_for_selector('#formNombre:not([hidden])')
+    c.ctx.clear_cookies()
+    p.fill('#nombre', 'ana lópez')
+    p.click('#btnNombre')
+    p.wait_for_selector('#formCorreo:not([hidden])')
+    assert p.inner_text('#errorCorreo') == FRASE_SESION and p.is_hidden('#formNombre')
+    p.goto(BASE + '/bandeja/entrar?paso=nombre&volver=%2Fbandeja', wait_until='load')
+    p.wait_for_selector('#formCorreo:not([hidden])')
+    assert p.is_hidden('#formNombre') and p.is_hidden('#formCodigo'), 'Sin sesión, el recorrido de siempre: correo → código → nombre'
+    c.sin_jerga()
+    c.sin_desbordes()
+
+
 CASOS = [
     (1, 'Acceso: de /bandeja al login con «volver», código por correo simulado, código malo, código bueno y cookie HttpOnly', caso_1),
     (2, 'Un correo sin acceso ve lo mismo que uno con acceso, sin correo y sin entrar', caso_2),
@@ -1603,6 +1790,7 @@ CASOS = [
     (16, '«Sin abrir» solo en las pendientes: tramitada, incompleta y descartada sin abrir no lo enseñan; abiertas, «Abierta por …» en cualquier estado', caso_16),
     (17, 'Modo Lista (tabla): interruptor Tarjetas / Lista que se recuerda, filas con todas las columnas, «Sin abrir», «Cargar más», volver a Tarjetas sin pedir otra vez, clic y «atrás», sin HTML, sin desbordes y a 1440 px sin deslizarse', caso_17),
     (18, '«Marcar como sin abrir»: botón solo en las pendientes → vuelve a la lista como «Sin abrir» (Tarjetas y Lista) → abrirla otra vez la deja leída; «Abierta por» respeta la marca; si falla, frase en llano', caso_18),
+    (19, 'El nombre de quien entra: sin nombre, al paso del nombre sin apuntar nada; nombre malo, su frase; nombre bueno → «Abierta por NOMBRE» (ficha y lista) → «Cambiar nombre» → la siguiente apertura con el nombre nuevo', caso_19),
 ]
 
 

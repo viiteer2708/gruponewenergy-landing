@@ -32,20 +32,28 @@ export function igualesSeguro(a, b) {
 }
 
 /**
- * Cookie de sesión: base64url({e: email, iat, exp}) + '.' + base64url(HMAC-SHA256).
+ * Cookie de sesión: base64url({e: email, iat, exp[, n: nombre]}) + '.' + base64url(HMAC-SHA256).
  * iat y exp van en segundos. `ahora` (ms) solo se cambia en las pruebas.
+ * `nombre` es el nombre con el que esa persona firma lo que hace en la bandeja (16-oct-2026): va en la carga como `n` y NO es un
+ * acceso, solo una etiqueta (quién abre, marca o tramita). Aquí se guarda tal cual se recibe (sin él, la carga queda exactamente
+ * como antes: la de las sesiones que backoffice ya tiene); quien lo pide lo limpia y lo valida antes (`normalizarNombrePersona`,
+ * en nombres.js). Un valor que no sea texto lanza.
  */
-export function firmarSesion(email, secreto, { ahora = Date.now(), duracionSeg = DURACION_SESION_SEG } = {}) {
+export function firmarSesion(email, secreto, { ahora = Date.now(), duracionSeg = DURACION_SESION_SEG, nombre = null } = {}) {
   exigirSecreto(secreto);
   const correo = String(email ?? '').trim().toLowerCase();
   if (!correo) throw new Error('Falta el email de la sesión');
+  if (nombre !== null && nombre !== undefined && typeof nombre !== 'string') throw new TypeError('El nombre de la sesión tiene que ser texto');
+  const n = typeof nombre === 'string' ? nombre.trim() : '';
   const iat = Math.floor(ahora / 1000);
-  const carga = Buffer.from(JSON.stringify({ e: correo, iat, exp: iat + duracionSeg })).toString('base64url');
+  const carga = Buffer.from(JSON.stringify({ e: correo, iat, exp: iat + duracionSeg, ...(n ? { n } : {}) })).toString('base64url');
   return `${carga}.${mac(secreto, carga).toString('base64url')}`;
 }
 
 /**
- * Devuelve {email, iat, exp} si la cookie es auténtica y no ha caducado; si no, null.
+ * Devuelve {email, nombre, iat, exp} si la cookie es auténtica y no ha caducado; si no, null.
+ * `nombre` es el `n` de la carga, o `null` si la cookie no lo lleva: las cookies de antes del nombre (sin `n`) siguen valiendo
+ * —su dueño solo tendrá que escribir su nombre— y un `n` que no es texto, o está vacío, cuenta como «sin nombre» (no tumba la sesión).
  * Una cookie manipulada, mal formada, caducada o firmada con otro secreto no
  * lanza: es simplemente «sin sesión». Lo único que lanza es un secreto mal
  * configurado (vacío o corto).
@@ -62,11 +70,11 @@ export function verificarSesion(valor, secreto, { ahora = Date.now() } = {}) {
     if (!igualesSeguro(firma, mac(secreto, carga).toString('base64url'))) return null;
     const datos = JSON.parse(Buffer.from(carga, 'base64url').toString('utf8'));
     if (!datos || typeof datos !== 'object' || Array.isArray(datos)) return null;
-    const { e, iat, exp } = datos;
+    const { e, iat, exp, n } = datos;
     if (typeof e !== 'string' || !e) return null;
     if (!Number.isFinite(iat) || !Number.isFinite(exp)) return null;
     if (exp <= Math.floor(ahora / 1000)) return null;
-    return { email: e, iat, exp };
+    return { email: e, nombre: typeof n === 'string' && n.trim() ? n : null, iat, exp };
   } catch {
     return null;
   }

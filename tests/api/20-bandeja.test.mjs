@@ -1,6 +1,8 @@
 // tests/api/20-bandeja.test.mjs · Pruebas de API de la bandeja de backoffice (orden 4): código de acceso, sesión,
 // lista, ficha, estado y «volver a enviar»; (14-oct-2026) quién ha abierto cada ficha: evento `ficha_abierta` y `vistas`; y
-// (16-oct-2026) «Marcar como sin abrir»: evento `marcada_sin_abrir` (POST /api/bandeja/estado {ref, accion:'sin_abrir'}).
+// (16-oct-2026) «Marcar como sin abrir»: evento `marcada_sin_abrir` (POST /api/bandeja/estado {ref, accion:'sin_abrir'}) y el
+// NOMBRE de quien entra (GET/POST /api/bandeja/yo): cada persona lo escribe la primera vez y es el «quién» de abrir, marcar sin abrir,
+// tramitar y volver a enviar (sin nombre, el correo, y la ficha no apunta aperturas).
 //
 // Necesita el servidor local en marcha y la base REAL de Supabase (todo lo que se escribe lleva prueba=true y vive bajo
 // pruebas/ en el almacén; se borra con scripts/limpiar-pruebas.mjs --todo):
@@ -40,6 +42,11 @@ const TOPE_MS = 120_000;
 const EMAIL = String(process.env.BANDEJA_EMAILS ?? '').split(',')[0].trim().toLowerCase();
 const FUERA = 'victor.molins.10+fuera@gmail.com'; // alias sin acceso
 const ES_ALIAS = /^victor\.molins\.10\+[a-z0-9._-]+@gmail\.com$/;
+
+// El nombre con el que las sesiones de estas pruebas firman lo que hacen (lo escribe `sesionNueva` con POST /api/bandeja/yo). Las
+// pruebas que quieren una sesión SIN nombre —como las cookies de antes del nombre— la piden con `sesionNueva(EMAIL, null)` o la firman a mano.
+const NOMBRE = 'PRUEBA API';
+const FRASE_NOMBRE = 'Escribe tu nombre (solo letras, de 2 a 40).';
 
 const EMAIL_COMERCIAL = 'victor.molins.10+comercial@gmail.com';
 const EMAIL_CLIENTE = 'victor.molins.10+cliente@gmail.com';
@@ -118,14 +125,23 @@ async function pedirYLeer(email = EMAIL, ip = ipNueva()) {
   return { ...(await ultimoCodigo(email)), ip };
 }
 
-/** Sesión completa: pide el código, lo teclea y devuelve la cookie lista para reenviar. */
-async function sesionNueva(email = EMAIL) {
+/**
+ * Sesión completa: pide el código, lo teclea, escribe el nombre (POST /api/bandeja/yo) y devuelve la cookie —la NUEVA, con nombre— lista
+ * para reenviar. Con `nombre = null` se queda con la de `entrar`, que no lleva nombre (como las sesiones de antes del nombre).
+ */
+async function sesionNueva(email = EMAIL, nombre = NOMBRE) {
   const { codigo, ip } = await pedirYLeer(email);
   const r = await post('/api/bandeja/entrar', { email, codigo }, { cabeceras: desde(ip) });
   assert.equal(r.status, 200, r.texto);
   const cookie = sesionDe(r.cookies);
   assert.ok(cookie, 'Entrar debe dar la cookie de sesión');
-  return cookie;
+  if (nombre === null) return cookie;
+  const conNombre = await post('/api/bandeja/yo', { nombre }, { cookie });
+  assert.equal(conNombre.status, 200, conNombre.texto);
+  assert.equal(conNombre.json.nombre, nombre, 'El nombre de las pruebas ya viene limpio (en mayúsculas)');
+  const nueva = sesionDe(conNombre.cookies);
+  assert.ok(nueva, 'Escribir el nombre debe dar la cookie nueva');
+  return nueva;
 }
 
 const accesosDe = (email) => seleccionar('tramitacion_accesos', { select: '*', email: `eq.${email}`, order: 'creado_en.desc' });
@@ -260,6 +276,7 @@ describe('Bandeja · acceso (código por email, sesión y cuotas)', { timeout: 6
       get('/api/bandeja/ficha?ref=GNE-20261009-ABCDEF'),
       post('/api/bandeja/estado', { ref: 'GNE-20261009-ABCDEF', accion: 'tramitar' }),
       post('/api/bandeja/reenviar', { ref: 'GNE-20261009-ABCDEF', tipo: 'aviso' }),
+      post('/api/bandeja/yo', { nombre: 'Laura García' }),
     ];
     for (const r of await Promise.all(intentos)) {
       assert.equal(r.status, 401, r.texto);
@@ -332,7 +349,7 @@ describe('Bandeja · acceso (código por email, sesión y cuotas)', { timeout: 6
     const cookie = pares;
     const yo = await get('/api/bandeja/yo', { cookie });
     assert.equal(yo.status, 200);
-    assert.deepEqual(yo.json, { ok: true, email: EMAIL });
+    assert.deepEqual(yo.json, { ok: true, email: EMAIL, nombre: null }, 'Entrar con el código no da nombre: se escribe después (`yo`)');
 
     const [acceso] = await accesosDe(EMAIL);
     assert.ok(acceso.usado_en, 'El código queda gastado');
@@ -416,8 +433,12 @@ describe('Bandeja · acceso (código por email, sesión y cuotas)', { timeout: 6
     const [carga, firma] = valor.split('.');
     const ahora = Date.now();
     const cargaAjena = Buffer.from(JSON.stringify({ e: EMAIL, iat: 1, exp: Math.floor(ahora / 1000) + 10 ** 9 })).toString('base64url');
+    // (la cookie de esta prueba lleva nombre: cambiarlo a mano tampoco vale; y un correo sin acceso no entra aunque lleve nombre)
+    const cargaOtroNombre = Buffer.from(JSON.stringify({ e: EMAIL, iat: 1, exp: Math.floor(ahora / 1000) + 10 ** 9, n: 'OTRA PERSONA' })).toString('base64url');
     const malas = {
       'carga cambiada con la firma vieja': `${cargaAjena}.${firma}`,
+      'nombre cambiado con la firma vieja': `${cargaOtroNombre}.${firma}`,
+      'correo sin acceso (bien firmada y con nombre)': firmarSesion(FUERA, secretoBandeja(), { nombre: 'LAURA GARCÍA' }),
       'firma cambiada': `${carga}.${firma.slice(0, -2)}${firma.endsWith('A') ? 'BB' : 'AA'}`,
       'sin firma': carga,
       'basura': 'esto.no.es.una.cookie',
@@ -433,6 +454,84 @@ describe('Bandeja · acceso (código por email, sesión y cuotas)', { timeout: 6
     }
     // y la buena sigue funcionando
     assert.equal((await get('/api/bandeja/yo', { cookie })).status, 200);
+  });
+
+  it('yo: sin nombre dice `nombre: null`; escribir el nombre da una cookie NUEVA (con el nombre limpio) y desde entonces `yo` lo dice; la cookie vieja sigue valiendo; se puede cambiar', async (t) => {
+    const sinNombre = await sesionNueva(EMAIL, null);
+    const antes = await get('/api/bandeja/yo', { cookie: sinNombre });
+    assert.equal(antes.status, 200, antes.texto);
+    assert.deepEqual(antes.json, { ok: true, email: EMAIL, nombre: null });
+    assert.deepEqual(antes.cookies, [], 'Un GET no manda cookie');
+    assert.equal(antes.cabeceras.get('cache-control'), 'no-store');
+
+    const r = await post('/api/bandeja/yo', { nombre: '  laura   garcía ' }, { cookie: sinNombre });
+    assert.equal(r.status, 200, r.texto);
+    assert.deepEqual(r.json, { ok: true, email: EMAIL, nombre: 'LAURA GARCÍA' }, 'Recortado, con los espacios juntados y en mayúsculas (tildes y Ñ intactas)');
+    assert.equal(r.cabeceras.get('cache-control'), 'no-store');
+    assert.equal(r.cookies.length, 1);
+    const [pares, ...atributos] = r.cookies[0].split(';').map((x) => x.trim());
+    assert.match(pares, /^bandeja_sesion=[A-Za-z0-9_.-]+$/);
+    assert.ok(atributos.includes('HttpOnly') && atributos.includes('SameSite=Lax') && atributos.includes('Path=/') && atributos.includes('Max-Age=31536000'), `Atributos: ${atributos.join(' · ')}`);
+    assert.ok(!atributos.includes('Secure'), 'Por http en local no lleva Secure');
+    assert.ok(!r.texto.includes(pares.split('=')[1]), 'La cookie no viaja en el cuerpo');
+    const cookie = pares;
+    assert.notEqual(cookie, sinNombre, 'Es otra cookie');
+    assert.deepEqual((await get('/api/bandeja/yo', { cookie })).json, { ok: true, email: EMAIL, nombre: 'LAURA GARCÍA' });
+    assert.deepEqual((await get('/api/bandeja/yo', { cookie: sinNombre })).json, { ok: true, email: EMAIL, nombre: null }, 'La anterior no se ha tocado: sigue valiendo, sin nombre');
+
+    // se puede cambiar (otra persona en el mismo ordenador): la nueva lleva el nombre nuevo
+    const cambio = await post('/api/bandeja/yo', { nombre: "pedro d'ñandú" }, { cookie });
+    assert.equal(cambio.status, 200, cambio.texto);
+    assert.equal(cambio.json.nombre, "PEDRO D'ÑANDÚ");
+    assert.deepEqual((await get('/api/bandeja/yo', { cookie: sesionDe(cambio.cookies) })).json, { ok: true, email: EMAIL, nombre: "PEDRO D'ÑANDÚ" });
+
+    // detrás de Vercel (https) la cookie nueva lleva Secure, como la de entrar
+    const seguro = await post('/api/bandeja/yo', { nombre: 'ana' }, { cookie, cabeceras: { 'x-forwarded-proto': 'https' } });
+    assert.ok(seguro.cookies[0].split(';').map((x) => x.trim()).includes('Secure'), seguro.cookies[0]);
+    // el correo de la cookie nueva es el de la sesión, no el que mande el cliente
+    const ajeno = await post('/api/bandeja/yo', { nombre: 'ana', email: FUERA }, { cookie });
+    assert.equal(ajeno.json.email, EMAIL);
+    assert.deepEqual((await get('/api/bandeja/yo', { cookie: sesionDe(ajeno.cookies) })).json, { ok: true, email: EMAIL, nombre: 'ANA' });
+    t.diagnostic('yo: null → POST → cookie nueva con el nombre limpio; la vieja sigue valiendo; Secure con https; el correo sale de la sesión');
+  });
+
+  it('yo: un nombre que no vale → 400 con su frase en llano y la cookie no cambia; sin sesión → 401; solo JSON; otro método → 405', async () => {
+    const cookie = await sesionNueva(EMAIL, null);
+    for (const malo of ['', '   ', 'a', 'ana2', '2ana', 'ana@gmail.com', 'a'.repeat(41), '<b>ana</b>', '--', '😀😀', 'ana_lópez']) {
+      const r = await post('/api/bandeja/yo', { nombre: malo }, { cookie });
+      assert.equal(r.status, 400, `«${malo}»: ${r.texto}`);
+      assert.deepEqual(r.json, { ok: false, codigo: 'nombre', mensaje: FRASE_NOMBRE, retryable: false });
+      assert.deepEqual(r.cookies, [], 'Un nombre malo no da cookie');
+    }
+    for (const cuerpo of [{}, { nombre: 5 }, { nombre: null }, { nombre: ['ana'] }, { nombre: { a: 1 } }, { nombre: true }]) {
+      const r = await post('/api/bandeja/yo', cuerpo, { cookie });
+      assert.equal(r.status, 400, JSON.stringify(cuerpo));
+      assert.equal(r.json.codigo, 'nombre', JSON.stringify(cuerpo));
+      assert.equal(r.json.mensaje, FRASE_NOMBRE);
+    }
+    assert.equal((await post('/api/bandeja/yo', [], { cookie })).status, 400, 'Una lista no es un objeto');
+    const roto = await llamar('POST', '/api/bandeja/yo', { cuerpo: '{"nombre": ', cookie });
+    assert.equal(roto.status, 400, roto.texto);
+    assert.equal(roto.json.codigo, 'peticion');
+    const plano = await llamar('POST', '/api/bandeja/yo', { cuerpo: JSON.stringify({ nombre: 'Laura' }), tipo: 'text/plain', cookie });
+    assert.equal(plano.status, 415, 'Un formulario ajeno (text/plain) no puede poner un nombre');
+    assert.deepEqual((await get('/api/bandeja/yo', { cookie })).json, { ok: true, email: EMAIL, nombre: null }, 'Y la sesión sigue sin nombre');
+
+    // sin sesión, con una cookie rota o de un correo sin acceso: 401 (y no se pone ningún nombre)
+    const sin = await post('/api/bandeja/yo', { nombre: 'Laura' });
+    assert.equal(sin.status, 401, sin.texto);
+    assert.deepEqual(sin.json, { ok: false, codigo: 'sesion', mensaje: FRASE_SESION, retryable: false });
+    assert.deepEqual(sin.cookies, []);
+    for (const valor of ['basura.basura', firmarSesion(FUERA, secretoBandeja(), { nombre: 'LAURA' })]) {
+      const rota = await post('/api/bandeja/yo', { nombre: 'Laura' }, { cookie: `${NOMBRE_COOKIE}=${valor}` });
+      assert.equal(rota.status, 401, rota.texto);
+      assert.ok(rota.cookies.some((c) => c.startsWith(`${NOMBRE_COOKIE}=;`) && c.includes('Max-Age=0')), 'Se borra la cookie rota, no se firma una nueva');
+    }
+    for (const metodo of ['PUT', 'DELETE', 'PATCH']) {
+      const r = await llamar(metodo, '/api/bandeja/yo', { cookie });
+      assert.equal(r.status, 405, metodo);
+      assert.equal(r.cabeceras.get('allow'), 'GET, POST');
+    }
   });
 
   it('salir borra la cookie (no necesita sesión) y solo acepta JSON', async () => {
@@ -713,7 +812,7 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
     assert.equal((await post('/api/bandeja/ficha', {}, autorizado())).status, 405);
     assert.equal((await get('/api/bandeja/estado', autorizado())).status, 405);
     assert.equal((await get('/api/bandeja/reenviar', autorizado())).status, 405);
-    assert.equal((await post('/api/bandeja/yo', {}, autorizado())).status, 405);
+    assert.equal((await llamar('PUT', '/api/bandeja/yo', autorizado())).status, 405, '`yo` admite GET y POST (el nombre): otro método no');
   });
 
   it('ficha: todos los datos (IBAN completo), documentos con enlaces de 10 minutos que responden 200 y no llevan el nombre del archivo, correos e historial', async (t) => {
@@ -839,25 +938,26 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
     assert.ok((await get('/api/bandeja/lista', autorizado())).json.items.some((i) => i.ref === A));
   });
 
-  it('estado: tramitar guarda quién y cuándo, volver a pendiente lo borra, y cada paso deja su evento con el correo de backoffice', async (t) => {
+  it('estado: tramitar guarda quién (el NOMBRE de la sesión) y cuándo, volver a pendiente lo borra, y cada paso deja su evento con ese nombre', async (t) => {
     const antes = Date.now();
     const r1 = await post('/api/bandeja/estado', { ref: A, accion: 'tramitar' }, autorizado());
     assert.equal(r1.status, 200, r1.texto);
     assert.equal(r1.json.ok, true);
     assert.equal(r1.json.estado, 'tramitada');
-    assert.equal(r1.json.tramitada_por, EMAIL);
+    assert.equal(r1.json.tramitada_por, NOMBRE);
+    assert.ok(!r1.texto.includes(EMAIL), 'El correo no viaja en la respuesta: el «quién» es el nombre');
     assert.ok(Date.parse(r1.json.tramitada_en) >= antes - 2000);
     let e = await estadoDe(A);
     assert.equal(e.tramitacion.estado, 'tramitada');
-    assert.equal(e.tramitacion.tramitada_por, EMAIL);
+    assert.equal(e.tramitacion.tramitada_por, NOMBRE);
     assert.ok(e.tramitacion.tramitada_en);
     const ev = e.eventos.find((x) => x.tipo === 'tramitada');
-    assert.equal(ev.actor, EMAIL);
-    assert.deepEqual(ev.detalle, {});
+    assert.equal(ev.actor, NOMBRE);
+    assert.deepEqual(ev.detalle, {}, 'El detalle sigue sin datos personales: ni el nombre ni el correo');
 
     // en la ficha y en la lista
     const ficha = (await get(`/api/bandeja/ficha?ref=${A}`, autorizado())).json.tramitacion;
-    assert.deepEqual([ficha.estado, ficha.tramitada_por], ['tramitada', EMAIL]);
+    assert.deepEqual([ficha.estado, ficha.tramitada_por], ['tramitada', NOMBRE]);
     assert.ok(!(await get('/api/bandeja/lista?estado=pendientes', autorizado())).json.items.some((i) => i.ref === A));
     assert.ok((await get('/api/bandeja/lista?estado=tramitadas', autorizado())).json.items.some((i) => i.ref === A));
 
@@ -875,11 +975,11 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
     assert.equal(e.tramitacion.tramitada_por, null);
     assert.equal(e.tramitacion.tramitada_en, null);
     const reabierta = e.eventos.find((x) => x.tipo === 'reabierta');
-    assert.equal(reabierta.actor, EMAIL);
+    assert.equal(reabierta.actor, NOMBRE);
     assert.equal((await post('/api/bandeja/estado', { ref: A, accion: 'reabrir' }, autorizado())).status, 409, 'Reabrir una que ya está pendiente no vale');
     assert.ok((await get('/api/bandeja/lista?estado=pendientes', autorizado())).json.items.some((i) => i.ref === A), 'Vuelve a Pendientes');
     assert.deepEqual(tipos(e).filter((x) => x === 'tramitada' || x === 'reabierta'), ['tramitada', 'reabierta']);
-    t.diagnostic('tramitar → tramitada (por el correo de la sesión) → reabrir → recibida, con sus dos eventos');
+    t.diagnostic('tramitar → tramitada (por el nombre de la sesión) → reabrir → recibida, con sus dos eventos');
   });
 
   it('estado: lo que no está recibido no se puede tramitar; ref desconocida → 404; acción o ref ausentes → 400; solo JSON', async () => {
@@ -902,7 +1002,7 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
     assert.equal(roto.status, 400);
   });
 
-  it('volver a enviar: el aviso vuelve a salir (intentos a 1, evento con quién lo pidió) y el acuse no se toca', async (t) => {
+  it('volver a enviar: el aviso vuelve a salir (intentos a 1, eventos con el nombre de quien lo pidió) y el acuse no se toca', async (t) => {
     const antes = await estadoDe(A);
     const avisoAntes = correoDe(antes, 'aviso');
     const acuseAntes = correoDe(antes, 'acuse');
@@ -920,7 +1020,7 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
     assert.ok(aviso.cuerpo_html.includes(A) && aviso.cuerpo_html.includes(IBAN), 'El cuerpo se regenera desde la tramitación');
     assert.deepEqual(correoDe(despues, 'acuse'), acuseAntes, 'El acuse queda como estaba');
     const nuevos = despues.eventos.slice(antes.eventos.length);
-    assert.deepEqual(nuevos.map((x) => [x.tipo, x.actor]), [['aviso_reenviado', EMAIL], ['aviso_enviado', EMAIL]]);
+    assert.deepEqual(nuevos.map((x) => [x.tipo, x.actor]), [['aviso_reenviado', NOMBRE], ['aviso_enviado', NOMBRE]]);
 
     // el acuse también, y con Altavoz caído queda pendiente (se reintenta solo) sin fallar
     const previo = await cambiarEntorno({ ALTAVOZ_SIMULAR_FALLO: '1' });
@@ -939,8 +1039,8 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
     assert.deepEqual(bien.json, { ok: true, estado: 'enviado' });
     const final = await estadoDe(A);
     assert.equal(correoDe(final, 'acuse').estado, 'enviado');
-    assert.deepEqual(final.eventos.filter((x) => x.tipo === 'acuse_reenviado').map((x) => x.actor), [EMAIL, EMAIL]);
-    t.diagnostic('aviso reenviado y acuse reenviado dos veces (una con Altavoz caído): eventos con el correo de backoffice');
+    assert.deepEqual(final.eventos.filter((x) => x.tipo === 'acuse_reenviado').map((x) => x.actor), [NOMBRE, NOMBRE]);
+    t.diagnostic('aviso reenviado y acuse reenviado dos veces (una con Altavoz caído): eventos con el nombre de backoffice');
   });
 
   it('volver a enviar: no crea correos de un envío que aún no está completo; ref desconocida → 404; tipo o ref ausentes → 400; solo JSON', async () => {
@@ -975,12 +1075,13 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
 
 // ---------------------------------------------------------------------------
 // Parte 3 · quién ha abierto cada ficha: evento `ficha_abierta` (ficha?abrir=1) y `vistas` de la lista; y «Marcar como sin abrir»
-// (evento `marcada_sin_abrir`: una apertura solo cuenta si es más nueva que la última marca)
+// (evento `marcada_sin_abrir`: una apertura solo cuenta si es más nueva que la última marca); y el NOMBRE que firma todo eso
 // ---------------------------------------------------------------------------
 
-describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)', { timeout: 900_000 }, () => {
+describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir») y con qué nombre', { timeout: 900_000 }, () => {
   let cookie;
   const autorizado = (extra = {}) => ({ cookie, ...extra });
+  const SESION = { email: EMAIL, nombre: NOMBRE }; // lo que `exigirSesion` entrega al llamar a la lógica en este proceso
   const OTRA = 'victor.molins.10+otra-persona@gmail.com'; // otra persona de backoffice (alias de Victor): solo aparece en la base, no entra
   const hace = (minutos) => new Date(Date.now() - minutos * 60_000).toISOString();
   const lote = String(randomInt(10000, 99999)); // marca propia: la búsqueda `lote<N>` solo encuentra las fichas sueltas de esta parte
@@ -1069,12 +1170,12 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
     assert.deepEqual(primera.json.eventos.map((e) => e.tipo), [...base, 'ficha_abierta'], 'Del más antiguo al más nuevo: la apertura, la última');
     const nueva = primera.json.eventos.at(-1);
     assert.deepEqual(Object.keys(nueva).sort(), ['actor', 'creado_en', 'detalle', 'tipo'], 'Con la misma forma que los demás eventos (sin id)');
-    assert.equal(nueva.actor, EMAIL);
-    assert.deepEqual(nueva.detalle, {});
+    assert.equal(nueva.actor, NOMBRE, 'El actor es el NOMBRE de la sesión (no su correo)');
+    assert.deepEqual(nueva.detalle, {}, 'El detalle sigue vacío: ni el nombre ni el correo');
     assert.ok(Math.abs(Date.parse(nueva.creado_en) - Date.now()) < 120_000, 'Se apunta con la hora de ahora');
     const guardadas = await aperturasDe(ref);
     assert.equal(guardadas.length, 1);
-    assert.equal(guardadas[0].actor, EMAIL);
+    assert.equal(guardadas[0].actor, NOMBRE);
     assert.deepEqual(guardadas[0].detalle, {});
     assert.equal(Date.parse(guardadas[0].creado_en), Date.parse(nueva.creado_en), 'Lo que enseña la respuesta es lo que hay en la base');
 
@@ -1093,7 +1194,7 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
     const tarjeta = (await tarjetas(ref)).get(ref);
     assert.deepEqual(Object.keys(tarjeta.vistas[0]).sort(), ['en', 'por']);
     assert.equal(tarjeta.vistas.length, 1);
-    assert.equal(tarjeta.vistas[0].por, EMAIL);
+    assert.equal(tarjeta.vistas[0].por, NOMBRE);
     assert.equal(Date.parse(tarjeta.vistas[0].en), Date.parse(nueva.creado_en));
 
     // abrir=1 en una referencia que no existe sigue dando el 404 en llano, y sin sesión el 401: ninguno apunta nada
@@ -1112,36 +1213,36 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
     const antigua = await fichaSuelta('Antigua');
     const ajena = await fichaSuelta('Ajena');
     await insertar('tramitacion_eventos', [
-      apertura(reciente.id, EMAIL, MINUTOS_ENTRE_APERTURAS - 5),
-      apertura(antigua.id, EMAIL, MINUTOS_ENTRE_APERTURAS + 1),
+      apertura(reciente.id, NOMBRE, MINUTOS_ENTRE_APERTURAS - 5), // «tuya» = con el nombre de esta sesión (una apertura de otro nombre no frena)
+      apertura(antigua.id, NOMBRE, MINUTOS_ENTRE_APERTURAS + 1),
       apertura(ajena.id, OTRA, 1),
     ], { devolver: false });
 
     // hace 10 min: no se apunta otra
     const r1 = await abrirFicha(reciente.ref);
     assert.equal(r1.status, 200, r1.texto);
-    assert.deepEqual(pares(r1.json.eventos), [['ficha_abierta', EMAIL]]);
+    assert.deepEqual(pares(r1.json.eventos), [['ficha_abierta', NOMBRE]]);
     assert.equal((await aperturasDe(reciente.ref)).length, 1);
 
     // hace 16 min: sí, y queda detrás de la vieja
     const r2 = await abrirFicha(antigua.ref);
     assert.equal(r2.status, 200, r2.texto);
-    assert.deepEqual(pares(r2.json.eventos), [['ficha_abierta', EMAIL], ['ficha_abierta', EMAIL]]);
+    assert.deepEqual(pares(r2.json.eventos), [['ficha_abierta', NOMBRE], ['ficha_abierta', NOMBRE]]);
     assert.ok(Date.parse(r2.json.eventos[1].creado_en) - Date.parse(r2.json.eventos[0].creado_en) > MINUTOS_ENTRE_APERTURAS * 60_000, 'La nueva es de ahora y la vieja de hace más de 15 min');
     assert.equal((await aperturasDe(antigua.ref)).length, 2);
-    assert.deepEqual(pares((await abrirFicha(antigua.ref)).json.eventos), [['ficha_abierta', EMAIL], ['ficha_abierta', EMAIL]], 'Con la nueva ya reciente, otra vez no');
+    assert.deepEqual(pares((await abrirFicha(antigua.ref)).json.eventos), [['ficha_abierta', NOMBRE], ['ficha_abierta', NOMBRE]], 'Con la nueva ya reciente, otra vez no');
 
     // la de otra persona, aunque sea de hace 1 min, no cuenta: se apunta la tuya
     const r3 = await abrirFicha(ajena.ref);
     assert.equal(r3.status, 200, r3.texto);
-    assert.deepEqual(pares(r3.json.eventos), [['ficha_abierta', OTRA], ['ficha_abierta', EMAIL]]);
+    assert.deepEqual(pares(r3.json.eventos), [['ficha_abierta', OTRA], ['ficha_abierta', NOMBRE]]);
 
     // en la lista: una entrada por persona, la apertura más reciente de cada una y las más recientes primero
     const lista = await tarjetas(`lote${lote}`);
-    assert.deepEqual(lista.get(reciente.ref).vistas.map((v) => v.por), [EMAIL]);
-    assert.deepEqual(lista.get(antigua.ref).vistas.map((v) => v.por), [EMAIL], 'Dos aperturas de la misma persona: una sola entrada');
+    assert.deepEqual(lista.get(reciente.ref).vistas.map((v) => v.por), [NOMBRE]);
+    assert.deepEqual(lista.get(antigua.ref).vistas.map((v) => v.por), [NOMBRE], 'Dos aperturas de la misma persona: una sola entrada');
     assert.ok(Date.now() - Date.parse(lista.get(antigua.ref).vistas[0].en) < 5 * 60_000, 'Y es la más reciente (la de ahora, no la de hace 16 min)');
-    assert.deepEqual(lista.get(ajena.ref).vistas.map((v) => v.por), [EMAIL, OTRA]);
+    assert.deepEqual(lista.get(ajena.ref).vistas.map((v) => v.por), [NOMBRE, OTRA]);
   });
 
   it('`vistas`: una entrada por persona (la más reciente), de más reciente a más antigua, como mucho 5; solo cuentan las aperturas; por ficha se leen las 20 últimas', async () => {
@@ -1197,7 +1298,7 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
       console.error = (...partes) => registro.push(partes.join(' '));
       let r;
       try {
-        r = await fichaEnEsteProceso(ref, { email: EMAIL, abrir: true });
+        r = await fichaEnEsteProceso(ref, { sesion: SESION, abrir: true });
       } finally {
         globalThis.fetch = fetchReal;
         console.error = consolaReal;
@@ -1209,14 +1310,14 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
     assert.equal(registro.length, 2, 'Una línea por fallo');
     for (const linea of registro) {
       assert.match(linea, /^\[bandeja\/ficha\] no se ha podido apuntar que se abre la ficha: \S/);
-      assert.ok(!linea.includes(EMAIL) && !linea.includes(ref) && !linea.includes('datos'), `Ni correos, ni referencias, ni el cuerpo de la respuesta en el registro: ${linea}`);
+      assert.ok(!linea.includes(EMAIL) && !linea.includes(NOMBRE) && !linea.includes(ref) && !linea.includes('datos'), `Ni correos, ni nombres, ni referencias, ni el cuerpo de la respuesta en el registro: ${linea}`);
     }
     assert.deepEqual(await aperturasDe(ref), [], 'No se apuntó nada');
 
     // y sin el fallo, la misma llamada sí la apunta (la prueba no se engaña)
-    const bien = await fichaEnEsteProceso(ref, { email: EMAIL, abrir: true });
+    const bien = await fichaEnEsteProceso(ref, { sesion: SESION, abrir: true });
     assert.equal(bien.status, 200);
-    assert.deepEqual(pares(bien.cuerpo.eventos), [['ficha_abierta', EMAIL]]);
+    assert.deepEqual(pares(bien.cuerpo.eventos), [['ficha_abierta', NOMBRE]]);
     assert.equal((await aperturasDe(ref)).length, 1);
   });
 
@@ -1242,11 +1343,11 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
     for (const e of eventos) await insertar('tramitacion_eventos', e, { devolver: false });
   }
 
-  it('«Marcar como sin abrir»: 200, evento con el correo de la sesión, la apertura se conserva, la fila no se toca y la lista vuelve a «Sin abrir» (Pendientes y Todas); marcar dos veces seguidas es marcar una', async (t) => {
+  it('«Marcar como sin abrir»: 200, evento con el nombre de la sesión, la apertura se conserva, la fila no se toca y la lista vuelve a «Sin abrir» (Pendientes y Todas); marcar dos veces seguidas es marcar una', async (t) => {
     const f = await fichaSuelta('Marcada');
     const antes = (await estadoDe(f.ref)).tramitacion;
     assert.equal((await abrirFicha(f.ref)).status, 200);
-    assert.deepEqual((await tarjetaDe(f)).vistas.map((v) => v.por), [EMAIL], 'Antes de marcar, la ha abierto esta sesión');
+    assert.deepEqual((await tarjetaDe(f)).vistas.map((v) => v.por), [NOMBRE], 'Antes de marcar, la ha abierto esta sesión');
 
     const r = await sinAbrir(f.ref);
     assert.equal(r.status, 200, r.texto);
@@ -1254,7 +1355,7 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
     assert.equal(r.cabeceras.get('cache-control'), 'no-store');
     const marcas = await marcasDe(f.ref);
     assert.equal(marcas.length, 1);
-    assert.equal(marcas[0].actor, EMAIL, 'El autor es el correo de la sesión');
+    assert.equal(marcas[0].actor, NOMBRE, 'El autor es el nombre de la sesión');
     assert.deepEqual(marcas[0].detalle, {});
     assert.equal((await aperturasDe(f.ref)).length, 1, 'La apertura NO se borra: el historial se conserva');
     assert.deepEqual((await estadoDe(f.ref)).tramitacion, antes, 'La fila de tramitaciones no se toca (ni su `actualizada_en`: un UPDATE dispararía el trigger y el vigilante abandona las subidas por esa fecha)');
@@ -1268,7 +1369,7 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
 
     // la ficha enseña la marca en el historial, con la forma de los demás eventos y detrás de la apertura
     const historial = await abrirFicha(f.ref, '');
-    assert.deepEqual(pares(historial.json.eventos), [['ficha_abierta', EMAIL], [MARCA, EMAIL]]);
+    assert.deepEqual(pares(historial.json.eventos), [['ficha_abierta', NOMBRE], [MARCA, NOMBRE]]);
     assert.deepEqual(Object.keys(historial.json.eventos[1]).sort(), ['actor', 'creado_en', 'detalle', 'tipo']);
 
     // marcar otra vez seguida: 200 y SIN evento duplicado
@@ -1288,11 +1389,11 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
 
     const r = await abrirFicha(f.ref); // la misma persona, a los pocos segundos de su primera apertura
     assert.equal(r.status, 200, r.texto);
-    assert.deepEqual(pares(r.json.eventos), [['ficha_abierta', EMAIL], [MARCA, EMAIL], ['ficha_abierta', EMAIL]], 'Apertura, marca, apertura');
+    assert.deepEqual(pares(r.json.eventos), [['ficha_abierta', NOMBRE], [MARCA, NOMBRE], ['ficha_abierta', NOMBRE]], 'Apertura, marca, apertura');
     const aperturas = await aperturasDe(f.ref);
     assert.equal(aperturas.length, 2, 'La segunda apertura SÍ se apunta aunque no hayan pasado 15 minutos de la primera');
     const vistas = (await tarjetaDe(f)).vistas;
-    assert.deepEqual(vistas.map((v) => v.por), [EMAIL], 'Y la lista la vuelve a dar por abierta');
+    assert.deepEqual(vistas.map((v) => v.por), [NOMBRE], 'Y la lista la vuelve a dar por abierta');
     assert.equal(Date.parse(vistas[0].en), Date.parse(aperturas[1].creado_en), 'Con la apertura de DESPUÉS de la marca');
 
     assert.equal((await abrirFicha(f.ref)).json.eventos.filter((e) => e.tipo === 'ficha_abierta').length, 2, 'Otra apertura seguida: el freno de siempre');
@@ -1340,21 +1441,21 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
     const antes = await fichaSuelta('FrenoMarcaAntes');
     const vieja = await fichaSuelta('FrenoApertura20');
     const caducado = await fichaSuelta('FrenoMarcaVieja');
-    await sembrar([apertura(despues.id, EMAIL, 8), apertura(despues.id, OTRA, 5, MARCA)]);
-    await sembrar([apertura(antes.id, OTRA, 8, MARCA), apertura(antes.id, EMAIL, 5)]);
-    await sembrar([apertura(vieja.id, EMAIL, 20), apertura(vieja.id, OTRA, 3, MARCA)]);
-    await sembrar([apertura(caducado.id, OTRA, 40, MARCA), apertura(caducado.id, EMAIL, 20)]);
+    await sembrar([apertura(despues.id, NOMBRE, 8), apertura(despues.id, OTRA, 5, MARCA)]);
+    await sembrar([apertura(antes.id, OTRA, 8, MARCA), apertura(antes.id, NOMBRE, 5)]);
+    await sembrar([apertura(vieja.id, NOMBRE, 20), apertura(vieja.id, OTRA, 3, MARCA)]);
+    await sembrar([apertura(caducado.id, OTRA, 40, MARCA), apertura(caducado.id, NOMBRE, 20)]);
 
     // tu apertura (hace 8 min) y una marca más nueva (hace 5): se apunta
     const r1 = await abrirFicha(despues.ref);
     assert.equal(r1.status, 200, r1.texto);
-    assert.deepEqual(pares(r1.json.eventos), [['ficha_abierta', EMAIL], [MARCA, OTRA], ['ficha_abierta', EMAIL]]);
+    assert.deepEqual(pares(r1.json.eventos), [['ficha_abierta', NOMBRE], [MARCA, OTRA], ['ficha_abierta', NOMBRE]]);
     assert.equal((await aperturasDe(despues.ref)).length, 2);
 
     // una marca (hace 8 min) y luego tu apertura (hace 5): la marca queda detrás de tu apertura reciente, sigue el freno → no se apunta
     const r2 = await abrirFicha(antes.ref);
     assert.equal(r2.status, 200, r2.texto);
-    assert.deepEqual(pares(r2.json.eventos), [[MARCA, OTRA], ['ficha_abierta', EMAIL]]);
+    assert.deepEqual(pares(r2.json.eventos), [[MARCA, OTRA], ['ficha_abierta', NOMBRE]]);
     assert.equal((await aperturasDe(antes.ref)).length, 1);
 
     // tu apertura de hace 20 min y una marca de hace 3: se apunta (de todas formas habría pasado el freno, y con la marca más)
@@ -1425,7 +1526,7 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
     const modo = process.env.TRAMITACION_PRUEBA;
     process.env.TRAMITACION_PRUEBA = '0';
     try {
-      const r = await marcarEnEsteProceso({ ref: f.ref, accion: 'sin_abrir' }, EMAIL);
+      const r = await marcarEnEsteProceso({ ref: f.ref, accion: 'sin_abrir' }, SESION);
       assert.equal(r.status, 404);
       assert.equal(r.cuerpo.codigo, 'no_encontrada');
     } finally {
@@ -1455,7 +1556,7 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
       let respuesta = null;
       try {
         try {
-          await marcarEnEsteProceso({ ref: f.ref, accion: 'sin_abrir' }, EMAIL);
+          await marcarEnEsteProceso({ ref: f.ref, accion: 'sin_abrir' }, SESION);
         } catch (error) {
           lanzado = error;
           respuesta = respuestaDeError(error, 'estado'); // lo que hace el handler de api/bandeja/estado.js
@@ -1473,13 +1574,99 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir»)'
     assert.equal(registro.length, 2, 'Una línea por fallo');
     for (const linea of registro) {
       assert.match(linea, /^\[bandeja\/estado\] \S/);
-      assert.ok(!linea.includes(EMAIL) && !linea.includes(f.ref) && !linea.includes('datos'), `Ni correos, ni referencias, ni el cuerpo de la respuesta en el registro: ${linea}`);
+      assert.ok(!linea.includes(EMAIL) && !linea.includes(NOMBRE) && !linea.includes(f.ref) && !linea.includes('datos'), `Ni correos, ni nombres, ni referencias, ni el cuerpo de la respuesta en el registro: ${linea}`);
     }
     assert.deepEqual(await marcasDe(f.ref), [], 'No se apuntó nada');
 
     // y sin el fallo, la misma llamada sí la apunta (la prueba no se engaña)
-    const bien = await marcarEnEsteProceso({ ref: f.ref, accion: 'sin_abrir' }, EMAIL);
+    const bien = await marcarEnEsteProceso({ ref: f.ref, accion: 'sin_abrir' }, SESION);
     assert.deepEqual([bien.status, bien.cuerpo], [200, { ok: true }]);
     assert.equal((await marcasDe(f.ref)).length, 1);
+  });
+
+  // ---- El nombre es el «quién» de todo lo que se hace en la bandeja (16-oct-2026): con nombre, el nombre; sin él, el correo de siempre ----
+
+  it('CON nombre: abrir, marcar sin abrir, tramitar, volver a pendiente y volver a enviar se apuntan con el NOMBRE (y `tramitada_por`); el correo de la sesión no sale en ningún sitio', async (t) => {
+    const laura = await sesionNueva(EMAIL, 'LAURA GARCÍA');
+    const como = (extra = {}) => ({ cookie: laura, ...extra });
+    const ref = await crearTramitacion({ datos: datosGnew({ titular: 'Titular Con Nombre SL' }), documentos: [documento(1, 'con-nombre.pdf', generarPdf(2048))] });
+    const antes = (await estadoDe(ref)).eventos.length;
+
+    const abierta = await get(`/api/bandeja/ficha?ref=${ref}&abrir=1`, como());
+    assert.equal(abierta.status, 200, abierta.texto);
+    assert.deepEqual(pares(abierta.json.eventos.slice(antes)), [['ficha_abierta', 'LAURA GARCÍA']], 'La apertura, en el historial de la propia respuesta y con el nombre');
+    assert.equal((await post('/api/bandeja/estado', { ref, accion: 'sin_abrir' }, como())).status, 200);
+    const tramitada = await post('/api/bandeja/estado', { ref, accion: 'tramitar' }, como());
+    assert.equal(tramitada.status, 200, tramitada.texto);
+    assert.equal(tramitada.json.tramitada_por, 'LAURA GARCÍA');
+    assert.equal((await estadoDe(ref)).tramitacion.tramitada_por, 'LAURA GARCÍA');
+    assert.deepEqual((await post('/api/bandeja/reenviar', { ref, tipo: 'aviso' }, como())).json, { ok: true, estado: 'enviado' });
+    const reabierta = await post('/api/bandeja/estado', { ref, accion: 'reabrir' }, como());
+    assert.equal(reabierta.status, 200, reabierta.texto);
+    assert.equal((await estadoDe(ref)).tramitacion.tramitada_por, null, 'Volver a pendiente lo borra');
+
+    const e = await estadoDe(ref);
+    assert.deepEqual(pares(e.eventos.slice(antes)), [
+      ['ficha_abierta', 'LAURA GARCÍA'], ['marcada_sin_abrir', 'LAURA GARCÍA'], ['tramitada', 'LAURA GARCÍA'],
+      ['aviso_reenviado', 'LAURA GARCÍA'], ['aviso_enviado', 'LAURA GARCÍA'], ['reabierta', 'LAURA GARCÍA'],
+    ], 'Cada cosa que hace backoffice lleva el nombre de quien la hace, también el envío que dispara «Volver a enviar»');
+    for (const evento of e.eventos.slice(antes)) assert.ok(!('nombre' in evento.detalle) && !('email' in evento.detalle), `${evento.tipo}: el detalle no lleva ni el nombre ni el correo`);
+    assert.ok(!JSON.stringify(e.eventos).includes(EMAIL), 'El correo de la sesión no está en ningún evento');
+    assert.ok(!JSON.stringify(e.tramitacion).includes(EMAIL), 'Ni en la fila');
+    t.diagnostic('abrir → sin abrir → tramitar → volver a enviar → reabrir: todo con «LAURA GARCÍA»');
+  });
+
+  it('SIN nombre (una cookie de antes del nombre): `abrir=1` NO apunta la apertura y la ficha sale igual; marcar, tramitar, volver a pendiente y volver a enviar siguen funcionando con el CORREO de actor', async (t) => {
+    const antigua = `${NOMBRE_COOKIE}=${firmarSesion(EMAIL, secretoBandeja())}`; // exactamente lo que ya tiene backoffice: una sesión sin `n`
+    const como = (extra = {}) => ({ cookie: antigua, ...extra });
+    assert.deepEqual((await get('/api/bandeja/yo', como())).json, { ok: true, email: EMAIL, nombre: null });
+    assert.equal((await get('/api/bandeja/lista', como())).status, 200, 'Entra igual: el nombre es una etiqueta, no un acceso');
+
+    // la ficha sale igual, pero sin apuntar quién la abre (una apertura sin saber quién es no sirve)
+    const f = await fichaSuelta('SinNombre');
+    for (const extra of ['&abrir=1', '&abrir=1&abrir=1']) {
+      const r = await get(`/api/bandeja/ficha?ref=${f.ref}${extra}`, como());
+      assert.equal(r.status, 200, r.texto);
+      assert.equal(r.json.tramitacion.ref, f.ref, 'La ficha sale igual');
+      assert.ok(r.json.documentos && r.json.correos && r.json.eventos, 'Con todo lo suyo');
+      assert.deepEqual(r.json.eventos, [], `«${extra}» no apunta nada`);
+    }
+    assert.deepEqual(await aperturasDe(f.ref), [], 'Sin nombre, ninguna apertura');
+    assert.deepEqual((await tarjetaDe(f)).vistas, [], 'Y la lista la sigue viendo «Sin abrir»');
+
+    // marcar sin abrir, tramitar y volver a pendiente: con el correo, como siempre
+    assert.equal((await post('/api/bandeja/estado', { ref: f.ref, accion: 'sin_abrir' }, como())).status, 200);
+    assert.deepEqual((await marcasDe(f.ref)).map((x) => x.actor), [EMAIL]);
+    const tramitada = await post('/api/bandeja/estado', { ref: f.ref, accion: 'tramitar' }, como());
+    assert.equal(tramitada.status, 200, tramitada.texto);
+    assert.equal(tramitada.json.tramitada_por, EMAIL);
+    assert.equal((await estadoDe(f.ref)).tramitacion.tramitada_por, EMAIL);
+    assert.equal((await post('/api/bandeja/estado', { ref: f.ref, accion: 'reabrir' }, como())).status, 200);
+    assert.deepEqual(pares((await estadoDe(f.ref)).eventos), [[MARCA, EMAIL], ['tramitada', EMAIL], ['reabierta', EMAIL]]);
+
+    // volver a enviar (hace falta una tramitación completa, con sus correos)
+    const ref = await crearTramitacion({ datos: datosGnew({ titular: 'Titular Sin Nombre SL' }), documentos: [documento(1, 'sin-nombre.pdf', generarPdf(2048))] });
+    const antes = (await estadoDe(ref)).eventos.length;
+    assert.deepEqual((await post('/api/bandeja/reenviar', { ref, tipo: 'acuse' }, como())).json, { ok: true, estado: 'enviado' });
+    assert.deepEqual(pares((await estadoDe(ref)).eventos.slice(antes)), [['acuse_reenviado', EMAIL], ['acuse_enviado', EMAIL]]);
+    t.diagnostic('cookie de antes del nombre: entra, la ficha sale, no se apunta la apertura; lo demás con el correo');
+  });
+
+  it('al cambiar de nombre la siguiente apertura se apunta AL MOMENTO (es otra persona, no la frena la ventana de 15 minutos); lo ya guardado con el correo no se reescribe', async () => {
+    const f = await fichaSuelta('CambioDeNombre');
+    await sembrar([apertura(f.id, EMAIL, 60)]); // una apertura de ANTES del nombre: se guardó con el correo y se queda como está
+    const laura = await sesionNueva(EMAIL, 'LAURA GARCÍA');
+    const abrirComo = (galleta) => get(`/api/bandeja/ficha?ref=${f.ref}&abrir=1`, { cookie: galleta });
+
+    assert.deepEqual(pares((await abrirComo(laura)).json.eventos), [['ficha_abierta', EMAIL], ['ficha_abierta', 'LAURA GARCÍA']], 'Otro «quién»: la del correo de hace una hora no la frena');
+    assert.equal((await abrirComo(laura)).json.eventos.length, 2, 'Con el mismo nombre otra vez enseguida, no (la ventana de 15 minutos de siempre)');
+
+    // «Cambiar nombre»: otra persona en el mismo ordenador
+    const cambio = await post('/api/bandeja/yo', { nombre: 'pedro ñandú' }, { cookie: laura });
+    assert.equal(cambio.status, 200, cambio.texto);
+    const pedro = sesionDe(cambio.cookies);
+    assert.deepEqual(pares((await abrirComo(pedro)).json.eventos), [['ficha_abierta', EMAIL], ['ficha_abierta', 'LAURA GARCÍA'], ['ficha_abierta', 'PEDRO ÑANDÚ']]);
+    assert.deepEqual((await aperturasDe(f.ref)).map((x) => x.actor), [EMAIL, 'LAURA GARCÍA', 'PEDRO ÑANDÚ'], 'Nada se reescribe: cada apertura se queda con quien la hizo');
+    assert.deepEqual((await tarjetaDe(f)).vistas.map((v) => v.por), ['PEDRO ÑANDÚ', 'LAURA GARCÍA', EMAIL], 'La lista: una entrada por «quién», de más reciente a más antigua');
   });
 });

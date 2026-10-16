@@ -80,8 +80,12 @@
             align-items: center;
             gap: .7rem;
             min-width: 0;
-            text-decoration: none;
             color: inherit;
+        }
+
+        .marca-logo {
+            display: flex;
+            flex: none;
         }
 
         .marca img {
@@ -95,19 +99,49 @@
             line-height: 1.2;
         }
 
+        .marca-titulo {
+            display: block;
+            color: inherit;
+            text-decoration: none;
+        }
+
         .marca-texto h1 {
             font-size: 1.05rem;
             font-weight: 700;
             color: var(--primary-dark);
         }
 
-        .correo {
-            display: block;
+        /* Quién ha entrado: «NOMBRE · correo» (con «…» si no cabe) y, a su lado o, en el móvil, debajo, el enlace para cambiar el nombre.
+           El enlace va FUERA del <a> del título: un enlace dentro de otro no es HTML válido */
+        .quien {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 0 .6rem;
             font-size: .75rem;
-            color: var(--text-muted);
+        }
+
+        .quien-texto {
+            min-width: 0;
+            max-width: 100%;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
+            color: var(--text-muted);
+        }
+
+        .quien-texto strong {
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .cambiar-nombre {
+            flex: none;
+            padding: .15rem 0;
+            font-weight: 600;
+            color: var(--primary);
+            text-decoration: underline;
+            text-underline-offset: 2px;
         }
 
         .acciones-cabecera {
@@ -414,7 +448,7 @@
             vertical-align: .04rem;
         }
 
-        /* Abierta: un ojo y «Abierta por <correo> · hace 5 min», una línea por persona */
+        /* Abierta: un ojo y «Abierta por <nombre> · hace 5 min» (en las aperturas de antes del nombre, el correo), una línea por persona */
         .t-abierta {
             display: flex;
             align-items: flex-start;
@@ -658,7 +692,7 @@
             white-space: nowrap;
         }
 
-        /* Abierta: el ojo y, en dos líneas, el correo (lo que se recorta con «…») y debajo su «hace 5 min» y «+N» si hubo más personas */
+        /* Abierta: el ojo y, en dos líneas, quién (el nombre; lo que se recorta con «…») y debajo su «hace 5 min» y «+N» si hubo más personas */
         .c-abierta {
             gap: .4rem;
             color: #166534;
@@ -747,13 +781,16 @@
 
 <header class="cabecera">
     <div class="cabecera-in">
-        <a class="marca" href="/bandeja">
-            <img src="/logo-gnew.png" alt="Grupo New Energy">
+        <div class="marca">
+            <a class="marca-logo" href="/bandeja" tabindex="-1"><img src="/logo-gnew.png" alt="Grupo New Energy"></a>
             <div class="marca-texto">
-                <h1>Tramitaciones</h1>
-                <span class="correo" id="correo"></span>
+                <a class="marca-titulo" href="/bandeja"><h1>Tramitaciones</h1></a>
+                <div class="quien">
+                    <span class="quien-texto" id="quien"><strong id="nombre" hidden></strong><span id="separador" hidden> · </span><span id="correo"></span></span>
+                    <a class="cambiar-nombre" id="cambiarNombre" href="/bandeja/entrar?paso=nombre&amp;volver=%2Fbandeja">Cambiar nombre</a>
+                </div>
             </div>
-        </a>
+        </div>
         <div class="acciones-cabecera">
             <button class="btn-icono" id="btnActualizar" type="button" aria-label="Actualizar la lista" title="Actualizar la lista">
                 <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
@@ -873,12 +910,36 @@
         return fechaCorta(iso);
     }
 
-    // Una sola vez: la lista y «quién soy» pueden recibir el 401 a la vez y la segunda navegación abortaría la primera
+    // Una sola vez: la lista y «quién soy» pueden recibir el 401 (o el «sin nombre») a la vez y la segunda navegación abortaría la primera
     var redirigiendo = false;
     function irALogin() {
         if (redirigiendo) return;
         redirigiendo = true;
         location.replace('/bandeja/entrar?volver=' + encodeURIComponent(location.pathname + location.search));
+    }
+
+    // La sesión no tiene nombre (la primera vez, o una sesión de antes del nombre): se pide en el paso del nombre y se vuelve aquí
+    function irAlNombre() {
+        if (redirigiendo) return;
+        redirigiendo = true;
+        location.replace('/bandeja/entrar?paso=nombre&volver=' + encodeURIComponent(location.pathname + location.search));
+    }
+
+    // «Cambiar nombre» vuelve a esta misma dirección (con el filtro de ahora: se actualiza cuando cambia)
+    var enlaceNombre = document.getElementById('cambiarNombre');
+    function ponerEnlaceNombre() {
+        enlaceNombre.href = '/bandeja/entrar?paso=nombre&volver=' + encodeURIComponent(location.pathname + location.search);
+    }
+
+    // «NOMBRE · correo» bajo el título (sin nombre, solo el correo, como antes)
+    function pintarQuien(nombre, email) {
+        var elNombre = document.getElementById('nombre');
+        var separador = document.getElementById('separador');
+        elNombre.textContent = nombre || '';
+        elNombre.hidden = !nombre;
+        separador.hidden = !nombre;
+        document.getElementById('correo').textContent = email || '';
+        document.getElementById('quien').title = [nombre, email].filter(Boolean).join(' · ');
     }
 
     // GET/POST con la cookie. Devuelve {status, json}; sin red, {red: true}. Nunca lanza.
@@ -916,7 +977,8 @@
         return svg;
     }
 
-    // «Abierta por <correo> · hace 5 min». El «hace …» lleva su fecha en data-fecha: actualizarHoras() lo mantiene al día
+    // «Abierta por <nombre> · hace 5 min» (en las aperturas de antes del nombre, el correo). El «hace …» lleva su fecha en data-fecha:
+    // actualizarHoras() lo mantiene al día
     function lineaAbierta(v) {
         var linea = el('div', 't-abierta');
         linea.appendChild(ojo());
@@ -1192,6 +1254,7 @@
         if (guardar) {
             try { sessionStorage.setItem('bandeja.estado', nuevo); } catch (e) { /* sin almacenamiento: no pasa nada */ }
             history.replaceState(null, '', nuevo === 'pendientes' ? '/bandeja' : '/bandeja?estado=' + nuevo);
+            ponerEnlaceNombre();
         }
         nuevaBusqueda();
     }
@@ -1261,12 +1324,13 @@
     });
 
     // ---------- arranque ----------
+    // «Quién soy»: sin sesión, al acceso; sin nombre, al paso del nombre (la lista se pide a la vez y no escribe nada, así que puede seguir)
+    ponerEnlaceNombre();
     api('/api/bandeja/yo').then(function (r) {
         if (!r.red && r.status === 401) { irALogin(); return; }
         if (r.json && r.json.email) {
-            var c = document.getElementById('correo');
-            c.textContent = r.json.email;
-            c.title = r.json.email;
+            if (!r.json.nombre) { irAlNombre(); return; }
+            pintarQuien(r.json.nombre, r.json.email);
         }
     });
 

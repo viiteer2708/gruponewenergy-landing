@@ -83,8 +83,12 @@
             align-items: center;
             gap: .7rem;
             min-width: 0;
-            text-decoration: none;
             color: inherit;
+        }
+
+        .marca-logo {
+            display: flex;
+            flex: none;
         }
 
         .marca img {
@@ -95,9 +99,44 @@
 
         .marca-texto {
             min-width: 0;
+            line-height: 1.2;
+        }
+
+        .marca-titulo {
+            display: block;
             font-size: 1.05rem;
             font-weight: 700;
             color: var(--primary-dark);
+            text-decoration: none;
+        }
+
+        /* Quién ha entrado (su nombre; sin nombre, su correo) y el enlace para cambiarlo, debajo del título. El enlace va FUERA del <a>
+           del título: un enlace dentro de otro no es HTML válido. (Aquí `.correo` es otra cosa —las filas de correos—: no se usa) */
+        .quien {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 0 .6rem;
+            font-size: .75rem;
+        }
+
+        .quien-texto {
+            min-width: 0;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .cambiar-nombre {
+            flex: none;
+            padding: .15rem 0;
+            font-weight: 600;
+            color: var(--primary);
+            text-decoration: underline;
+            text-underline-offset: 2px;
         }
 
         .btn-salir {
@@ -589,10 +628,16 @@
 
 <header class="cabecera">
     <div class="cabecera-in">
-        <a class="marca" href="/bandeja">
-            <img src="/logo-gnew.png" alt="Grupo New Energy">
-            <span class="marca-texto">Tramitaciones</span>
-        </a>
+        <div class="marca">
+            <a class="marca-logo" href="/bandeja" tabindex="-1"><img src="/logo-gnew.png" alt="Grupo New Energy"></a>
+            <div class="marca-texto">
+                <a class="marca-titulo" href="/bandeja">Tramitaciones</a>
+                <div class="quien" id="quienCaja" hidden>
+                    <span class="quien-texto" id="quien"></span>
+                    <a class="cambiar-nombre" id="cambiarNombre" href="/bandeja/entrar?paso=nombre">Cambiar nombre</a>
+                </div>
+            </div>
+        </div>
         <button class="btn-salir" id="btnSalir" type="button">Salir</button>
     </div>
 </header>
@@ -659,6 +704,7 @@
     let marcando = false;      // hay un «Marcar como sin abrir» en curso
     let descargas = 0;         // descargas en curso (no se refresca la ficha mientras tanto)
     let temporizador = null;
+    let miNombre = null;       // el nombre de esta sesión (lo da `yo`): sin él NO se pide la ficha con abrir=1
 
     // ---------- utilidades ----------
     function el(etiqueta, clase, texto) {
@@ -701,6 +747,21 @@
         if (redirigiendo) return;
         redirigiendo = true;
         location.replace('/bandeja/entrar?volver=' + encodeURIComponent(location.pathname + location.search));
+    }
+
+    // La sesión no tiene nombre (la primera vez, o una sesión de antes del nombre): se pide en el paso del nombre y se vuelve a esta ficha
+    function irAlNombre() {
+        if (redirigiendo) return;
+        redirigiendo = true;
+        location.replace('/bandeja/entrar?paso=nombre&volver=' + encodeURIComponent(location.pathname + location.search));
+    }
+
+    // El nombre bajo el título (sin nombre, el correo) y «Cambiar nombre», que vuelve a esta ficha
+    function pintarQuien(quien, email) {
+        $('quien').textContent = quien || email || '';
+        $('quien').title = [quien, email].filter(Boolean).join(' · ');
+        $('cambiarNombre').href = '/bandeja/entrar?paso=nombre&volver=' + encodeURIComponent(location.pathname + location.search);
+        $('quienCaja').hidden = false;
     }
 
     // GET (sin cuerpo) o POST JSON. Devuelve {status, json}; sin red, {red: true}. Nunca lanza.
@@ -746,11 +807,31 @@
         }
     }
 
+    // Antes de pedir la ficha con abrir=1 hay que saber QUIÉN es (el servidor tampoco apuntaría la apertura de una sesión sin nombre):
+    // se pregunta a `yo`, y si la sesión no tiene nombre se va al paso del nombre SIN pedir la ficha. true = se puede seguir
+    async function asegurarNombre() {
+        if (miNombre) return true;
+        const r = await api('/api/bandeja/yo');
+        if (!r.red && r.status === 401) { irALogin(); return false; }
+        if (r.red) { mostrarCarga(FRASE_RED, true, true); return false; }
+        if (r.status !== 200 || !r.json || !r.json.email) {
+            mostrarCarga(mensajeDe(r, 'No hemos podido cargar la ficha. Inténtalo de nuevo en un momento.'), true, true);
+            return false;
+        }
+        if (!r.json.nombre) { irAlNombre(); return false; }
+        miNombre = r.json.nombre;
+        pintarQuien(miNombre, r.json.email);
+        return true;
+    }
+
     // `silenciosa` = refresco por detrás (enlaces caducados, después de un cambio): no tapa la ficha con «Cargando»
-    // y NO cuenta como abrirla. Solo la carga de verdad (la primera, y la de «Reintentar») manda `abrir=1`: el servidor
-    // apunta entonces quién abre la ficha (una vez cada 15 minutos por persona)
+    // y NO cuenta como abrirla. Solo la carga de verdad (la primera, y la de «Reintentar») manda `abrir=1`, y solo cuando ya se
+    // sabe el nombre: el servidor apunta entonces quién abre la ficha (una vez cada 15 minutos por persona)
     async function cargar(silenciosa) {
-        if (!silenciosa) mostrarCarga('Cargando la ficha…');
+        if (!silenciosa) {
+            mostrarCarga('Cargando la ficha…');
+            if (!(await asegurarNombre())) return false;
+        }
         const r = await api('/api/bandeja/ficha?ref=' + encodeURIComponent(ref) + (silenciosa ? '' : '&abrir=1'));
         if (!r.red && r.status === 401) { irALogin(); return false; }
         if (r.red) {
@@ -834,12 +915,13 @@
         pintarHistorial();
     }
 
-    // «Abierta por a@b (14-10-2026 a las 10:32) · c@d (…)»: una entrada por persona, con su apertura más reciente y la última
-    // primero. Sale de los eventos `ficha_abierta` del historial POSTERIORES a la última `marcada_sin_abrir` (una marca «sin abrir»
-    // anula las aperturas de antes, para todo el equipo); si no queda ninguno, la línea no se enseña.
+    // «Abierta por LAURA GARCÍA (14-10-2026 a las 10:32) · PEDRO (…)»: una entrada por persona (su nombre; en las aperturas de antes
+    // del nombre, su correo), con su apertura más reciente y la última primero. Sale de los eventos `ficha_abierta` del historial
+    // POSTERIORES a la última `marcada_sin_abrir` (una marca «sin abrir» anula las aperturas de antes, para todo el equipo); si no
+    // queda ninguno, la línea no se enseña.
     function pintarAbiertaPor() {
         const linea = $('abiertaPor');
-        const porPersona = new Map(); // correo → su apertura más reciente (los eventos llegan de más antiguo a más nuevo)
+        const porPersona = new Map(); // quién (nombre o correo) → su apertura más reciente (los eventos llegan de más antiguo a más nuevo)
         for (const ev of datos.eventos) {
             if (ev.tipo === 'marcada_sin_abrir') porPersona.clear();
             else if (ev.tipo === 'ficha_abierta' && typeof ev.actor === 'string' && ev.actor && partes(ev.creado_en)) porPersona.set(ev.actor, ev.creado_en);
@@ -1198,9 +1280,12 @@
     }
 
     // ----- historial -----
+    // Quién hizo cada cosa: el NOMBRE de la persona de backoffice (en los eventos de antes del nombre, su correo). Los tres de abajo no son
+    // una persona (los pone el sistema, el comercial o el vigilante) y no llevan «por …»
+    const ACTORES_SIN_PERSONA = ['sistema', 'comercial', 'vigilante'];
     function textoEvento(ev) {
         const d = ev.detalle && typeof ev.detalle === 'object' ? ev.detalle : {};
-        const por = typeof ev.actor === 'string' && ev.actor.includes('@') ? ` por ${ev.actor}` : '';
+        const por = typeof ev.actor === 'string' && ev.actor && !ACTORES_SIN_PERSONA.includes(ev.actor) ? ` por ${ev.actor}` : '';
         const n = Number(d.n_documentos);
         switch (ev.tipo) {
             case 'creada': return 'El comercial ha empezado el envío';

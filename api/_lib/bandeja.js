@@ -1,9 +1,11 @@
 // api/_lib/bandeja.js · Lógica de la bandeja de backoffice (diseño §2.3 «Bandeja» y §2.6).
 //
 // FLUJO EN LLANO. Backoffice pide un código con su correo (`pedirCodigo`), lo recibe por email y lo teclea
-// (`entrar`): si es correcto, el servidor le da una cookie de sesión firmada. Con ella ve la lista (`listar`), la ficha
-// de cada contrato con los enlaces de descarga (`ficha`), marca como tramitada o vuelve a pendiente (`cambiarEstado`), deja una
-// pendiente «sin abrir» para que la coja otro compañero (`marcarSinAbrir`) y reenvía un correo si hizo falta (`reenviarCorreo`).
+// (`entrar`): si es correcto, el servidor le da una cookie de sesión firmada. La primera vez cada persona escribe su NOMBRE
+// (`ponerNombre`; no es un acceso, solo una etiqueta: todo backoffice entra con el mismo correo) y la cookie lo lleva. Con ella ve la
+// lista (`listar`), la ficha de cada contrato con los enlaces de descarga (`ficha`), marca como tramitada o vuelve a pendiente
+// (`cambiarEstado`), deja una pendiente «sin abrir» para que la coja otro compañero (`marcarSinAbrir`) y reenvía un correo si hizo
+// falta (`reenviarCorreo`). Esas cuatro apuntan QUIÉN lo hace con `actorDe(sesion)`: su nombre o, si aún no lo ha escrito, su correo.
 //
 // Las funciones devuelven {status, cuerpo, cabeceras?} y los handlers de api/bandeja/ solo lo escriben en la respuesta
 // (igual que tramitacion.js con iniciar/confirmar). Reglas del módulo:
@@ -26,7 +28,7 @@ import {
 import { ETIQUETA_CORREO, armarCodigo } from './correos.js';
 import { transicionValida } from './estados.js';
 import { cookiesDe, esHttps, responder } from './http.js';
-import { normalizarBusqueda, refValida } from './nombres.js';
+import { normalizarBusqueda, normalizarNombrePersona, refValida } from './nombres.js';
 import {
   NOMBRE_COOKIE, cookieBorrada, cookieSesion, firmarSesion, generarCodigo, hashCodigo, hashIp, verificarSesion,
 } from './sesion.js';
@@ -44,6 +46,7 @@ export const MENSAJES = Object.freeze({
   peticion: 'No hemos podido leer lo que se ha enviado. Recarga la página e inténtalo de nuevo.',
   formato: 'No hemos podido leer lo que se ha enviado. Recarga la página e inténtalo de nuevo.',
   emailNoValido: 'Escribe un correo electrónico válido.',
+  nombre: 'Escribe tu nombre (solo letras, de 2 a 40).',
   codigoEnviado: 'Si tu correo tiene acceso, te hemos enviado un código de 6 cifras. Caduca en 10 minutos. Revisa también el spam.',
   codigoNoEnviado: 'No hemos podido enviarte el código. Inténtalo de nuevo en un minuto.',
   codigoMalo: 'El código no es correcto o ha caducado. Pide uno nuevo.',
@@ -113,18 +116,35 @@ function formularioDeRef(ref) {
 // ---------------------------------------------------------------------------
 
 /**
- * Comprueba la cookie de sesión. Devuelve {email} si es auténtica, no ha caducado y el correo SIGUE estando en
- * BANDEJA_EMAILS (se mira en cada petición: quitar a alguien de la lista le cierra la puerta al momento). Si no,
+ * Comprueba la cookie de sesión. Devuelve {email, nombre} si es auténtica, no ha caducado y el correo SIGUE estando en
+ * BANDEJA_EMAILS (se mira en cada petición: quitar a alguien de la lista le cierra la puerta al momento). `nombre` es el que
+ * esa persona escribió la primera vez (en MAYÚSCULAS) o `null` si su cookie es de antes del nombre o aún no lo ha escrito:
+ * entra igual (el nombre es una etiqueta, no un acceso) y la página le pedirá el nombre. Si no hay sesión,
  * responde `401 {codigo:'sesion'}` (y borra la cookie rota, si había una) y devuelve null: el handler debe hacer `return`.
  * Lanza solo si la configuración está mal (BANDEJA_SECRETO / BANDEJA_EMAILS): eso es un 500, no un 401.
  */
 export function exigirSesion(req, res) {
   const valor = cookiesDe(req)[NOMBRE_COOKIE];
   const sesion = valor ? verificarSesion(valor, secretoBandeja()) : null;
-  if (sesion && emailAutorizado(sesion.email)) return { email: sesion.email };
+  if (sesion && emailAutorizado(sesion.email)) return { email: sesion.email, nombre: sesion.nombre };
   const cabeceras = valor ? { 'Set-Cookie': cookieBorrada({ secure: esHttps(req) }) } : {};
   responder(res, 401, { ok: false, codigo: 'sesion', mensaje: MENSAJES.sesion, retryable: false }, cabeceras);
   return null;
+}
+
+/**
+ * QUIÉN hace una cosa en la bandeja, tal como se apunta (eventos `ficha_abierta`, `tramitada`, `marcada_sin_abrir`,
+ * `aviso_reenviado`… y `tramitada_por`): el NOMBRE que esa persona escribió la primera vez (en MAYÚSCULAS) o, si su sesión todavía
+ * no lo tiene (cookie de antes del nombre), su correo, como se hacía antes. `sesion` es lo que devuelve `exigirSesion`. Es el único
+ * sitio que decide el «quién»: las funciones de abajo que escriben algo lo llaman y nadie más lee `sesion.email` para eso (el correo
+ * solo se usa para los permisos). No lleva el correo dentro del nombre ni inventa formatos: es uno u otro.
+ */
+export function actorDe(sesion) {
+  const nombre = typeof sesion?.nombre === 'string' ? sesion.nombre.trim() : '';
+  if (nombre) return nombre;
+  const email = normalizarEmail(sesion?.email);
+  if (!email) throw new TypeError('La sesión no tiene ni nombre ni correo');
+  return email;
 }
 
 /**
@@ -137,6 +157,25 @@ export function exigirJson(req, res) {
   if (tipo === 'application/json') return true;
   responder(res, 415, { ok: false, codigo: 'peticion', mensaje: MENSAJES.formato, retryable: false });
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// El nombre de quien entra
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/bandeja/yo {nombre}. `sesion` es la de `exigirSesion`. Devuelve {status, cuerpo, cabeceras}:
+ *   200 {ok, email, nombre} + Set-Cookie     el nombre ya limpio (MAYÚSCULAS, espacios juntados) y la sesión firmada otra vez con él
+ *                                            (365 días nuevos: vale igual que la anterior, que sigue siendo válida)
+ *   400 nombre                               el nombre no vale: de 2 a 40 letras, sin `@` ni cifras (`normalizarNombrePersona`)
+ * No es un acceso (el correo y su código siguen siendo lo que abre la puerta): solo dice QUIÉN es cada persona, porque todo backoffice
+ * entra con el mismo correo. Se puede repetir cuando se quiera («Cambiar nombre»: dos personas en el mismo ordenador).
+ */
+export function ponerNombre(entrada, sesion, { https = false } = {}) {
+  const nombre = normalizarNombrePersona(esObjeto(entrada) ? entrada.nombre : undefined);
+  if (!nombre) return fallo(400, 'nombre', MENSAJES.nombre);
+  const valor = firmarSesion(sesion.email, secretoBandeja(), { nombre });
+  return resp(200, { ok: true, email: sesion.email, nombre }, { 'Set-Cookie': cookieSesion(valor, { secure: https }) });
 }
 
 // ---------------------------------------------------------------------------
@@ -368,10 +407,10 @@ export function vistasDe(eventos) {
  *   400 peticion                                        `estado` desconocido o `antes` que no es una fecha
  * `siguiente` es el valor de `antes` para pedir la página siguiente (null si no hay más). `q` busca, palabra a palabra
  * (todas deben aparecer), en titular, CUPS, referencia, comercial y compañía.
- * `vistas` dice quién ha abierto la ficha: una entrada por persona (`por` = su correo, `en` = su apertura MÁS reciente),
- * de más reciente a más antigua y como mucho 5; `[]` si nadie la ha abierto. Sale de los eventos `ficha_abierta` (ver `ficha`)
- * POSTERIORES a la última `marcada_sin_abrir` (ver `marcarSinAbrir`: una marca anula las aperturas de antes, para todo el
- * equipo); por ficha se leen sus 20 últimos eventos de apertura o marca.
+ * `vistas` dice quién ha abierto la ficha: una entrada por persona (`por` = su nombre o, en las aperturas de antes del nombre,
+ * su correo; `en` = su apertura MÁS reciente), de más reciente a más antigua y como mucho 5; `[]` si nadie la ha abierto. Sale de
+ * los eventos `ficha_abierta` (ver `ficha`) POSTERIORES a la última `marcada_sin_abrir` (ver `marcarSinAbrir`: una marca anula las
+ * aperturas de antes, para todo el equipo); por ficha se leen sus 20 últimos eventos de apertura o marca.
  */
 export async function listar(consulta = {}) {
   const clave = primero(consulta.estado) ?? 'pendientes';
@@ -465,9 +504,10 @@ export function hayQueApuntarApertura(eventos, actor, ahora = Date.now()) {
 }
 
 /**
- * Deja constancia de que `actor` ha abierto la ficha, salvo que no haga falta (ver `hayQueApuntarApertura`: ya la abrió hace menos
- * de MINUTOS_ENTRE_APERTURAS minutos y nadie la ha dejado «sin abrir» desde entonces). `eventos` son los últimos de la tramitación,
- * de más nuevo a más antiguo (los que `ficha` ya ha leído: no hay consulta extra). Devuelve el evento nuevo con la forma de los de
+ * Deja constancia de que `actor` (el nombre de quien la abre: `actorDe`) ha abierto la ficha, salvo que no haga falta (ver
+ * `hayQueApuntarApertura`: ya la abrió hace menos de MINUTOS_ENTRE_APERTURAS minutos y nadie la ha dejado «sin abrir» desde
+ * entonces). `eventos` son los últimos de la tramitación, de más nuevo a más antiguo (los que `ficha` ya ha leído: no hay consulta
+ * extra). Devuelve el evento nuevo con la forma de los de
  * la ficha, o null si no hacía falta apuntarlo o no se ha podido: la apertura NUNCA hace fallar la ficha (y el registro lleva una
  * frase fija).
  */
@@ -483,7 +523,7 @@ async function apuntarApertura(tramitacionId, actor, eventos) {
 }
 
 /**
- * GET /api/bandeja/ficha?ref=[&abrir=1]. `email` es el de la sesión. Devuelve {status, cuerpo}:
+ * GET /api/bandeja/ficha?ref=[&abrir=1]. `sesion` es la de `exigirSesion`. Devuelve {status, cuerpo}:
  *   200 {ok, tramitacion, documentos:[{orden, nombre, tamano, tipo_mime, es_firma, subido, url}], correos:[{tipo, estado,
  *        intentos, enviado_en, codigo_respuesta}], eventos:[{tipo, actor, detalle, creado_en}] (los últimos 50, de más
  *        antiguo a más nuevo), enlaces_caducan_en}
@@ -492,14 +532,16 @@ async function apuntarApertura(tramitacionId, actor, eventos) {
  * <carpeta>/NN.ext y el nombre que ve backoffice vive solo aquí, en `nombre`. Si el almacén no firma, la ficha sale igual
  * con `url: null`.
  * `abrir` (que la página manda solo en la carga de verdad, no en sus refrescos en silencio) apunta la apertura como evento
- * `ficha_abierta` con el correo de la sesión como actor, y ese evento ya sale en `eventos` de esta misma respuesta. Si esa
+ * `ficha_abierta` con el nombre de la sesión como actor (`actorDe`), y ese evento ya sale en `eventos` de esta misma respuesta.
+ * SI LA SESIÓN NO TIENE NOMBRE (cookie de antes del nombre, o la persona aún no lo ha escrito) NO se apunta nada y la ficha sale
+ * igual: una apertura sin saber quién es no sirve, y la página, antes de pedir la ficha con `abrir=1`, pide el nombre (`yo`). Si esa
  * persona ya abrió la ficha hace menos de 15 minutos (MINUTOS_ENTRE_APERTURAS) no se apunta otra, salvo que desde entonces
  * alguien la haya dejado «sin abrir» (`marcada_sin_abrir`, ver `marcarSinAbrir`): entonces se apunta siempre. Sin `abrir` no se
  * apunta nada. Es un evento y NO una columna de `tramitaciones`: un UPDATE dispararía el trigger que renueva `actualizada_en`, y el
  * vigilante abandona las `subiendo` por esa fecha (mirar una subida a medias la mantendría viva). Si no se puede apuntar,
  * la ficha sale igual.
  */
-export async function ficha(ref, { email, abrir = false } = {}) {
+export async function ficha(ref, { sesion, abrir = false } = {}) {
   const fila = await buscarPorRef(ref, '*,tramitacion_documentos(*)');
   if (!fila) return noExiste();
 
@@ -522,9 +564,8 @@ export async function ficha(ref, { email, abrir = false } = {}) {
   ]);
 
   // La apertura entra en el historial de esta misma respuesta, como el evento más nuevo y respetando el tope de 50
-  // (`ultimos` va de más nuevo a más antiguo; más abajo se da la vuelta)
-  const quien = normalizarEmail(email);
-  const apertura = abrir === true && quien ? await apuntarApertura(fila.id, quien, ultimos) : null;
+  // (`ultimos` va de más nuevo a más antiguo; más abajo se da la vuelta). Sin nombre en la sesión no se apunta (ver arriba)
+  const apertura = abrir === true && sesion?.nombre ? await apuntarApertura(fila.id, actorDe(sesion), ultimos) : null;
   const eventos = apertura ? [apertura, ...ultimos].slice(0, MAX_EVENTOS) : ultimos;
 
   return resp(200, {
@@ -561,30 +602,32 @@ const ACCIONES = Object.freeze({
 });
 
 /**
- * POST /api/bandeja/estado {ref, accion:'tramitar'|'reabrir'}. `email` es el de la sesión. Devuelve {status, cuerpo}:
+ * POST /api/bandeja/estado {ref, accion:'tramitar'|'reabrir'}. `sesion` es la de `exigirSesion`. Devuelve {status, cuerpo}:
  *   200 {ok, estado, tramitada_por, tramitada_en}
  *   400 peticion · 404 no_encontrada · 409 transicion (no estaba en el estado de partida, o alguien se adelantó)
- * Tramitar guarda quién y cuándo; «Volver a pendiente» los borra. En los dos casos queda un evento con el correo de
- * backoffice como autor. Aquí solo van las transiciones de estado: `accion:'sin_abrir'` NO está en ACCIONES (dejar una ficha
- * «sin abrir» no cambia su estado); la despacha api/bandeja/estado.js a `marcarSinAbrir`.
+ * Tramitar guarda quién y cuándo (`tramitada_por` = `actorDe(sesion)`: el nombre o, sin él, el correo); «Volver a pendiente» los
+ * borra. En los dos casos queda un evento con ese mismo «quién» como autor. Aquí solo van las transiciones de estado:
+ * `accion:'sin_abrir'` NO está en ACCIONES (dejar una ficha «sin abrir» no cambia su estado); la despacha api/bandeja/estado.js a
+ * `marcarSinAbrir`.
  */
-export async function cambiarEstado(entrada, email) {
+export async function cambiarEstado(entrada, sesion) {
   const e = esObjeto(entrada) ? entrada : {};
   const accion = typeof e.accion === 'string' && Object.hasOwn(ACCIONES, e.accion) ? ACCIONES[e.accion] : null;
   if (!accion || typeof e.ref !== 'string') return fallo(400, 'peticion', MENSAJES.peticion);
+  const actor = actorDe(sesion);
 
   const actual = await buscarPorRef(e.ref, 'id,estado');
   if (!actual) return noExiste();
   if (actual.estado !== accion.desde || !transicionValida(actual.estado, accion.hacia)) return fallo(409, 'transicion', MENSAJES.transicion);
 
   const cambios = accion.hacia === 'tramitada'
-    ? { estado: 'tramitada', tramitada_en: iso(Date.now()), tramitada_por: email }
+    ? { estado: 'tramitada', tramitada_en: iso(Date.now()), tramitada_por: actor }
     : { estado: 'recibida', tramitada_en: null, tramitada_por: null };
   // Condicionado al estado de partida: si otra persona la cambió justo antes, no se pisa
   const filas = await actualizar('tramitaciones', { id: `eq.${actual.id}`, estado: `eq.${accion.desde}`, prueba: `eq.${esPrueba()}` }, cambios);
   if (filas.length === 0) return fallo(409, 'transicion', MENSAJES.transicion);
 
-  await registrarEvento(actual.id, accion.evento, email, {});
+  await registrarEvento(actual.id, accion.evento, actor, {});
   return resp(200, { ok: true, estado: filas[0].estado, tramitada_por: filas[0].tramitada_por, tramitada_en: filas[0].tramitada_en });
 }
 
@@ -594,21 +637,23 @@ export async function cambiarEstado(entrada, email) {
 
 /**
  * POST /api/bandeja/estado {ref, accion:'sin_abrir'} (lo despacha api/bandeja/estado.js; no es una transición de estado, así que
- * no pasa por `cambiarEstado`). `email` es el de la sesión. Devuelve {status, cuerpo}:
+ * no pasa por `cambiarEstado`). `sesion` es la de `exigirSesion`. Devuelve {status, cuerpo}:
  *   200 {ok}                  la ficha vuelve a «Sin abrir» para TODO el equipo hasta que alguien la abra otra vez
  *   400 peticion              falta la referencia o no es texto
  *   404 no_encontrada         no existe, la referencia no vale, o es de otro modo (prueba / producción)
  *   409 estado                no está pendiente (`recibida`): solo se puede en una pendiente
- * Es un EVENTO nuevo, `marcada_sin_abrir`, con el correo de la sesión como actor: no se borra ninguna `ficha_abierta` (el
- * historial se conserva) y no se toca la fila de `tramitaciones` (un UPDATE dispararía el trigger `tramitacion_tocar`). Lo que
+ * Es un EVENTO nuevo, `marcada_sin_abrir`, con `actorDe(sesion)` como actor (el nombre o, sin él, el correo): no se borra ninguna
+ * `ficha_abierta` (el historial se conserva) y no se toca la fila de `tramitaciones` (un UPDATE dispararía el trigger
+ * `tramitacion_tocar`). Lo que
  * hace que la ficha vuelva a «Sin abrir» es la regla de `vistasDe` y de la ficha: una apertura solo cuenta si es MÁS NUEVA que la
  * última marca. Marcar dos veces seguidas es lo mismo que una: si lo último que pasó (entre aperturas y marcas) ya es una marca,
  * responde 200 sin apuntar otra. Aquí el evento ES el cambio, así que NO se usa `registrarEvento` (que se traga los fallos):
  * si la base no lo guarda, el 503 en llano le dice a quien marcó que no se ha hecho.
  */
-export async function marcarSinAbrir(entrada, email) {
+export async function marcarSinAbrir(entrada, sesion) {
   const e = esObjeto(entrada) ? entrada : {};
   if (e.accion !== 'sin_abrir' || typeof e.ref !== 'string') return fallo(400, 'peticion', MENSAJES.peticion);
+  const actor = actorDe(sesion);
 
   const actual = await buscarPorRef(e.ref, 'id,estado');
   if (!actual) return noExiste();
@@ -618,7 +663,7 @@ export async function marcarSinAbrir(entrada, email) {
     select: 'tipo', tramitacion_id: `eq.${actual.id}`, tipo: EVENTOS_DE_APERTURA, order: 'id.desc', limit: 1,
   });
   if (ultimo?.tipo === 'marcada_sin_abrir') return resp(200, { ok: true }); // ya está «sin abrir»: no se apunta otra marca
-  await insertar('tramitacion_eventos', { tramitacion_id: actual.id, tipo: 'marcada_sin_abrir', actor: email, detalle: {} }, { devolver: false });
+  await insertar('tramitacion_eventos', { tramitacion_id: actual.id, tipo: 'marcada_sin_abrir', actor, detalle: {} }, { devolver: false });
   return resp(200, { ok: true });
 }
 
@@ -627,23 +672,25 @@ export async function marcarSinAbrir(entrada, email) {
 // ---------------------------------------------------------------------------
 
 /**
- * POST /api/bandeja/reenviar {ref, tipo:'aviso'|'acuse'}. `email` es el de la sesión. Devuelve {status, cuerpo}:
+ * POST /api/bandeja/reenviar {ref, tipo:'aviso'|'acuse'}. `sesion` es la de `exigirSesion`. Devuelve {status, cuerpo}:
  *   200 {ok, estado}                    cómo ha quedado el correo tras el intento (`enviado`, `pendiente`…)
  *   200 {ok, estado:'enviando', ocupado:true}   otro proceso lo está enviando ahora mismo: no se toca
  *   400 peticion · 404 no_encontrada · 409 estado (la tramitación aún no está completa)
  * La cola hace el trabajo (cola.reenviar): deja el correo `pendiente` con los intentos a cero, lo intenta al momento y
- * apunta el evento `aviso_reenviado` / `acuse_reenviado`.
+ * apunta el evento `aviso_reenviado` / `acuse_reenviado`. `cola.reenviar({actor})` recibe `actorDe(sesion)` (el nombre o, sin él, el
+ * correo): ese es el autor de esos dos eventos y de los que deja el propio envío (`aviso_enviado`, `correo_fallo`…).
  */
-export async function reenviarCorreo(entrada, email) {
+export async function reenviarCorreo(entrada, sesion) {
   const e = esObjeto(entrada) ? entrada : {};
   if (typeof e.ref !== 'string' || !['aviso', 'acuse'].includes(e.tipo)) return fallo(400, 'peticion', MENSAJES.peticion);
+  const actor = actorDe(sesion);
 
   const actual = await buscarPorRef(e.ref, 'id,estado');
   if (!actual) return noExiste();
   // Antes de estar recibida no hay correos, y reenviar los crearía de golpe (el comercial aún está subiendo)
   if (actual.estado !== 'recibida' && actual.estado !== 'tramitada') return fallo(409, 'estado', MENSAJES.sinCorreo);
 
-  const r = await reenviar(actual.id, e.tipo, { actor: email });
+  const r = await reenviar(actual.id, e.tipo, { actor });
   if (!r.ok) return noExiste();
   if (r.ocupado) return resp(200, { ok: true, estado: 'enviando', ocupado: true });
   return resp(200, { ok: true, estado: r.estado });

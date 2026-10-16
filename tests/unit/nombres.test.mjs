@@ -1,4 +1,4 @@
-// Pruebas de api/_lib/nombres.js: nombres, tipos, carpetas y textos de una línea.
+// Pruebas de api/_lib/nombres.js: nombres, tipos, carpetas, textos de una línea y el nombre de las personas de backoffice.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -6,6 +6,8 @@ import { readFileSync } from 'node:fs';
 import {
   EXTENSIONES_PERMITIDAS,
   MAX_NOMBRE,
+  NOMBRE_PERSONA,
+  normalizarNombrePersona,
   sanearNombre,
   extensionDe,
   mimeDe,
@@ -287,4 +289,87 @@ test('recortar: corta por caracteres (no por unidades UTF-16), sin dejar espacio
   assert.equal(Array.from(recortar('añ😀bc', 3)).length, 3);
   assert.equal(recortar('sin límite', NaN), 'sin límite');
   assert.equal(recortar('sin límite', undefined), 'sin límite');
+});
+
+// ---------------------------------------------------------------------------
+// normalizarNombrePersona: el nombre con el que cada persona de backoffice firma lo que hace en la bandeja
+// ---------------------------------------------------------------------------
+
+test('normalizarNombrePersona: un nombre bueno sale en MAYÚSCULAS, con tildes y Ñ intactas', () => {
+  assert.deepEqual(NOMBRE_PERSONA, { min: 2, max: 40 });
+  assert.equal(normalizarNombrePersona('laura garcía'), 'LAURA GARCÍA');
+  assert.equal(normalizarNombrePersona('Laura García'), 'LAURA GARCÍA');
+  assert.equal(normalizarNombrePersona('LAURA GARCÍA'), 'LAURA GARCÍA');
+  assert.equal(normalizarNombrePersona('josé luis peña núñez'), 'JOSÉ LUIS PEÑA NÚÑEZ');
+  assert.equal(normalizarNombrePersona('ñandú'), 'ÑANDÚ');
+  assert.equal(normalizarNombrePersona('Àlex Güell Çavuş'), 'ÀLEX GÜELL ÇAVUŞ');
+  assert.equal(normalizarNombrePersona('Ana'), 'ANA');
+});
+
+test('normalizarNombrePersona: recorta y junta los espacios (también tabuladores, saltos y espacios duros)', () => {
+  assert.equal(normalizarNombrePersona('   laura    garcía   '), 'LAURA GARCÍA');
+  assert.equal(normalizarNombrePersona('laura\t\tgarcía'), 'LAURA GARCÍA');
+  assert.equal(normalizarNombrePersona('laura\ngarcía'), 'LAURA GARCÍA');
+  assert.equal(normalizarNombrePersona('laura\u00a0garcía'), 'LAURA GARCÍA');
+});
+
+test('normalizarNombrePersona: guion, apóstrofo y punto valen; el apóstrofo tipográfico de los móviles pasa a normal', () => {
+  assert.equal(normalizarNombrePersona('ana-maría pérez'), 'ANA-MARÍA PÉREZ');
+  assert.equal(normalizarNombrePersona("d'angelo"), "D'ANGELO");
+  assert.equal(normalizarNombrePersona('d\u2019angelo'), "D'ANGELO");
+  assert.equal(normalizarNombrePersona('j. pérez'), 'J. PÉREZ');
+  assert.equal(normalizarNombrePersona('ana m.'), 'ANA M.');
+});
+
+test('normalizarNombrePersona: un acento escrito aparte (e + ́) se junta con su letra', () => {
+  assert.equal(normalizarNombrePersona('jose\u0301'), 'JOSÉ');
+  assert.equal(normalizarNombrePersona('pen\u0303a'), 'PEÑA', 'la ñ escrita como n + tilde también');
+});
+
+test('normalizarNombrePersona: de 2 a 40 caracteres, contados DESPUÉS de pasar a mayúsculas', () => {
+  assert.equal(normalizarNombrePersona(''), null);
+  assert.equal(normalizarNombrePersona('   '), null);
+  assert.equal(normalizarNombrePersona('a'), null, 'uno solo no vale');
+  assert.equal(normalizarNombrePersona(' a '), null, 'ni con espacios alrededor');
+  assert.equal(normalizarNombrePersona('al'), 'AL', 'dos sí');
+  assert.equal(normalizarNombrePersona('a'.repeat(40)), 'A'.repeat(40), '40 sí');
+  assert.equal(normalizarNombrePersona('a'.repeat(41)), null, '41 no');
+  assert.equal(normalizarNombrePersona(`${'a'.repeat(39)} `), 'A'.repeat(39), 'los espacios de los lados no cuentan');
+  assert.equal(normalizarNombrePersona(`${'a'.repeat(20)}      ${'b'.repeat(19)}`), `${'A'.repeat(20)} ${'B'.repeat(19)}`, 'los espacios juntados no cuentan de más');
+  // «ß» pasa a «SS»: 20 «ß» son 40 caracteres en mayúsculas y 21 ya son 42
+  assert.equal(normalizarNombrePersona('ß'.repeat(20)), 'SS'.repeat(20));
+  assert.equal(normalizarNombrePersona('ß'.repeat(21)), null);
+  assert.equal(normalizarNombrePersona('ß'), 'SS', 'una sola «ß» son 2 caracteres en mayúsculas');
+  assert.equal(normalizarNombrePersona('a'.repeat(5000)), null, 'un texto enorme ni se procesa');
+});
+
+test('normalizarNombrePersona: nunca @, cifras ni signos raros', () => {
+  for (const malo of [
+    'ana@gmail.com', '@', 'ana @ lópez', 'ana2', '2ana', 'ana 2', '1234', 'ana_lópez', 'ana/lópez', 'ana\\lópez', 'ana,lópez', 'ana;lópez',
+    'ana(lópez)', 'ana#lópez', 'ana+lópez', 'ana=lópez', 'ana:lópez', 'ana lópez!', '¿ana?', '<b>ana</b>', 'ana<script>', '"ana"', 'ana😀', '😀😀',
+    'ana\u200blópez', 'ana\u0000lópez',
+  ]) {
+    assert.equal(normalizarNombrePersona(malo), null, `«${malo}» no es un nombre`);
+  }
+  assert.equal(normalizarNombrePersona('漢字'), '漢字', 'cualquier letra vale (\\p{L}), no solo las de nuestro alfabeto');
+});
+
+test('normalizarNombrePersona: tiene que EMPEZAR por una letra (solo signos no es un nombre)', () => {
+  for (const malo of ['--', '..', "''", '-ana', '.ana', "'ana", ' -ana', '. .', '-.-']) assert.equal(normalizarNombrePersona(malo), null, `«${malo}»`);
+  assert.equal(normalizarNombrePersona('ana.'), 'ANA.');
+  assert.equal(normalizarNombrePersona('ana-'), 'ANA-');
+});
+
+test('normalizarNombrePersona: lo que no es texto no vale y no lanza', () => {
+  for (const raro of [undefined, null, 5, 0, true, false, {}, [], ['ana'], { nombre: 'ana' }, () => 'ana', Symbol('ana'), 12345678901234567890n]) {
+    assert.equal(normalizarNombrePersona(raro), null, String(typeof raro));
+  }
+});
+
+test('normalizarNombrePersona: es idempotente (limpiar un nombre ya limpio no lo cambia)', () => {
+  for (const nombre of ['laura   garcía', 'd\u2019angelo', 'josé  luis', 'ß', 'ana-maría', 'j. pérez']) {
+    const una = normalizarNombrePersona(nombre);
+    assert.ok(una);
+    assert.equal(normalizarNombrePersona(una), una, nombre);
+  }
 });

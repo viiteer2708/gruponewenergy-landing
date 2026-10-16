@@ -36,6 +36,66 @@ test('sesión: ida y vuelta con el email normalizado y 365 días de vida', () =>
   assert.equal(DURACION_SESION_SEG, 365 * 24 * 60 * 60);
 });
 
+test('sesión: sin nombre la carga es la de siempre (sin `n`) y verificarSesion da `nombre: null`', () => {
+  const cookie = firmarSesion('a@b.es', SECRETO, { ahora: AHORA });
+  const carga = JSON.parse(Buffer.from(cookie.split('.')[0], 'base64url').toString('utf8'));
+  assert.deepEqual(Object.keys(carga), ['e', 'iat', 'exp'], 'Sin nombre, la carga no cambia: es la de las sesiones que ya tiene backoffice');
+  const sesion = verificarSesion(cookie, SECRETO, { ahora: AHORA });
+  assert.deepEqual(Object.keys(sesion), ['email', 'nombre', 'iat', 'exp']);
+  assert.equal(sesion.nombre, null);
+  // pedirlo vacío o nulo es lo mismo que no pedirlo: misma cookie, byte a byte
+  for (const sinNombre of [undefined, null, '', '   ']) {
+    assert.equal(firmarSesion('a@b.es', SECRETO, { ahora: AHORA, nombre: sinNombre }), cookie, `nombre ${JSON.stringify(sinNombre)}`);
+  }
+});
+
+test('sesión: con nombre va en la carga como `n`, firmado, y verificarSesion lo devuelve junto al resto', () => {
+  const cookie = firmarSesion('  Backoffice@Ejemplo.COM ', SECRETO, { ahora: AHORA, nombre: 'LAURA GARCÍA' });
+  const carga = JSON.parse(Buffer.from(cookie.split('.')[0], 'base64url').toString('utf8'));
+  assert.deepEqual(carga, { e: 'backoffice@ejemplo.com', iat: Math.floor(AHORA / 1000), exp: Math.floor(AHORA / 1000) + 365 * 24 * 60 * 60, n: 'LAURA GARCÍA' });
+  assert.match(cookie, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, 'Con tildes y Ñ la cookie sigue siendo solo base64url');
+  const sesion = verificarSesion(cookie, SECRETO, { ahora: AHORA + 1000 });
+  assert.deepEqual(sesion, { email: 'backoffice@ejemplo.com', nombre: 'LAURA GARCÍA', iat: Math.floor(AHORA / 1000), exp: Math.floor(AHORA / 1000) + 365 * 24 * 60 * 60 });
+  assert.equal(verificarSesion(cookie, SECRETO, { ahora: AHORA + 366 * 24 * 3600 * 1000 }), null, 'Con nombre caduca igual (365 días)');
+  assert.equal(verificarSesion(cookie, OTRO_SECRETO, { ahora: AHORA }), null, 'Con otro secreto tampoco vale');
+  assert.ok(cookie.length < 400, `La cookie no engorda (${cookie.length} caracteres)`);
+  const larga = firmarSesion('ana.lopez.garcia.de.la.cruz.y.sanchez@empresa-con-un-nombre-largo.example.com', SECRETO, { ahora: AHORA, nombre: 'Ñ'.repeat(40) });
+  assert.ok(larga.length < 1000 && verificarSesion(larga, SECRETO, { ahora: AHORA }).nombre === 'Ñ'.repeat(40), 'Ni con 40 letras de 2 bytes y un correo largo');
+});
+
+test('sesión: una cookie de ANTES del nombre (firmada a mano, sin `n`) sigue valiendo y da `nombre: null`', () => {
+  const iat = Math.floor(AHORA / 1000);
+  const carga = Buffer.from(JSON.stringify({ e: 'antigua@b.es', iat, exp: iat + 365 * 24 * 60 * 60 })).toString('base64url');
+  const antigua = `${carga}.${createHmac('sha256', SECRETO).update(carga).digest('base64url')}`;
+  assert.deepEqual(verificarSesion(antigua, SECRETO, { ahora: AHORA + 1000 }), { email: 'antigua@b.es', nombre: null, iat, exp: iat + 365 * 24 * 60 * 60 });
+});
+
+test('sesión: un `n` que no es texto (o está vacío) cuenta como «sin nombre»: la cookie sigue valiendo', () => {
+  const iat = Math.floor(AHORA / 1000);
+  const firmar = (objeto) => {
+    const carga = Buffer.from(JSON.stringify(objeto)).toString('base64url');
+    return `${carga}.${createHmac('sha256', SECRETO).update(carga).digest('base64url')}`;
+  };
+  for (const n of [5, null, true, [], ['ANA'], {}, '', '   ']) {
+    const sesion = verificarSesion(firmar({ e: 'a@b.es', iat, exp: iat + 100, n }), SECRETO, { ahora: AHORA });
+    assert.ok(sesion, `n = ${JSON.stringify(n)}: la sesión vale`);
+    assert.equal(sesion.nombre, null, `n = ${JSON.stringify(n)}`);
+    assert.equal(sesion.email, 'a@b.es');
+  }
+});
+
+test('sesión: cambiar el nombre de una cookie ya firmada la invalida (no se puede «ponerse» el nombre de otro)', () => {
+  const de_ana = firmarSesion('x@b.es', SECRETO, { ahora: AHORA, nombre: 'ANA' });
+  const de_luis = firmarSesion('x@b.es', SECRETO, { ahora: AHORA, nombre: 'LUIS' });
+  assert.equal(verificarSesion(`${de_luis.split('.')[0]}.${de_ana.split('.')[1]}`, SECRETO, { ahora: AHORA }), null, 'La carga de Luis con la firma de Ana');
+  const sinNombre = firmarSesion('x@b.es', SECRETO, { ahora: AHORA });
+  assert.equal(verificarSesion(`${de_ana.split('.')[0]}.${sinNombre.split('.')[1]}`, SECRETO, { ahora: AHORA }), null, 'La carga con nombre y la firma de la que no lo tiene');
+});
+
+test('sesión: un nombre que no es texto lanza al firmar (un fallo de quien llama, no «sin sesión»)', () => {
+  for (const malo of [5, true, ['ANA'], {}, 12n]) assert.throws(() => firmarSesion('a@b.es', SECRETO, { ahora: AHORA, nombre: malo }), /nombre/i, JSON.stringify(String(malo)));
+});
+
 test('sesión: la cookie solo lleva caracteres seguros y dos partes', () => {
   const cookie = firmarSesion('a@b.es', SECRETO, { ahora: AHORA });
   assert.match(cookie, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);

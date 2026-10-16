@@ -118,6 +118,23 @@
             font-variant-numeric: tabular-nums;
         }
 
+        /* Paso 3: la pregunta (un poco más grande que las etiquetas de los otros pasos) y su ayuda */
+        #formNombre {
+            margin-top: 1.25rem;
+        }
+
+        label.pregunta {
+            font-size: 1.05rem;
+            margin-bottom: .2rem;
+        }
+
+        .ayuda {
+            margin-bottom: .6rem;
+            font-size: .8125rem;
+            line-height: 1.45;
+            color: var(--text-muted);
+        }
+
         .error {
             margin-top: .6rem;
             padding: .6rem .8rem;
@@ -237,6 +254,16 @@
         </div>
     </form>
 
+    <!-- Paso 3: el nombre. NO es un acceso (el correo y el código ya han abierto la puerta): solo dice QUIÉN abre, marca o tramita cada
+         contrato, porque todo el equipo entra con el mismo correo. También es la pantalla de «Cambiar nombre» (?paso=nombre) -->
+    <form id="formNombre" novalidate hidden>
+        <label class="pregunta" for="nombre">¿Cómo te llamas?</label>
+        <p class="ayuda" id="ayudaNombre">Así el equipo sabe quién ha abierto cada contrato. Si hay otro compañero con tu nombre, añade el apellido.</p>
+        <input id="nombre" name="nombre" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="40" placeholder="Ej.: LAURA GARCÍA" aria-describedby="ayudaNombre" required>
+        <p class="error" id="errorNombre" role="alert" hidden></p>
+        <button class="btn" id="btnNombre" type="submit">Guardar y entrar</button>
+    </form>
+
     <p class="pie">Acceso solo para el equipo de tramitación.</p>
 </main>
 
@@ -247,13 +274,19 @@
     var FRASE_CODIGO = 'Si tu correo tiene acceso, te hemos enviado un código de 6 cifras. Caduca en 10 minutos. Revisa también el spam.';
     var FRASE_RED = 'No hemos podido conectar. Comprueba tu conexión e inténtalo de nuevo.';
     var FRASE_CODIGO_NO_SALE = 'No hemos podido enviarte el código. Inténtalo de nuevo en un minuto.';
+    var FRASE_NOMBRE = 'Escribe tu nombre (solo letras, de 2 a 40).';
+    var FRASE_SESION = 'Tu sesión ha caducado o no es válida. Vuelve a entrar.';
 
     var formCorreo = document.getElementById('formCorreo');
     var formCodigo = document.getElementById('formCodigo');
+    var formNombre = document.getElementById('formNombre');
     var campoEmail = document.getElementById('email');
     var campoCodigo = document.getElementById('codigo');
     var errorCorreo = document.getElementById('errorCorreo');
     var errorCodigo = document.getElementById('errorCodigo');
+    var errorNombre = document.getElementById('errorNombre');
+    var campoNombre = document.getElementById('nombre');
+    var btnNombre = document.getElementById('btnNombre');
     var btnCodigo = document.getElementById('btnCodigo');
     var btnEntrar = document.getElementById('btnEntrar');
     var btnOtroCodigo = document.getElementById('btnOtroCodigo');
@@ -303,6 +336,7 @@
     function pasoCodigo(mensaje) {
         avisoCodigo.textContent = mensaje || FRASE_CODIGO;
         formCorreo.hidden = true;
+        formNombre.hidden = true;
         formCodigo.hidden = false;
         campoCodigo.value = '';
         ocultarError(errorCodigo);
@@ -311,9 +345,23 @@
 
     function pasoCorreo() {
         formCodigo.hidden = true;
+        formNombre.hidden = true;
         formCorreo.hidden = false;
         ocultarError(errorCorreo);
         campoEmail.focus();
+    }
+
+    // Paso 3: el nombre. `actual` es el que ya tiene la sesión (al cambiarlo), para dejarlo escrito
+    function pasoNombre(actual) {
+        formCorreo.hidden = true;
+        formCodigo.hidden = true;
+        formNombre.hidden = false;
+        campoNombre.value = actual || '';
+        btnNombre.disabled = false;
+        btnNombre.textContent = 'Guardar y entrar';
+        ocultarError(errorNombre);
+        campoNombre.focus();
+        campoNombre.select();
     }
 
     // Pide el código (la primera vez o «Pedir otro código»). `caja` es donde se enseña un fallo.
@@ -358,8 +406,10 @@
         btnEntrar.textContent = 'Entrando…';
         llamar('/api/bandeja/entrar', { email: correo, codigo: codigo }).then(function (r) {
             if (!r.red && r.status === 200) {
-                btnEntrar.textContent = 'Entrando…';
-                location.replace(volver);
+                // El código era bueno: ya está dentro. Falta decir quién es (todo el equipo entra con el mismo correo)
+                btnEntrar.disabled = false;
+                btnEntrar.textContent = 'Entrar';
+                pasoNombre('');
                 return;
             }
             btnEntrar.disabled = false;
@@ -381,14 +431,64 @@
 
     btnOtroCorreo.addEventListener('click', pasoCorreo);
 
+    formNombre.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        var valor = campoNombre.value.replace(/\s+/g, ' ').trim();
+        if (!valor) {
+            mostrarError(errorNombre, FRASE_NOMBRE);
+            campoNombre.focus();
+            return;
+        }
+        ocultarError(errorNombre);
+        btnNombre.disabled = true;
+        btnNombre.textContent = 'Guardando…';
+        llamar('/api/bandeja/yo', { nombre: valor }).then(function (r) {
+            if (!r.red && r.status === 200) {
+                btnNombre.textContent = 'Entrando…';
+                location.replace(volver);
+                return;
+            }
+            btnNombre.disabled = false;
+            btnNombre.textContent = 'Guardar y entrar';
+            if (!r.red && r.status === 401) { // la sesión ya no vale: vuelta a empezar por el correo
+                pasoCorreo();
+                mostrarError(errorCorreo, frase(r, FRASE_SESION));
+                return;
+            }
+            mostrarError(errorNombre, r.red ? FRASE_RED : frase(r, FRASE_NOMBRE));
+            campoNombre.focus();
+        });
+    });
+
     // Solo cifras (y los espacios con los que algunos teclados separan el código)
     campoCodigo.addEventListener('input', function () {
         var limpio = campoCodigo.value.replace(/[^\d ]/g, '');
         if (limpio !== campoCodigo.value) campoCodigo.value = limpio;
     });
 
-    // En el móvil no se abre el teclado solo al entrar (taparía el título): solo con ratón
-    if (window.matchMedia && window.matchMedia('(hover: hover)').matches) campoEmail.focus();
+    // «Cambiar nombre» (y las páginas que piden el nombre) llegan con ?paso=nombre: con la sesión abierta se enseña solo el paso 3, con
+    // el nombre de ahora ya escrito; sin sesión, el recorrido de siempre (correo → código → nombre). Mientras se mira, no se enseña nada.
+    var soloNombre = new URLSearchParams(location.search).get('paso') === 'nombre';
+    if (soloNombre) {
+        formCorreo.hidden = true;
+        fetch('/api/bandeja/yo', { credentials: 'same-origin' }).then(function (r) {
+            return r.json().catch(function () { return null; }).then(function (json) {
+                return { status: r.status, json: json };
+            });
+        }, function () {
+            return { red: true };
+        }).then(function (r) {
+            if (!r.red && r.status === 200 && r.json && r.json.ok) {
+                pasoNombre(typeof r.json.nombre === 'string' ? r.json.nombre : '');
+            } else {
+                formCorreo.hidden = false;
+                if (window.matchMedia && window.matchMedia('(hover: hover)').matches) campoEmail.focus();
+            }
+        });
+    } else if (window.matchMedia && window.matchMedia('(hover: hover)').matches) {
+        // En el móvil no se abre el teclado solo al entrar (taparía el título): solo con ratón
+        campoEmail.focus();
+    }
 })();
 </script>
 </body>

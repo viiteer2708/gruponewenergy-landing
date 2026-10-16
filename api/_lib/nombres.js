@@ -1,4 +1,5 @@
-// api/_lib/nombres.js · Nombres de archivo, tipos, carpetas del almacén y textos de una línea.
+// api/_lib/nombres.js · Nombres de archivo, tipos, carpetas del almacén, textos de una línea y el nombre de las personas
+// de backoffice.
 //
 // El nombre ORIGINAL del archivo nunca forma parte de la clave del objeto en el
 // almacén (ni de ninguna URL): la clave es <carpeta>/NN.ext y el nombre saneado
@@ -140,4 +141,26 @@ export function recortar(texto, max) {
   const caracteres = Array.from(s);
   if (caracteres.length <= max) return s;
   return caracteres.slice(0, max).join('').trimEnd();
+}
+
+/** Cuántos caracteres puede tener el nombre de una persona de backoffice (se cuentan DESPUÉS de pasarlo a mayúsculas: «ß» pasa a «SS»). */
+export const NOMBRE_PERSONA = Object.freeze({ min: 2, max: 40 });
+
+// Lo que se mira como mucho de lo que llega: un texto más largo que esto no es un nombre y ni se procesa
+const MAX_ENTRADA_NOMBRE = 400;
+
+/**
+ * El nombre con el que una persona de backoffice firma lo que hace en la bandeja (abrir una ficha, marcarla, tramitarla, volver a
+ * enviar un correo). NO es un acceso: es una etiqueta para saber QUIÉN fue (todo backoffice entra con el mismo correo).
+ * Devuelve el nombre ya limpio o `null` si no vale. Lo limpia así: pasa a forma NFC (una «é» escrita como «e» + acento vale), el
+ * apóstrofo tipográfico ’ (el que ponen los móviles) pasa a ', los espacios y saltos se juntan en un solo espacio, se recortan los
+ * de los lados y todo va en MAYÚSCULAS (`toUpperCase`: conserva tildes y Ñ). Vale si queda de 2 a 40 caracteres, EMPIEZA por una
+ * letra (`\p{L}`) y solo lleva letras, espacios, guion, apóstrofo y punto: nunca `@`, cifras ni emojis. Lo que no es texto no vale.
+ */
+export function normalizarNombrePersona(valor) {
+  if (typeof valor !== 'string' || valor.length > MAX_ENTRADA_NOMBRE) return null;
+  const nombre = valor.normalize('NFC').replace(/\u2019/g, "'").replace(/\s+/g, ' ').trim().toUpperCase();
+  const largo = Array.from(nombre).length;
+  if (largo < NOMBRE_PERSONA.min || largo > NOMBRE_PERSONA.max) return null;
+  return /^\p{L}[\p{L} '.-]*$/u.test(nombre) ? nombre : null;
 }
