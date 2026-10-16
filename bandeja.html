@@ -1097,7 +1097,10 @@
 
         // Compañía · Oferta: «NET · FIJO POWER PLUS (FIJO)» y nada más (Victor, 17-oct-2026): ni la pastilla GNEW / MEGA ni la tarifa; sin oferta, solo la
         // compañía; sin ninguna de las dos, la celda vacía. Si se recorta con «…», el title lo dice entero (como en las demás celdas)
-        var companiaOferta = [it.compania, it.oferta].filter(Boolean).join(' · ');
+        // «MEGA ENERGIA» (MARCAS.mega.compania; con o sin tilde, sin mirar mayúsculas ni espacios de los lados) se enseña «MEGA»: solo en esta celda de la Lista (Victor, 17-oct-2026)
+        var nombreCompania = String(it.compania || '').trim().toUpperCase();
+        var compania = (nombreCompania === 'MEGA ENERGIA' || nombreCompania === 'MEGA ENERGÍA') ? 'MEGA' : it.compania;
+        var companiaOferta = [compania, it.oferta].filter(Boolean).join(' · ');
         var celdaCompania = el('span', 'c c-compania', companiaOferta);
         if (companiaOferta) celdaCompania.title = companiaOferta;
         a.appendChild(celdaCompania);

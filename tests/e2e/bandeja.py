@@ -1279,7 +1279,7 @@ def caso_16(c):
 
 
 def caso_17(c):
-    """El modo Lista (tabla): el interruptor Tarjetas / Lista (por defecto Tarjetas; se recuerda al recargar), la cabecera y las filas con todas sus columnas en su orden (Comercial · Compañía · Titular · CUPS · Recibida · Docs · Abierta · Estado · ›: lo 1.º el comercial, Victor, 16-oct-2026; cada celda es la de SU cabecera), la celda Compañía = «COMPAÑÍA · OFERTA» y nada más (sin pastilla de marca ni tarifa; sin oferta, solo la compañía; sin ninguna de las dos, vacía; Victor, 17-oct-2026) mientras las Tarjetas siguen con su pastilla y «compañía · tarifa», «Sin abrir» con su raya azul, «Abierta por …» con +N, «Cargar más» en la tabla, volver a Tarjetas sin pedir otra vez la lista, clic en una fila y «atrás», lo que escribe el comercial (también la oferta) como texto, sin jerga, sin desbordes a 390 px y, a 1440 px, la tabla entera sin deslizarse, con el reparto del ancho (Compañía fija y lo justo para «MEGA · CLEAR 7,5 (INDEXADO)»; CUPS fija y lo justo para sus 22 caracteres, con 11 px de letra como mínimo; todo lo liberado a Comercial, que da para 30 letras A-Z, y Titular como estaba, ~292 px; recibida, docs, abierta y estado como estaban), las columnas estrechas enteras y lo que tiene que leerse entero (un comercial de 30 caracteres, un titular de 24, «NET · FIJO POWER PLUS (FIJO)» y el CUPS de 22: LARGOS) leyéndose entero, también el titular en negrita de una fila «Sin abrir», y lo más largo («NET · FIJO POWER PLUS PRIORITY (FIJO)») acabando en «…» con su title entero."""
+    """El modo Lista (tabla): el interruptor Tarjetas / Lista (por defecto Tarjetas; se recuerda al recargar), la cabecera y las filas con todas sus columnas en su orden (Comercial · Compañía · Titular · CUPS · Recibida · Docs · Abierta · Estado · ›: lo 1.º el comercial, Victor, 16-oct-2026; cada celda es la de SU cabecera), la celda Compañía = «COMPAÑÍA · OFERTA» y nada más (sin pastilla de marca ni tarifa; sin oferta, solo la compañía; sin ninguna de las dos, vacía; y «MEGA ENERGIA», la compañía fija del formulario MEGA, enseñada «MEGA» —con o sin tilde, sin mirar mayúsculas ni espacios de los lados; otra compañía que solo empiece por MEGA no se acorta—; Victor, 17-oct-2026: «pon MEGA corto») mientras las Tarjetas siguen con su pastilla y «compañía · tarifa» (también «MEGA ENERGIA», igual que la API y la base), «Sin abrir» con su raya azul, «Abierta por …» con +N, «Cargar más» en la tabla, volver a Tarjetas sin pedir otra vez la lista, clic en una fila y «atrás», lo que escribe el comercial (también la oferta) como texto, sin jerga, sin desbordes a 390 px y, a 1440 px, la tabla entera sin deslizarse, con el reparto del ancho (Compañía fija y lo justo para «MEGA · CLEAR 7,5 (INDEXADO)»; CUPS fija y lo justo para sus 22 caracteres, con 11 px de letra como mínimo; todo lo liberado a Comercial, que da para 30 letras A-Z, y Titular como estaba, ~292 px; recibida, docs, abierta y estado como estaban), las columnas estrechas enteras y lo que tiene que leerse entero (un comercial de 30 caracteres, un titular de 24, «NET · FIJO POWER PLUS (FIJO)» y el CUPS de 22: LARGOS) leyéndose entero, también el titular en negrita de una fila «Sin abrir», y lo más largo («NET · FIJO POWER PLUS PRIORITY (FIJO)») acabando en «…» con su title entero."""
     c.ctx.add_init_script(JS_ALIAS_EN_MAYUSCULAS)  # ver JS_ALIAS_EN_MAYUSCULAS
     ref_a, ref_b = SEMILLAS['A'], SEMILLAS['B']
     marcador = lambda titular: {'titular': titular, 'quien_eres': 'Comercial Marcador17'}  # la búsqueda `marcador17` encuentra solo estas dos
@@ -1363,10 +1363,20 @@ def caso_17(c):
     assert fa.locator('.c-estado .estado-recibida').inner_text() == 'Pendiente'
     assert fa.locator('.c-estado .estado-recibida').evaluate("e => getComputedStyle(e).borderTopWidth") == '1px', 'La pastilla del estado lleva su borde fino'
     fb = fila(ref_b)
-    assert fb.locator('.c-compania').inner_text() == 'MEGA ENERGIA · FIJO 12 MESES' and fb.locator('.c-compania').get_attribute('title') == 'MEGA ENERGIA · FIJO 12 MESES'
+    # el contrato del formulario MEGA guarda la compañía fija «MEGA ENERGIA» (la API y la base la conservan) y la tabla la enseña «MEGA» (Victor, 17-oct-2026: «pon MEGA corto»), también en el title
+    st, _, cuerpo = http('GET', f'/api/bandeja/lista?estado=todas&q={ref_b}', cabeceras=galleta)
+    assert st == 200 and [i['compania'] for i in como_json(cuerpo)['items'] if i['ref'] == ref_b] == ['MEGA ENERGIA'], 'La API y la base siguen con «MEGA ENERGIA»: solo cambia lo que enseña la tabla'
+    assert fb.locator('.c-compania').inner_text() == 'MEGA · FIJO 12 MESES' and fb.locator('.c-compania').get_attribute('title') == 'MEGA · FIJO 12 MESES', fb.locator('.c-compania').inner_text()
+    assert 'MEGA ENERGIA' not in fb.locator('.c-compania').inner_text() and 'MEGA ENERGIA' not in fb.locator('.c-compania').get_attribute('title'), 'La tabla ya no dice «MEGA ENERGIA»'
     assert fb.locator('.c-compania *').count() == 0 and fb.locator('.marca-gnew, .marca-mega').count() == 0 and '2.0TD' not in fb.locator('.c-compania').inner_text()
     assert fb.locator('.avatar').inner_text() == 'TM' and 'avatar-mega' in fb.locator('.avatar').get_attribute('class').split()
     assert fb.locator('.c-docs').inner_text() == '2'
+    # y las Tarjetas, con los MISMOS datos que acaba de pintar la tabla, siguen diciendo «MEGA ENERGIA» (ida y vuelta, sin pedir nada): el cambio es solo de la celda de la tabla
+    boton('Tarjetas').click()
+    p.wait_for_selector('a.tarjeta')
+    assert linea_b.locator('.marca-mega').inner_text() == 'MEGA' and linea_b.locator('span:not(.ins)').inner_text() == 'MEGA ENERGIA · 2.0TD', linea_b.inner_text()
+    boton('Lista').click()
+    p.wait_for_selector('a.fila')
     c.sin_referencia()  # y en toda la tabla (cabecera, filas, buscador, pestaña): ni la referencia ni la palabra
 
     # 4) «Sin abrir» (raya azul de 4 px, pastilla, titular en negrita) y «Abierta por …» (ojo, correo, «hace …»), con la misma regla que las tarjetas
@@ -1507,6 +1517,10 @@ def caso_17(c):
         cuerpo['items'] += [dict(base, ref='GNE-20260101-OFERTANULA', compania='NET', oferta=None, vistas=[]),
                             dict(base, ref='GNE-20260101-OFERTAVACIA', compania='NET', oferta='', vistas=[]),
                             dict(base, ref='GNE-20260101-SINNADA', compania='', oferta=None, vistas=[])]
+        # «MEGA ENERGIA» escrita de otra forma (esta ruta no pasa por el servidor, que la guardaría en MAYÚSCULAS): con tilde, con mayúsculas y minúsculas mezcladas y con espacios a los lados;
+        # y otra compañía que solo EMPIEZA por «MEGA»
+        cuerpo['items'] += [dict(base, ref='GNE-20260101-MEGATILDE', compania=' Mega Energía ', oferta='Fijo 12 Meses', vistas=[]),
+                            dict(base, ref='GNE-20260101-MEGAOTRA', compania='MEGA ENERGIA SOLAR', oferta='FIJO 12 MESES', vistas=[])]
         route.fulfill(response=real, json=cuerpo)
 
     p.route('**/api/bandeja/lista**', con_todos_los_estados)
@@ -1548,6 +1562,10 @@ def caso_17(c):
         assert fila(ref).locator('.c-compania').inner_text() == 'NET' and fila(ref).locator('.c-compania').get_attribute('title') == 'NET', 'Sin oferta, solo la compañía'
     sin_nada = fila('GNE-20260101-SINNADA').locator('.c-compania')
     assert sin_nada.inner_text() == '' and sin_nada.get_attribute('title') is None and sin_nada.locator('*').count() == 0, 'Sin compañía ni oferta, la celda va vacía'
+    # «MEGA ENERGIA» → «MEGA» con las tres cláusulas a la vez (con tilde, mayúsculas y minúsculas mezcladas, espacios a los lados) y SOLO ella: «MEGA ENERGIA SOLAR» se queda como está
+    for ref, texto in (('GNE-20260101-MEGATILDE', 'MEGA · Fijo 12 Meses'), ('GNE-20260101-MEGAOTRA', 'MEGA ENERGIA SOLAR · FIJO 12 MESES')):
+        celda_mega = fila(ref).locator('.c-compania')
+        assert celda_mega.inner_text() == texto and celda_mega.get_attribute('title') == texto, f'{celda_mega.inner_text()!r} / {celda_mega.get_attribute("title")!r}'
 
     # el reparto del ancho a 1440 px (orden de Victor del 17-oct-2026: «en compañía debe salir COMPAÑÍA + oferta, nada más; ajusta la siguiente columna pegada a esta para dar más
     # espacio a la columna comercial»). Compañía, FIJA y lo justo para lo más largo de lo frecuente («MEGA · CLEAR 7,5 (INDEXADO)»: 202,2 px con la fuente de las pruebas →
@@ -1601,13 +1619,15 @@ def caso_17(c):
     sa = fila(largos_sin_abrir)
     assert 'sin-abrir' in sa.get_attribute('class').split() and sa.locator('.pildora-nombre').evaluate("e => getComputedStyle(e).fontWeight") == '700'
     assert leido_entero(largos_sin_abrir) == entero, leido_entero(largos_sin_abrir)
+    # (una «Mega» tecleada en GNEW, compañía libre, sigue saliendo «MEGA · …»: solo se acorta la «MEGA ENERGIA» fija del formulario MEGA, que es la de `ref_b`)
     assert leido_entero(tipica_mega)['compania'] == ['MEGA · CLEAR 7,5 (INDEXADO)', False], leido_entero(tipica_mega)
-    # lo más largo acaba en «…» (la celda recorta con puntos suspensivos) y el title lo dice entero; lo mismo pasa con el «MEGA ENERGIA · …» del formulario MEGA (compañía fija)
+    # lo más largo acaba en «…» (la celda recorta con puntos suspensivos) y el title lo dice entero
     celda = fila(recortada).locator('.c-compania')
     assert leido_entero(recortada)['compania'] == ['NET · FIJO POWER PLUS PRIORITY (FIJO)', True], leido_entero(recortada)
     assert celda.get_attribute('title') == 'NET · FIJO POWER PLUS PRIORITY (FIJO)' and celda.evaluate("e => getComputedStyle(e).textOverflow") == 'ellipsis'
     assert celda.evaluate("e => getComputedStyle(e).display") == 'block', 'La celda no puede ser flex: el texto de un flex no acaba en «…», se corta en seco'
-    assert leido_entero(ref_b)['compania'][0] == 'MEGA ENERGIA · FIJO 12 MESES' and fila(ref_b).locator('.c-compania').get_attribute('title') == 'MEGA ENERGIA · FIJO 12 MESES'
+    # y el contrato del formulario MEGA, con «MEGA» en vez de «MEGA ENERGIA», se lee ENTERO en su celda
+    assert leido_entero(ref_b)['compania'] == ['MEGA · FIJO 12 MESES', False] and fila(ref_b).locator('.c-compania').get_attribute('title') == 'MEGA · FIJO 12 MESES'
     p.unroute('**/api/bandeja/lista**')
     c.buscar('')
     c.sin_jerga()
