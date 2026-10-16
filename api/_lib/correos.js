@@ -218,9 +218,10 @@ function exigirTramitacion(tramitacion) {
 
 const tieneValor = (v) => v !== undefined && v !== null && String(v).trim() !== '';
 
+// La referencia (GNE-…/MEGA-…) es interna e invisible (Victor, 16-oct-2026): no sale en ninguna fila ni cabecera de los correos; el contrato
+// se identifica por el CUPS. Solo viaja dentro del enlace del botón «Abrir en la bandeja» (su dirección lleva la referencia: está bien).
 function filasAviso(t) {
   return [
-    ['Referencia', t.ref],
     ['Comercial', t.comercial_nombre],
     ['Email Comercial', t.comercial_email],
     ['Compañía', t.compania],
@@ -249,7 +250,6 @@ function filasAviso(t) {
 function filasAcuse(t, fecha) {
   // Sin IBAN, sin DNI/NIF, sin teléfono ni email del cliente: el comercial no necesita verlos de vuelta.
   return [
-    ['Referencia', t.ref],
     ['Fecha', fecha],
     ['Compañía', t.compania],
     ['CUPS', t.cups],
@@ -294,7 +294,7 @@ function envolver(contenido) {
 function cabeceraHtml(c, titulo, subtitulo) {
   return `<div style="background:${c.cabecera};color:#ffffff;padding:20px 24px;border-radius:10px 10px 0 0">`
     + `<h2 style="margin:0;font-size:18px">${escapeHtml(titulo)}</h2>`
-    + `<p style="margin:6px 0 0;opacity:.85;font-size:13px">${escapeHtml(subtitulo)}</p>`
+    + (subtitulo ? `<p style="margin:6px 0 0;opacity:.85;font-size:13px">${escapeHtml(subtitulo)}</p>` : '')
     + '</div>';
 }
 
@@ -345,11 +345,13 @@ export function armarAviso({ tramitacion, documentos = [], seleccion, urlFicha, 
   const enlace = esUrlHttp(urlFicha) ? urlFicha.trim() : '';
   const correoComercial = enUnaLinea(t.comercial_email);
   const buzon = enUnaLinea(destino);
+  const cups = enUnaLinea(t.cups);
+  const subtitulo = cups ? `${fecha} — CUPS ${cups}` : fecha; // la cabecera: «08/10/2026 a las 17:45 — CUPS ES00…» (sin la referencia)
 
   const pieTexto = 'Al responder a este correo, la respuesta le llega directamente al comercial'
     + `${correoComercial ? ` (${correoComercial})` : ''}. `
     + 'El comercial recibe un acuse con la indicación de enviar cualquier documento adicional a '
-    + `${buzon || 'tramitación'} citando la referencia.`;
+    + `${buzon || 'tramitación'} citando el CUPS.`;
 
   const franja = t.sospechosa === true
     ? '<div style="margin:0 0 16px;padding:12px 14px;background:#FEF2F2;border:1px solid #FCA5A5;border-radius:8px;font-size:13px;color:#7F1D1D">'
@@ -374,7 +376,7 @@ export function armarAviso({ tramitacion, documentos = [], seleccion, urlFicha, 
 
   const html = envolver(
     '<div style="font-family:Arial,sans-serif;max-width:650px;margin:0 auto">'
-    + cabeceraHtml(c, 'Nuevo contrato para tramitar', `${fecha} — Ref: ${t.ref ?? ''}`)
+    + cabeceraHtml(c, 'Nuevo contrato para tramitar', subtitulo)
     + '<div style="background:#ffffff;padding:24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px">'
     + franja
     + tablaHtml(filas, c)
@@ -387,7 +389,7 @@ export function armarAviso({ tramitacion, documentos = [], seleccion, urlFicha, 
 
   const texto = [
     'NUEVO CONTRATO PARA TRAMITAR',
-    `${fecha} — Ref: ${t.ref ?? ''}`,
+    subtitulo,
     t.sospechosa === true ? '\nESTE ENVÍO HA ACTIVADO EL FILTRO ANTIBOTS: REVÍSALO CON CUIDADO' : '',
     '',
     textoFilas(filas),
@@ -408,8 +410,8 @@ export function armarAviso({ tramitacion, documentos = [], seleccion, urlFicha, 
 // ---------------------------------------------------------------------------
 
 /**
- * Acuse de recibo al comercial: referencia, resumen y documentos recibidos, y a dónde
- * escribir si falta algo. NO lleva IBAN, DNI/NIF ni enlace a la bandeja.
+ * Acuse de recibo al comercial: el CUPS (no la referencia, que es interna), resumen y documentos recibidos, y a
+ * dónde escribir si falta algo. NO lleva IBAN, DNI/NIF ni enlace a la bandeja.
  *   destino  el buzón de tramitación (AVISO_DESTINO): el acuse sale con «responder a» = destino
  * Devuelve {asunto, html, texto}; el asunto es «Recibido: » + el del aviso (recortado a 200).
  */
@@ -422,17 +424,17 @@ export function armarAcuse({ tramitacion, documentos = [], destino } = {}) {
   const filas = filasAcuse(t, fecha);
   const nombre = enUnaLinea(t.comercial_nombre);
   const buzon = enUnaLinea(destino);
-  const ref = enUnaLinea(t.ref);
+  const cups = enUnaLinea(t.cups);
   const saludo = `Hola${nombre ? ` ${nombre}` : ''}, hemos recibido tu contrato y la documentación. Ya está en manos del equipo de tramitación.`;
   const buzonHtml = buzon
     ? `<a href="mailto:${escapeHtml(buzon)}" style="color:${c.destacado};font-weight:600">${escapeHtml(buzon)}</a>`
     : 'el equipo de tramitación';
   const buzonTextoPlano = buzon || 'el equipo de tramitación';
-  const despedida = `Correo automático de tramitatucontrato.energy (${marca.nombre}). Guarda la referencia para cualquier consulta.`;
+  const despedida = `Correo automático de tramitatucontrato.energy (${marca.nombre}). Guarda este correo para cualquier consulta.`;
 
   const html = envolver(
     '<div style="font-family:Arial,sans-serif;max-width:650px;margin:0 auto">'
-    + cabeceraHtml(c, 'Contrato recibido', `Ref: ${ref}`)
+    + cabeceraHtml(c, 'Contrato recibido', cups ? `CUPS: ${cups}` : '')
     + '<div style="background:#ffffff;padding:24px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 10px 10px;font-size:14px;color:#111827;line-height:1.5">'
     + `<p style="margin:0 0 16px">${escapeHtml(saludo)}</p>`
     + tablaHtml(filas, c)
@@ -441,7 +443,7 @@ export function armarAcuse({ tramitacion, documentos = [], destino } = {}) {
     + '<strong>¿Falta algo o quieres añadir documentación?</strong><br>'
     + `Si el equipo de tramitación necesita algún documento más (por ejemplo, la <strong>factura</strong>), te escribirá desde ${buzonHtml}. `
     + `Para enviar documentación adicional o preguntar por el estado, <strong>responde a este correo</strong> o escribe a ${buzonHtml} `
-    + `indicando siempre la referencia <strong>${escapeHtml(ref)}</strong>.`
+    + `indicando siempre ${cups ? `el CUPS <strong>${escapeHtml(cups)}</strong>` : 'el CUPS del contrato'}.`
     + '</div>'
     + `<p style="margin:16px 0 0;font-size:12px;color:${c.textoSuave}">${escapeHtml(despedida)}</p>`
     + '</div></div>',
@@ -449,7 +451,7 @@ export function armarAcuse({ tramitacion, documentos = [], destino } = {}) {
 
   const texto = [
     'CONTRATO RECIBIDO',
-    `Ref: ${ref}`,
+    cups ? `CUPS: ${cups}` : '',
     '',
     saludo,
     '',
@@ -460,7 +462,7 @@ export function armarAcuse({ tramitacion, documentos = [], destino } = {}) {
     '¿Falta algo o quieres añadir documentación?',
     `Si el equipo de tramitación necesita algún documento más (por ejemplo, la factura), te escribirá desde ${buzonTextoPlano}. `
       + `Para enviar documentación adicional o preguntar por el estado, responde a este correo o escribe a ${buzonTextoPlano} `
-      + `indicando siempre la referencia ${ref}.`,
+      + `indicando siempre ${cups ? `el CUPS ${cups}` : 'el CUPS del contrato'}.`,
     '',
     despedida,
   ].filter((linea, i, todas) => !(linea === '' && todas[i - 1] === '')).join('\n');

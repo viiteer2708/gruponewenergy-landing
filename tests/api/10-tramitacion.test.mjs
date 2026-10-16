@@ -284,6 +284,13 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
     assert.ok(aviso.cuerpo_texto.includes(IBAN));
     assert.ok(aviso.cuerpo_html.includes(`${BASE}/bandeja/c/${ref}`), 'El aviso lleva el botón a la ficha de la bandeja');
     assert.ok(aviso.cuerpo_html.includes('Abrir en la bandeja'), 'El botón a la bandeja (con adjuntos o sin ellos)');
+    // La referencia es interna e invisible (16-oct-2026): lo ÚNICO que la lleva es la dirección de ese botón. Sin esa dirección, el aviso no la
+    // nombra (ni fila «Referencia», ni «Ref:» en la cabecera) y el contrato se identifica por el CUPS
+    for (const [formato, cuerpo] of [['html', aviso.cuerpo_html], ['texto', aviso.cuerpo_texto], ['asunto', aviso.asunto]]) {
+      const visible = cuerpo.split(`${BASE}/bandeja/c/${ref}`).join('');
+      assert.ok(!visible.includes(ref) && !/referencia|Ref:/i.test(visible), `El aviso (${formato}) no enseña la referencia fuera de la dirección del botón`);
+    }
+    assert.ok(aviso.cuerpo_html.includes(`— CUPS ${CUPS}`) && aviso.cuerpo_texto.includes(`— CUPS ${CUPS}`), 'La cabecera del aviso lleva el CUPS');
     assert.ok(!aviso.cuerpo_html.includes('Ver y descargar la documentación'), 'El texto antiguo del botón ya no está');
     for (const nombre of ['contrato.pdf', 'dni.jpg', 'factura.png', 'firma.png']) assert.ok(aviso.cuerpo_html.includes(nombre), `El aviso lista ${nombre}`);
     // Orden 6: el PDF de 5,5 MiB no cabe como adjunto (el tope es de 3.000.000 bytes) y se queda en la bandeja; lo demás va adjunto
@@ -295,7 +302,12 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
     assert.equal(acuse.para, EMAIL_COMERCIAL);
     assert.equal(acuse.responder_a, AVISO_DESTINO);
     assert.equal(acuse.etiqueta, 'tramitacion-acuse');
-    assert.ok(acuse.cuerpo_html.includes(ref) && acuse.cuerpo_texto.includes(ref));
+    // el acuse no tiene ni un enlace donde pudiera ir la referencia: en ningún sitio (ni asunto, ni HTML, ni texto); se identifica por el CUPS
+    for (const [formato, cuerpo] of [['html', acuse.cuerpo_html], ['texto', acuse.cuerpo_texto], ['asunto', acuse.asunto]]) {
+      assert.ok(!cuerpo.includes(ref) && !/referencia|Ref:/i.test(cuerpo), `El acuse (${formato}) no lleva la referencia`);
+    }
+    assert.ok(acuse.cuerpo_html.includes(`CUPS: ${CUPS}`) && acuse.cuerpo_html.includes(`indicando siempre el CUPS <strong>${CUPS}</strong>`), 'El acuse (html) cita el CUPS');
+    assert.ok(acuse.cuerpo_texto.startsWith(`CONTRATO RECIBIDO\nCUPS: ${CUPS}\n`) && acuse.cuerpo_texto.includes(`indicando siempre el CUPS ${CUPS}.`), 'El acuse (texto) cita el CUPS');
     for (const prohibido of [IBAN, 'ES91', DNI_TITULAR, DNI_FIRMANTE, '/bandeja/', EMAIL_CLIENTE]) {
       assert.ok(!sinEspacios(acuse.cuerpo_html).includes(prohibido) && !sinEspacios(acuse.cuerpo_texto).includes(prohibido), `El acuse no puede llevar ${prohibido === IBAN ? 'el IBAN' : prohibido}`);
     }

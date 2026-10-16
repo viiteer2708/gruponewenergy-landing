@@ -88,28 +88,6 @@
             line-height: 1.6;
         }
 
-        .referencia {
-            font-size: .95rem;
-            font-weight: 500;
-            color: #334155;
-        }
-
-        .referencia[hidden] {
-            display: none;
-        }
-
-        .referencia strong {
-            display: inline-block;
-            margin-top: .25rem;
-            padding: .15rem .65rem;
-            border-radius: 8px;
-            background: #f0fdfa;
-            color: #0D9488;
-            font-weight: 700;
-            letter-spacing: .03em;
-            word-break: break-all;
-        }
-
         .btn {
             display: inline-block;
             padding: .75rem 2rem;
@@ -146,12 +124,10 @@
     <h1>Contrato Enviado</h1>
     <p>Hemos recibido tu solicitud con toda la documentación adjunta. Nos ponemos YA con la tramitación de tu contrato.</p>
 
-    <p class="referencia" id="referencia" hidden>Tu referencia: <strong id="refTexto"></strong></p>
-
     <div class="info-box">
         Hemos guardado tu contrato y la documentación y hemos avisado al equipo de tramitación.
-        Recibirás un <strong>acuse de recibo</strong> con la referencia; si falta algún documento
-        (por ejemplo, la factura), te escribirán desde ese mismo correo: responde al acuse citando la referencia.
+        Recibirás un <strong>acuse de recibo</strong>; si falta algún documento
+        (por ejemplo, la factura), te escribirán desde ese mismo correo: basta con responder al acuse.
         <span style="display:block;margin-top:10px;font-size:.92em;opacity:.9">
             Equipo de tramitación: <strong>escaneos@gruponew.energy</strong>
         </span>
@@ -161,17 +137,6 @@
 </div>
 
 <footer>&copy; 2026 Mega Energia</footer>
-
-<script>
-(function() {
-    // La referencia llega en la dirección (?ref=MEGA-20261009-ABC123). Solo se enseña si tiene
-    // EXACTAMENTE ese formato y siempre como texto, nunca como HTML.
-    var ref = new URLSearchParams(window.location.search).get('ref') || '';
-    if (!/^MEGA-\d{8}-[A-Z0-9]{4,10}$/.test(ref)) return;
-    document.getElementById('refTexto').textContent = ref;
-    document.getElementById('referencia').hidden = false;
-})();
-</script>
 
 </body>
 </html>

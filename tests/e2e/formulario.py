@@ -32,7 +32,7 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-from comun import (BASE, CUPS_GAS, CUPS_LUZ, FIXTURES, GOOGLE_RESPUESTA_OK, IBAN_TECLEADO, REF_GRACIAS, RAIZ, SALIDAS,
+from comun import (BASE, CUPS_GAS, CUPS_LUZ, EN_GRACIAS, FIXTURES, GOOGLE_RESPUESTA_OK, IBAN_TECLEADO, RAIZ, SALIDAS, URL_GRACIAS,
                    VIEWPORT, Caso, correo_de, datos_formulario, esperar_estado, estado_de)
 
 PDF = FIXTURES / 'documento-5-5mb.pdf'
@@ -44,16 +44,33 @@ IBAN_COMPACTO = IBAN_TECLEADO.replace(' ', '')
 
 
 def comprobar_gracias(c, ref, prefijo):
-    """La página de gracias enseña la referencia y el texto nuevo, sin direcciones técnicas ni rastro de errores."""
+    """La página de gracias: el texto nuevo, SIN la referencia (16-oct-2026: es interna e invisible) ni en la pantalla ni en el HTML ni en la dirección,
+    sin direcciones técnicas ni rastro de errores."""
     cuerpo = c.page.inner_text('body')
-    assert f'Tu referencia: {ref}' in cuerpo, f'Falta «Tu referencia: {ref}» en la página de gracias'
     assert ref.startswith(prefijo)
+    assert URL_GRACIAS.search(c.page.url) and ref not in c.page.url, f'La dirección de la gracias no lleva la referencia: {c.page.url}'
+    assert ref not in cuerpo and ref not in c.page.content(), 'La página de gracias no puede llevar la referencia (ni a la vista ni escondida en el HTML)'
+    assert 'referencia' not in cuerpo.lower(), f'La página de gracias ya no nombra «referencia»: {cuerpo!r}'
+    assert c.page.locator('#referencia, #refTexto, .referencia').count() == 0, 'Ya no existe el párrafo «Tu referencia»'
     assert 'Hemos guardado tu contrato y la documentación y hemos avisado al equipo de tramitación' in cuerpo
-    assert 'responde al acuse citando la referencia' in cuerpo
+    assert 'Recibirás un acuse de recibo; si falta algún documento (por ejemplo, la factura), te escribirán desde ese mismo correo: basta con responder al acuse.' in cuerpo
     assert 'escaneos@gruponew.energy' in cuerpo
     assert 'administracion@' not in cuerpo.lower()
     anchura = c.page.evaluate("() => (document.querySelector('img.logo') || {}).naturalWidth || 0")
     assert anchura > 0, 'El logo de la página de gracias no carga'
+
+
+def comprobar_mailto(mailto, ref, formulario):
+    """El «Enviar por email» de los avisos de error: SIN la referencia (ni en el asunto ni en el cuerpo) y con el contrato identificado por el
+    titular y el CUPS (lo que se tecleó en el formulario)."""
+    assert mailto.startswith('mailto:escaneos@gruponew.energy?subject='), mailto
+    consulta = urllib.parse.parse_qs(urllib.parse.urlparse(mailto).query)
+    asunto, cuerpo = consulta['subject'][0], consulta['body'][0]
+    assert ref not in mailto and ref not in asunto + cuerpo, f'El mailto lleva la referencia: {mailto}'
+    assert not re.search(r'referencia|\bRef:', asunto + cuerpo, re.I), f'El mailto nombra la referencia: {asunto!r} {cuerpo!r}'
+    titular = datos_formulario(formulario)['titular']
+    assert asunto.endswith(f'{titular} ({CUPS_LUZ})'), asunto
+    assert f'Titular: {titular}' in cuerpo and f'CUPS: {CUPS_LUZ}' in cuerpo, cuerpo
 
 
 def comprobar_recibida(e, ref, formulario, n_documentos):
@@ -78,7 +95,7 @@ def comprobar_recibida(e, ref, formulario, n_documentos):
 # ---------------------------------------------------------------------------
 
 def caso_1(c):
-    """GNEW completo con 3 archivos (uno de 5,5 MB) y firma → gracias con la referencia; fila recibida; correos simulados."""
+    """GNEW completo con 3 archivos (uno de 5,5 MB) y firma → gracias SIN la referencia (ni a la vista ni en la dirección); fila recibida; correos simulados (sin la referencia visible; el contrato, por el CUPS)."""
     c.ir('/gnew')
     c.rellenar('gnew')
     c.adjuntar(JPG, PDF, PNG)
@@ -94,7 +111,7 @@ def caso_1(c):
     anchos = []
     captura = False
     fin = time.time() + 120
-    while time.time() < fin and not REF_GRACIAS.search(c.page.url):
+    while time.time() < fin and not EN_GRACIAS.search(c.page.url):
         t = c.texto_boton()
         if t and (not textos or textos[-1] != t):
             textos.append(t)
@@ -150,6 +167,11 @@ def caso_1(c):
     assert acuse['asunto'] == 'Recibido: ' + esperado, acuse['asunto']
     assert f'/bandeja/c/{ref}' in aviso['cuerpo_html'] and IBAN_COMPACTO in aviso['cuerpo_html'] + aviso['cuerpo_texto']
     assert IBAN_COMPACTO not in acuse['cuerpo_html'] and '00000000T' not in acuse['cuerpo_html'], 'El acuse no puede llevar IBAN ni DNI'
+    # La referencia es interna e invisible: el aviso solo la lleva en la dirección de su botón a la bandeja y el acuse, en ningún sitio; el contrato se identifica por el CUPS
+    for nombre, cuerpo in (('aviso (html)', aviso['cuerpo_html']), ('aviso (texto)', aviso['cuerpo_texto']), ('acuse (html)', acuse['cuerpo_html']), ('acuse (texto)', acuse['cuerpo_texto'])):
+        visible = cuerpo.replace(f'/bandeja/c/{ref}', '')
+        assert ref not in visible and not re.search(r'referencia|\bRef:', visible, re.I), f'El {nombre} enseña la referencia'
+    assert f'— CUPS {CUPS_LUZ}' in aviso['cuerpo_html'] and f'CUPS: {CUPS_LUZ}' in acuse['cuerpo_html'], 'Las cabeceras de los correos llevan el CUPS'
 
 
 def caso_2(c):
@@ -285,13 +307,12 @@ def caso_4(c):
         assert 'Error al enviar el formulario' not in texto, f'{formulario}: ese es el aviso del respaldo fallido, no el de «terminar el envío»'
         assert 'pulsa «Reintentar» y seguiremos por donde se quedó' in texto and 'Detalle' not in texto, texto
         assert 'puedes enviar los datos y los documentos por email a escaneos@gruponew.energy.' in texto, texto
-        assert f'Referencia: {ref}' in texto, texto
+        assert ref not in texto and 'eferencia' not in texto, f'{formulario}: el aviso de error no enseña la referencia: {texto}'
         overlay = c.page.locator('#overlayEnvio')
         assert overlay.get_by_role('button', name='Reintentar', exact=True).count() == 1, f'{formulario}: falta «Reintentar»'
         por_email = overlay.get_by_role('link', name='Enviar por email', exact=True)
         assert por_email.count() == 1, f'{formulario}: falta «Enviar por email»'
-        mailto = por_email.get_attribute('href')
-        assert mailto.startswith('mailto:escaneos@gruponew.energy?subject=') and ref in mailto, mailto
+        comprobar_mailto(por_email.get_attribute('href'), ref, formulario)
         assert not c.google, f'{formulario}: con el respaldo apagado no se llama al Apps Script'
         assert len(c.puts) == n_puts and len(c.confirmar) == n_confirmar, f'{formulario}: con la API caída no se sube ni se confirma nada'
         assert estado_de(ref) is None, f'{formulario}: la API caída no deja fila'
@@ -462,9 +483,8 @@ def caso_8(c):
     refs = set(c.refs_iniciar())
     assert len(refs) == 1
     ref = refs.pop()
-    assert f'Referencia: {ref}' in texto
-    mailto = c.page.locator('#overlayEnvio a').get_attribute('href')
-    assert mailto.startswith('mailto:escaneos@gruponew.energy?subject=') and ref in mailto
+    assert ref not in texto and 'eferencia' not in texto, f'El aviso de error no enseña la referencia: {texto}'
+    comprobar_mailto(c.page.locator('#overlayEnvio a').get_attribute('href'), ref, 'gnew')
     assert len(c.puts) == 3, f'{len(c.puts)} intentos de subida del primer archivo (tenían que ser 3)'
     assert not c.confirmar and not c.google
     assert estado_de(ref)['tramitacion']['estado'] == 'subiendo'
@@ -860,7 +880,7 @@ def caso_12(c):
 
 
 CASOS = [
-    (1, 'GNEW completo: 3 archivos (uno de 5,5 MB) + firma, progreso real y gracias con referencia', caso_1),
+    (1, 'GNEW completo: 3 archivos (uno de 5,5 MB) + firma, progreso real, gracias sin referencia y correos con el CUPS', caso_1),
     (2, 'Corte de red en confirmar (respuesta perdida) → reintento, una sola fila y un solo aviso', caso_2),
     (3, 'Primera subida al almacén cortada → reintento del archivo con la misma dirección', caso_3),
     (4, 'iniciar 503 ×3 con el respaldo apagado → «No hemos podido terminar el envío» sin tocar Apps Script y Reintentar con la misma referencia (GNEW y MEGA); respaldo forzado a true → Apps Script', caso_4),
@@ -1066,7 +1086,7 @@ def extra_5(c):
 
 
 def extra_6(c):
-    """Honeypot relleno: éxito falso (gracias con referencia), fila «descartada», sin documentos, sin subidas y sin correos."""
+    """Honeypot relleno: éxito falso (la gracias de siempre), fila «descartada», sin documentos, sin subidas y sin correos."""
     c.ir('/gnew')
     c.rellenar('gnew')
     c.adjuntar(JPG)
@@ -1182,6 +1202,80 @@ def extra_10(c):
     assert not c.page.locator('#overlayEnvio').count() and c.page.is_enabled('#submitBtn')
 
 
+def extra_11(c):
+    """El aviso «Error al enviar el formulario» (el de siempre: ni la API ni el respaldo han podido) NO enseña la referencia (16-oct-2026) y su «Enviar por
+    email» tampoco la lleva (sí el titular y el CUPS). Ningún caso de los 12 llega a él con los html tal como se despliegan. Dos caminos, en GNEW y en MEGA, con
+    el Apps Script (interceptado) contestando «No autorizado» (un rechazo sin reintentos): (1) el envío de SIEMPRE, con V2_ACTIVO forzado a false (el html se sirve
+    con la constante cambiada; el fichero no se toca) y la página abierta sin `?v2=1`, que ni toca la API; y (2) la v2 con la API caída (iniciar da 503) y el
+    respaldo forzado a true."""
+    c.rota('/api/tramitacion/iniciar')
+    recibidos = []
+
+    def es_google(url):
+        host = urllib.parse.urlparse(url).hostname or ''
+        return host == 'script.google.com' or host.endswith('googleusercontent.com')
+
+    def rechazar(route, request):
+        recibidos.append(request.post_data_json)
+        route.fulfill(status=200, content_type='application/json; charset=utf-8', headers=CORS_ABIERTO, body=json.dumps({'success': False, 'error': 'No autorizado'}))
+
+    c.page.route(es_google, rechazar)
+
+    def comprobar_aviso(formulario, camino):
+        c.page.wait_for_selector('#overlayEnvio', timeout=60_000)
+        texto = c.overlay()
+        ref = recibidos[-1]['ref_id']
+        assert 'Error al enviar el formulario' in texto and 'No se ha podido enviar el contrato automáticamente.' in texto, f'{formulario} ({camino}): {texto}'
+        assert 'Recuerda adjuntar los contratos escaneados al email' in texto, texto
+        assert 'Detalle' not in texto and 'No autorizado' not in texto, f'{formulario} ({camino}): el motivo técnico no se enseña: {texto}'
+        assert ref not in texto and 'eferencia' not in texto, f'{formulario} ({camino}): el aviso no enseña la referencia: {texto}'
+        overlay = c.page.locator('#overlayEnvio')
+        assert overlay.get_by_role('button', name='Cerrar e intentar de nuevo', exact=True).count() == 1
+        assert overlay.get_by_role('button', name='Reintentar', exact=True).count() == 0, 'Este aviso no lleva «Reintentar»'
+        por_email = overlay.get_by_role('link', name='Enviar por email a escaneos@gruponew.energy', exact=True)
+        assert por_email.count() == 1, f'{formulario} ({camino}): falta «Enviar por email a escaneos@…»'
+        comprobar_mailto(por_email.get_attribute('href'), ref, formulario)
+        assert c.page.is_enabled('#submitBtn'), 'Con el aviso abierto el botón vuelve a estar disponible'
+
+    for formulario in ('gnew', 'mega'):
+        ruta = '/' + formulario
+        # --- 1) el envío de SIEMPRE (V2_ACTIVO = false, sin ?v2=1): no habla con la API; el Apps Script dice que no ---
+        n_antes, n_iniciar, n_confirmar, n_puts = len(recibidos), len(c.iniciar), len(c.confirmar), len(c.puts)
+        html = _html_con(formulario, V2_ACTIVO=False)
+        c.page.route(BASE + ruta, lambda r, _q: r.fulfill(status=200, content_type='text/html; charset=utf-8', body=html))
+        try:
+            c.ir(ruta, v2=False)
+        finally:
+            c.page.unroute(BASE + ruta)
+        c.rellenar(formulario)
+        c.adjuntar(JPG, PNG)
+        c.firmar()
+        c.enviar()
+        comprobar_aviso(formulario, 'el de siempre')
+        assert len(recibidos) == n_antes + 1, f'{formulario}: el camino de siempre manda UNA petición al Apps Script (un rechazo no se reintenta)'
+        assert (len(c.iniciar), len(c.confirmar), len(c.puts)) == (n_iniciar, n_confirmar, n_puts), f'{formulario}: el camino de siempre no toca la API ni el almacén'
+
+        # --- 2) la v2 con la API caída y el respaldo forzado a encendido: el respaldo (Apps Script) también dice que no ---
+        n_antes = len(recibidos)
+        c.page.route(BASE + '/api/tramitacion/iniciar', lambda route, _q: route.fulfill(
+            status=503, content_type='application/json', body='{"ok":false,"codigo":"temporal","retryable":true}'))
+        pagina = None
+        try:
+            pagina = _abrir_forzado(c, formulario, RESPALDO_APPS_SCRIPT=True)
+            c.rellenar(formulario)
+            c.adjuntar(JPG, PNG)
+            c.enviar()
+            comprobar_aviso(formulario, 'la v2 con el respaldo')
+        finally:
+            c.page.unroute(BASE + '/api/tramitacion/iniciar')
+            if pagina is not None:
+                c.page.unroute(pagina)
+        assert len(recibidos) == n_antes + 1, f'{formulario}: el respaldo manda UNA petición al Apps Script'
+        assert recibidos[-1]['ref_id'] in c.refs_iniciar(), f'{formulario}: el respaldo usa la misma referencia que los intentos de iniciar'
+
+    assert not c.google, 'Todo el Apps Script se atendió en page.route'
+
+
 EXTRAS = [
     (1, 'El almacén rechaza por tamaño (413) y por tipo (415): sin reintentos, frase en llano en línea', extra_1),
     (2, '.docx / .DOC / .JPEG / .PNG sin tipo: Content-Type por extensión; doble clic = un envío', extra_2),
@@ -1193,6 +1287,7 @@ EXTRAS = [
     (8, 'confirmar falla 4 veces → Reintentar sin resubir y misma referencia', extra_8),
     (9, 'Con la referencia ya en la base, si iniciar cae NO entra el respaldo (forzado a true: prueba la guarda)', extra_9),
     (10, 'Archivo de 26 MB: el servidor lo rechaza con su frase en llano, sin subir nada', extra_10),
+    (11, 'Aviso «Error al enviar el formulario» (el de siempre y la v2 con respaldo): sin la referencia, y su «Enviar por email» con titular y CUPS', extra_11),
 ]
 GOOGLE_EXTRAS = {7: GOOGLE_RESPUESTA_OK}
 

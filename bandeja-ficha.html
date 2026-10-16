@@ -651,7 +651,7 @@
         <section class="card encabezado" aria-labelledby="ref">
             <div class="enc-fila">
                 <div>
-                    <p class="enc-etiqueta">Referencia</p>
+                    <p class="enc-etiqueta" id="refEtiqueta">CUPS</p>
                     <h1 class="ref" id="ref"></h1>
                 </div>
                 <div class="insignias" id="insignias"></div>
@@ -693,7 +693,8 @@
     const FRASE_MARCAR = 'No se ha podido marcar. Inténtalo de nuevo.';
     const VIDA_ENLACES_MS = 9 * 60 * 1000; // 9 de los 10 minutos que vale cada enlace: un minuto de margen
 
-    // La referencia es el último tramo de /bandeja/c/<ref>
+    // La referencia (GNE-…/MEGA-…) es el último tramo de /bandeja/c/<ref>: es interna, solo va en la dirección y en las peticiones; en pantalla
+    // el contrato se identifica por su CUPS (Victor, 16-oct-2026)
     const ref = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || '');
 
     const $ = (id) => document.getElementById(id);
@@ -839,7 +840,7 @@
             return false;
         }
         if (r.status === 404) {
-            mostrarCarga('No encontramos esta tramitación. Puede que la referencia no sea correcta.', false, true);
+            mostrarCarga('No encontramos esta tramitación. Puede que el enlace no sea correcto.', false, true);
             return false;
         }
         if (r.status !== 200 || !r.json || !r.json.tramitacion) {
@@ -875,8 +876,13 @@
     // ---------- pintar ----------
     function pintar() {
         const t = datos.tramitacion;
-        document.title = `${t.ref} · Bandeja de tramitación`;
-        $('ref').textContent = t.ref;
+        // La cabecera enseña el CUPS (o, si no lo tiene, el titular); la pestaña, el titular (o, si no lo tiene, el CUPS)
+        const cups = String(t.cups || '').trim();
+        const titular = String(t.titular_nombre || '').trim();
+        const [etiqueta, identidad] = cups ? ['CUPS', cups] : (titular ? ['Titular', titular] : ['Contrato', 'Sin CUPS ni titular']);
+        document.title = `${titular || cups || 'Ficha'} · Bandeja de tramitación`;
+        $('refEtiqueta').textContent = etiqueta;
+        $('ref').textContent = identidad;
 
         const ins = $('insignias');
         ins.textContent = '';
@@ -897,7 +903,7 @@
         let aviso = '';
         let rojo = false;
         if (t.estado === 'subiendo') aviso = 'El comercial todavía está subiendo la documentación. Cuando termine, esta tramitación aparecerá como pendiente.';
-        else if (t.estado === 'abandonada') aviso = 'Envío incompleto: la documentación no llegó a subirse entera. Puede que el comercial lo haya vuelto a enviar con otra referencia.';
+        else if (t.estado === 'abandonada') aviso = 'Envío incompleto: la documentación no llegó a subirse entera. Puede que el comercial lo haya vuelto a enviar.';
         else if (t.estado === 'descartada') { aviso = 'Este envío lo ha parado el filtro antibots: probablemente no es un contrato de verdad. Si crees que sí lo es, pide al comercial que lo envíe de nuevo.'; rojo = true; }
         else if (t.sospechosa) { aviso = 'Este envío ha activado el filtro antibots: revísalo con cuidado.'; rojo = true; }
         banner.textContent = aviso;
@@ -1116,9 +1122,11 @@
         }
     }
 
+    // «CUPS - TITULAR.zip»: cada parte sin los caracteres que un sistema de ficheros no admite (la referencia no va en el nombre)
     function nombreZip() {
-        const titular = String(datos.tramitacion.titular_nombre || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
-        return `${datos.tramitacion.ref}${titular ? ' - ' + titular : ''}.zip`;
+        const limpio = (valor, max) => String(valor || '').replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max);
+        const nombre = [limpio(datos.tramitacion.cups, 40), limpio(datos.tramitacion.titular_nombre, 80)].filter(Boolean).join(' - ');
+        return `${nombre || 'Documentos'}.zip`;
     }
 
     async function descargarZip(boton) {
@@ -1352,7 +1360,7 @@
     });
 
     if (!/^(GNE|MEGA)-\d{8}-[A-Z0-9]{4,10}$/.test(ref)) {
-        mostrarCarga('No encontramos esta tramitación. Puede que la referencia no sea correcta.', false, true);
+        mostrarCarga('No encontramos esta tramitación. Puede que el enlace no sea correcto.', false, true);
     } else {
         cargar(false);
     }

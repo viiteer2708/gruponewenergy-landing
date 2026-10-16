@@ -35,7 +35,10 @@ CUPS_LUZ = 'ES0021000000000001RK'
 CUPS_GAS = 'ES0031000000000003BS'
 IBAN_TECLEADO = 'ES91 2100 0418 4502 0005 1332'
 
-REF_GRACIAS = re.compile(r'/gracias(?:-mega)?\.html\?ref=((?:GNE|MEGA)-\d{8}-[A-Z0-9]{4,10})$')
+# La página de gracias NO lleva la referencia (GNE-…/MEGA-…) ni en el texto ni en la dirección (es interna; Victor, 16-oct-2026): la dirección es
+# `/gracias.html` o `/gracias-mega.html`, sin `?ref=` ni nada detrás. `EN_GRACIAS` = ¿estamos en esa página (con o sin cola)?; `URL_GRACIAS` = la dirección que SÍ debe tener.
+EN_GRACIAS = re.compile(r'/gracias(?:-mega)?\.html')
+URL_GRACIAS = re.compile(r'/gracias(?:-mega)?\.html$')
 GOOGLE_RESPUESTA_OK = '{"success":true}'
 
 
@@ -284,9 +287,13 @@ class Caso:
 
     # -- esperas y lecturas ---------------------------------------------------------------------------
     def esperar_gracias(self, segundos=90):
-        """Espera a la página de gracias y devuelve la referencia que lleva la URL."""
-        self.page.wait_for_url(REF_GRACIAS, timeout=segundos * 1000)
-        return REF_GRACIAS.search(self.page.url).group(1)
+        """Espera a la página de gracias, comprueba que su dirección NO lleva nada (ni `?ref=`) y devuelve la referencia del contrato que acaba de
+        enviarse. La referencia ya no viaja en la dirección: se lee de la última petición `iniciar` de este caso (`self.iniciar`), que lleva la que el
+        formulario tenía en ese momento (también tras «Reintentar», o con una lista nueva = referencia nueva: la última `iniciar` lleva la vigente)."""
+        self.page.wait_for_url(EN_GRACIAS, timeout=segundos * 1000)
+        assert URL_GRACIAS.search(self.page.url), f'La dirección de la gracias no puede llevar nada detrás (ni la referencia): {self.page.url}'
+        assert self.iniciar, 'Se llegó a la página de gracias sin ningún `iniciar` (¿ha entrado el camino de siempre?)'
+        return self.iniciar[-1]['ref']
 
     def texto_boton(self):
         try:

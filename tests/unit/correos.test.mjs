@@ -185,7 +185,7 @@ test('aviso: lleva el IBAN COMPLETO, el NIF y todos los datos del contrato (en e
     assert.ok(salida.includes(IBAN), 'IBAN completo');
     assert.ok(salida.includes(NIF_TITULAR), 'NIF del titular');
     assert.ok(salida.includes(NIF_FIRMANTE), 'DNI del firmante');
-    for (const dato of ['GNE-20261008-ABC123', 'Ana Pérez', 'ana.perez@ejemplo.es', 'NATURGY', 'ES0021000000001094AX', 'Fijo 12 meses', '2.0TD',
+    for (const dato of ['Ana Pérez', 'ana.perez@ejemplo.es', 'NATURGY', 'ES0021000000001094AX', 'Fijo 12 meses', '2.0TD',
       'Juan García López', 'María López', 'Calle Mayor 1, 2º B', '28001', 'Madrid', '600123456', 'cliente@ejemplo.es', 'Llamar por la tarde']) {
       assert.ok(salida.includes(dato), `falta «${dato}»`);
     }
@@ -194,17 +194,50 @@ test('aviso: lleva el IBAN COMPLETO, el NIF y todos los datos del contrato (en e
   }
 });
 
-test('aviso: cabecera de GNEW (#094D38) con fecha de Madrid y referencia; el de MEGA va en #0D9488', () => {
+test('aviso: cabecera de GNEW (#094D38) con fecha de Madrid y CUPS (no la referencia); el de MEGA va en #0D9488', () => {
   assert.ok(AVISO.html.includes('#094D38'));
   assert.ok(!AVISO.html.includes('#0D9488'));
   assert.ok(AVISO.html.includes('Nuevo contrato para tramitar'));
-  assert.ok(AVISO.html.includes('08/10/2026 a las 17:30 — Ref: GNE-20261008-ABC123'));
-  assert.ok(AVISO.texto.startsWith('NUEVO CONTRATO PARA TRAMITAR\n08/10/2026 a las 17:30 — Ref: GNE-20261008-ABC123'));
+  assert.ok(AVISO.html.includes('08/10/2026 a las 17:30 — CUPS ES0021000000001094AX'));
+  assert.ok(AVISO.texto.startsWith('NUEVO CONTRATO PARA TRAMITAR\n08/10/2026 a las 17:30 — CUPS ES0021000000001094AX\n'));
   const mega = armarAviso({ tramitacion: FILA_MEGA, documentos: DOCUMENTOS, urlFicha: urlFichaDe('https://tramitatucontrato.energy', FILA_MEGA.ref), destino: DESTINO });
   assert.ok(mega.html.includes('#0D9488'));
   assert.ok(!mega.html.includes('#094D38'));
   assert.equal(mega.asunto, 'Nuevo Contrato MEGA - Juan García López - Ana Pérez - ES0021000000001094AX');
   assert.ok(mega.html.includes('Tipo Suministro') && mega.html.includes('Gas'));
+});
+
+// La referencia (GNE-…/MEGA-…) es interna e invisible (Victor, 16-oct-2026): ni fila «Referencia», ni «Ref:» en la cabecera, ni la palabra en
+// ninguna frase. Lo ÚNICO que la lleva es la dirección del botón «Abrir en la bandeja» (su enlace apunta a /bandeja/c/<ref>): se quita ese enlace
+// y lo que queda no puede nombrarla.
+const sinEnlace = (texto, url) => texto.split(url).join('');
+const cuentaDe = (texto, trozo) => texto.split(trozo).length - 1;
+
+test('aviso: la referencia no se ve (ni fila «Referencia», ni «Ref:», ni la palabra); solo va en la dirección del botón a la bandeja', () => {
+  for (const [fila, formulario] of [[FILA_GNEW, 'gnew'], [FILA_MEGA, 'mega']]) {
+    const url = urlFichaDe('https://tramitatucontrato.energy', fila.ref);
+    const aviso = armarAviso({ tramitacion: fila, documentos: DOCUMENTOS, urlFicha: url, destino: DESTINO });
+    for (const [formato, salida] of [['html', aviso.html], ['texto', aviso.texto], ['asunto', aviso.asunto]]) {
+      const visible = sinEnlace(salida, url);
+      assert.ok(!visible.includes(fila.ref), `${formulario} (${formato}): la referencia solo puede estar en el enlace de la bandeja`);
+      assert.ok(!/referencia|Ref:/i.test(visible), `${formulario} (${formato}): ni la palabra «referencia» ni «Ref:»`);
+    }
+    assert.equal(cuentaDe(aviso.html, fila.ref), 1, `${formulario}: en el HTML, la referencia sale UNA vez: el href del botón`);
+    assert.equal(cuentaDe(aviso.texto, fila.ref), 1, `${formulario}: en el texto, UNA vez: la dirección tras «Abrir en la bandeja:»`);
+    assert.ok(aviso.texto.includes(`Abrir en la bandeja: ${url}`));
+    assert.ok(!/<td[^>]*>Referencia<\/td>/.test(aviso.html) && !/^Referencia:/m.test(aviso.texto), 'sin la fila «Referencia» de la tabla');
+    assert.ok(aviso.html.includes(`CUPS ${fila.cups}`) && aviso.texto.includes(`— CUPS ${fila.cups}`), 'la cabecera lleva el CUPS');
+  }
+  // sin botón (sin enlace válido) la referencia no está en NINGÚN sitio del correo
+  const sin = armarAviso({ tramitacion: FILA_GNEW, documentos: DOCUMENTOS, destino: DESTINO });
+  for (const salida of [sin.html, sin.texto, sin.asunto]) assert.ok(!salida.includes(FILA_GNEW.ref) && !/referencia|Ref:/i.test(salida));
+});
+
+test('aviso: sin CUPS la cabecera lleva solo la fecha (ni «CUPS» vacío, ni la referencia, ni «undefined»)', () => {
+  const sinCups = armarAviso({ tramitacion: { ...FILA_GNEW, cups: undefined }, documentos: DOCUMENTOS, urlFicha: URL_FICHA, destino: DESTINO });
+  assert.ok(sinCups.html.includes('08/10/2026 a las 17:30</p>') && !sinCups.html.includes('— CUPS'));
+  assert.ok(sinCups.texto.startsWith('NUEVO CONTRATO PARA TRAMITAR\n08/10/2026 a las 17:30\n'));
+  for (const salida of [sinCups.html, sinCups.texto]) assert.ok(!/undefined|null|Ref:/.test(salida));
 });
 
 test('aviso: botón «Abrir en la bandeja» que apunta a la ficha, SIEMPRE (con o sin adjuntos)', () => {
@@ -415,9 +448,9 @@ test('seleccionarAdjuntos: con maxAdjuntos 0 todo queda fuera (así se arma «si
 
 test('aviso: pie con el email del comercial y el buzón de tramitación', () => {
   assert.ok(AVISO.html.includes('Al responder a este correo, la respuesta le llega directamente al comercial (ana.perez@ejemplo.es).'));
-  assert.ok(AVISO.html.includes(`enviar cualquier documento adicional a ${DESTINO} citando la referencia.`));
+  assert.ok(AVISO.html.includes(`enviar cualquier documento adicional a ${DESTINO} citando el CUPS.`));
   assert.ok(AVISO.html.includes('Aviso automático de tramitatucontrato.energy.'));
-  assert.ok(AVISO.texto.includes(`enviar cualquier documento adicional a ${DESTINO} citando la referencia.`));
+  assert.ok(AVISO.texto.includes(`enviar cualquier documento adicional a ${DESTINO} citando el CUPS.`));
 });
 
 test('aviso: cambio de titular Sí/No (con «Sí», la fila «Titular anterior»; en ningún sitio «Nuevo titular»), y la franja de antibots solo si la fila es sospechosa', () => {
@@ -526,20 +559,42 @@ test('acuse: NO lleva IBAN, ni DNI/NIF, ni teléfono, ni enlace a la bandeja (ni
 test('acuse: saludo con el nombre, resumen, documentos recibidos y a dónde escribir si falta algo', () => {
   for (const salida of [ACUSE.html, ACUSE.texto]) {
     assert.ok(salida.includes('Hola Ana Pérez, hemos recibido tu contrato y la documentación. Ya está en manos del equipo de tramitación.'));
-    for (const dato of ['GNE-20261008-ABC123', '08/10/2026 a las 17:30', 'NATURGY', 'ES0021000000001094AX', 'Juan García López', 'Fijo 12 meses', '2.0TD']) {
+    for (const dato of ['08/10/2026 a las 17:30', 'NATURGY', 'ES0021000000001094AX', 'Juan García López', 'Fijo 12 meses', '2.0TD']) {
       assert.ok(salida.includes(dato), `falta «${dato}»`);
     }
     for (const nombre of ['firma.png', 'contrato.pdf', 'DNI frontal.jpg', 'factura.pdf']) assert.ok(salida.includes(nombre), nombre);
     assert.ok(salida.includes('¿Falta algo o quieres añadir documentación?'));
     assert.ok(salida.includes(DESTINO));
-    assert.ok(salida.includes('indicando siempre la referencia'));
   }
+  // el CUPS, en la cabecera y en la frase de «indicando siempre…» (en el HTML va en negrita)
+  assert.ok(ACUSE.html.includes('Contrato recibido') && ACUSE.html.includes('CUPS: ES0021000000001094AX'));
+  assert.ok(ACUSE.html.includes('indicando siempre el CUPS <strong>ES0021000000001094AX</strong>.'));
+  assert.ok(ACUSE.texto.startsWith('CONTRATO RECIBIDO\nCUPS: ES0021000000001094AX\n'));
+  assert.ok(ACUSE.texto.includes('indicando siempre el CUPS ES0021000000001094AX.'));
+  assert.ok(ACUSE.html.includes('Guarda este correo para cualquier consulta.') && ACUSE.texto.includes('Guarda este correo para cualquier consulta.'));
   assert.ok(ACUSE.html.includes('Documentación recibida (4)'));
   assert.ok(ACUSE.html.includes('Contrato recibido'));
   assert.ok(ACUSE.html.includes(`<a href="mailto:${DESTINO}"`));
   assert.ok(ACUSE.html.includes('#094D38'));
   assert.ok(ACUSE.html.includes('(Grupo New Energy)'));
   assert.ok(!ACUSE.html.includes('5,50 MB'), 'el acuse lista los nombres, no los tamaños');
+});
+
+test('acuse: la referencia no se ve en NINGÚN sitio (ni asunto, ni HTML, ni texto): se identifica el contrato por el CUPS', () => {
+  for (const [fila, formulario] of [[FILA_GNEW, 'gnew'], [FILA_MEGA, 'mega']]) {
+    const acuse = armarAcuse({ tramitacion: fila, documentos: DOCUMENTOS, destino: DESTINO });
+    for (const [formato, salida] of [['html', acuse.html], ['texto', acuse.texto], ['asunto', acuse.asunto]]) {
+      assert.ok(!salida.includes(fila.ref), `${formulario} (${formato}): sin la referencia ${fila.ref}`);
+      assert.ok(!/referencia|Ref:/i.test(salida), `${formulario} (${formato}): ni «referencia» ni «Ref:»`);
+    }
+    assert.ok(acuse.html.includes(`CUPS: ${fila.cups}`) && acuse.texto.includes(`indicando siempre el CUPS ${fila.cups}.`));
+  }
+  // sin CUPS: sin cabecera vacía y la frase sigue teniendo sentido
+  const sinCups = armarAcuse({ tramitacion: { ...FILA_GNEW, cups: '' }, documentos: DOCUMENTOS, destino: DESTINO });
+  assert.ok(!sinCups.html.includes('CUPS:') && !sinCups.texto.includes('CUPS:'), 'sin CUPS no hay «CUPS:» vacío en la cabecera');
+  assert.ok(sinCups.html.includes('indicando siempre el CUPS del contrato.') && sinCups.texto.includes('indicando siempre el CUPS del contrato.'));
+  assert.ok(sinCups.texto.startsWith('CONTRATO RECIBIDO\n\nHola Ana Pérez'), JSON.stringify(sinCups.texto.slice(0, 60)));
+  for (const salida of [sinCups.html, sinCups.texto]) assert.ok(!/undefined|null|referencia|Ref:/i.test(salida));
 });
 
 test('acuse MEGA: cabecera #0D9488 y firma de Mega Energía', () => {

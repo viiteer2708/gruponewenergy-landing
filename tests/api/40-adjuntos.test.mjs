@@ -298,6 +298,12 @@ describe('Adjuntos · qué documentos lleva el aviso', { timeout: 600_000 }, () 
     for (const nombre of ['contrato.pdf', 'dni.jpg', 'factura.png', 'firma.png']) assert.ok(correo.cuerpo_html.includes(nombre), nombre);
     assert.ok(correo.cuerpo_html.includes('Abrir en la bandeja') && correo.cuerpo_html.includes(`${BASE}/bandeja/c/${ref}`));
     assert.ok(correo.cuerpo_texto.includes(`Abrir en la bandeja: ${BASE}/bandeja/c/${ref}`));
+    // la referencia es interna e invisible (16-oct-2026): solo está en la dirección del botón; el contrato se identifica por el CUPS
+    for (const [formato, cuerpo] of [['html', correo.cuerpo_html], ['texto', correo.cuerpo_texto], ['asunto', aviso.asunto]]) {
+      const visible = cuerpo.split(`${BASE}/bandeja/c/${ref}`).join('');
+      assert.ok(!visible.includes(ref) && !/referencia|Ref:/i.test(visible), `el aviso (${formato}) no enseña la referencia fuera de la dirección del botón`);
+    }
+    assert.ok(correo.cuerpo_html.includes(`— CUPS ${CUPS}`), 'la cabecera del aviso lleva el CUPS');
     assert.ok(!correo.cuerpo_html.includes('No caben como adjunto'), 'todo cabe: ningún aviso de «no caben»');
     assert.ok(correo.cuerpo_html.includes(IBAN), 'el aviso sigue llevando el IBAN completo');
 
@@ -308,6 +314,10 @@ describe('Adjuntos · qué documentos lleva el aviso', { timeout: 600_000 }, () 
     assert.deepEqual([acuse.resultado.estado, acuse.resultado.http], ['enviado', 200]);
     const acuseFila = correoDe(estado, 'acuse');
     assert.ok(!acuseFila.cuerpo_html.includes('Documentación adjunta') && !acuseFila.cuerpo_html.includes(IBAN) && !acuseFila.cuerpo_html.includes('/bandeja/'));
+    for (const [formato, cuerpo] of [['html', acuseFila.cuerpo_html], ['texto', acuseFila.cuerpo_texto], ['asunto', acuse.asunto]]) {
+      assert.ok(!cuerpo.includes(ref) && !/referencia|Ref:/i.test(cuerpo), `el acuse (${formato}) no lleva la referencia`);
+    }
+    assert.ok(acuseFila.cuerpo_texto.includes(`indicando siempre el CUPS ${CUPS}.`), 'el acuse cita el CUPS');
 
     // el historial: los cinco eventos de siempre, sin nada nuevo en el camino feliz, y los recuentos en `aviso_enviado`
     assert.deepEqual(tipos(estado), ['creada', 'firma_guardada', 'recibida', 'aviso_enviado', 'acuse_enviado']);

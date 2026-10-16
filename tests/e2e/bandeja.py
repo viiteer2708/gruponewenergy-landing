@@ -34,7 +34,7 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-from comun import BASE, FIXTURES, RAIZ, SALIDAS, Caso, datos_formulario, estado_de, esperar_estado
+from comun import BASE, CUPS_LUZ, FIXTURES, RAIZ, SALIDAS, Caso, datos_formulario, estado_de, esperar_estado
 
 PDF = FIXTURES / 'documento-5-5mb.pdf'
 JPG = FIXTURES / 'foto-pequena.jpg'
@@ -58,6 +58,10 @@ JERGA = re.compile(
     r'undefined|\bnull\b|\bNaN\b|\[object|Invalid Date|\bHTTP\b|\bJSON\b|supabase|altavoz|\btoken\b|\bstack\b|exception|codigo_respuesta|error \d{3}',
     re.I,
 )
+
+# La referencia (GNE-…/MEGA-…) es interna e invisible (Victor, 16-oct-2026): ningún texto que se vea en la bandeja la lleva ni nombra la palabra
+# (solo vive en la dirección de la ficha, /bandeja/c/<ref>). `Caso.sin_referencia` lo comprueba sobre todo lo que ve una persona.
+REF_A_LA_VISTA = re.compile(r'\b(?:GNE|MEGA)-\d{8}-[A-Z0-9]{4,10}\b|referencia', re.I)
 
 # Lo que Victor veía CORTADO en la tabla (modo Lista) a 1440 px —«JOSE MANUEL FERNA…», «NET FIJO BOE · …», «ISABEL HER…»—, completo: el caso 8 lo
 # deja en las capturas y el caso 17 comprueba que a 1440 px se lee ENTERO (el servidor lo guarda en MAYÚSCULAS; la tarifa, 2.0TD, la pone el formulario)
@@ -267,6 +271,14 @@ class CasoBandeja(Caso):
         mayor = self.page.evaluate('() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)')
         assert mayor <= ancho, f'La página se sale por los lados: {mayor} px en un viewport de {ancho}'
 
+    def sin_referencia(self):
+        """La referencia (GNE-…/MEGA-…) no está a la vista: ni en el texto de la página, ni en el título de la pestaña, ni en ningún placeholder,
+        title, aria-label o texto alternativo. (La dirección de la ficha sí la lleva: es su identificador interno y no se enseña en pantalla.)"""
+        visible = self.page.evaluate("""() => [document.title, document.body.innerText,
+            ...[...document.querySelectorAll('[title],[placeholder],[aria-label],[alt]')].flatMap((e) => ['title', 'placeholder', 'aria-label', 'alt'].map((a) => e.getAttribute(a) || ''))].join('\\n')""")
+        m = REF_A_LA_VISTA.search(visible)
+        assert not m, f'La referencia está a la vista: «{m.group(0)}» en {self.page.url}'
+
     def comprobar_limpio(self):
         super().comprobar_limpio()
         cincos = [r for r in self.respuestas if r['status'] >= 500]
@@ -391,7 +403,8 @@ def caso_3(c):
     c.ver('/bandeja', 'a.tarjeta')
     c.esperar_lista()
     assert 'Tramitaciones' in p.inner_text('h1')
-    assert p.get_attribute('#q', 'placeholder') == 'Buscar por titular, CUPS, referencia o comercial'
+    assert p.get_attribute('#q', 'placeholder') == 'Buscar por titular, CUPS o comercial', 'El buscador ya no anuncia la referencia'
+    assert p.get_attribute('#q', 'aria-label') == 'Buscar por titular, CUPS o comercial'
     assert p.get_by_role('button', name='Pendientes', exact=True).get_attribute('aria-pressed') == 'true'
 
     # Pendientes (por defecto): A y B, de más reciente a más antigua, sin las incompletas ni las descartadas
@@ -406,6 +419,7 @@ def caso_3(c):
     assert re.search(r'hace (unos segundos|\d+ min)', texto), texto
     assert tarjeta_a.get_attribute('href') == f'/bandeja/c/{ref_a}'
     assert 'MEGA' in p.locator(f'a.tarjeta[href$="{ref_b}"]').inner_text() and '2 documentos' in p.locator(f'a.tarjeta[href$="{ref_b}"]').inner_text()
+    c.sin_referencia()  # ni una referencia en las tarjetas, ni en la página (solo en la dirección de cada una)
     c.sin_jerga()
     c.sin_desbordes()
 
@@ -435,7 +449,8 @@ def caso_3(c):
     assert p.get_by_role('button', name='Descartadas', exact=True).get_attribute('aria-pressed') == 'true'
     c.elegir_filtro('Pendientes')
 
-    # la búsqueda: titular, CUPS, referencia, comercial y compañía; sin tildes ni mayúsculas; varias palabras en cualquier orden
+    # la búsqueda: titular, CUPS, comercial y compañía —y, por dentro, la referencia, aunque ya no se anuncie ni se vea—; sin tildes ni mayúsculas;
+    # varias palabras en cualquier orden
     for consulta, debe, no_debe in [
         ('titular mega', [ref_b], [ref_a]),
         ('ES0021000000000001rk', [ref_a, ref_b], []),
@@ -495,7 +510,10 @@ def caso_4(c):
     p.locator(f'a.tarjeta[href$="{ref}"]').click()  # se llega a la ficha desde la lista
     p.wait_for_selector('#ficha:not([hidden])')
     assert p.url == f'{BASE}/bandeja/c/{ref}'
-    assert p.inner_text('#ref') == ref
+    # la cabecera grande es el CUPS (ya no la referencia) y la pestaña lleva el titular; la referencia solo está en la dirección
+    assert p.inner_text('#refEtiqueta').strip().upper() == 'CUPS' and p.inner_text('#ref') == CUPS_LUZ
+    assert p.title() == 'TITULAR DE PRUEBA SL · Bandeja de tramitación', p.title()
+    c.sin_referencia()
     assert 'Pendiente' in p.inner_text('#insignias') and 'GNEW' in p.inner_text('#insignias')
     cuerpo = p.inner_text('#ficha')
     for esperado in ['COMERCIAL', 'CONTRATO', 'TITULAR', 'SUMINISTRO', 'CONTACTO', 'CAMBIO DE TITULAR', 'OBSERVACIONES', 'DOCUMENTOS (4)', 'CORREOS', 'HISTORIAL',
@@ -559,7 +577,7 @@ def caso_4(c):
         with p.expect_download(timeout=120_000) as bajada:
             p.get_by_role('button', name='Descargar todo (ZIP)', exact=True).click()
         descarga = bajada.value
-        assert descarga.suggested_filename == f'{ref} - TITULAR DE PRUEBA SL.zip', descarga.suggested_filename
+        assert descarga.suggested_filename == f'{CUPS_LUZ} - TITULAR DE PRUEBA SL.zip', descarga.suggested_filename  # «CUPS - TITULAR.zip», sin la referencia
         zip_ruta = Path(carpeta) / 'bandeja.zip'
         descarga.save_as(str(zip_ruta))
         prueba = subprocess.run(['python3', '-m', 'zipfile', '-t', str(zip_ruta)], capture_output=True, text=True)
@@ -716,7 +734,7 @@ def caso_7(c):
     c.entrar_por_pantalla()
     p.wait_for_url(f'{BASE}/bandeja/c/{ref}')
     p.wait_for_selector('#ficha:not([hidden])')
-    assert p.inner_text('#ref') == ref
+    assert p.inner_text('#ref') == CUPS_LUZ
     c.sin_jerga()
 
     # «volver» solo vale si es una página de la bandeja: nunca otra web ni una dirección sin esquema
@@ -813,7 +831,7 @@ def caso_9(c):
     assert p.locator('#ficha img[src="x" i], #ficha iframe, #ficha svg[onload], #ficha b[onmouseover], #ficha u').count() == 0
     assert p.evaluate("() => typeof window.__xss") == 'undefined' and p.evaluate("() => typeof window.__XSS") == 'undefined', 'Se ha ejecutado algo del contenido del comercial'
     assert p.evaluate("() => document.querySelectorAll('script').length") == 1, 'La página tiene su único script y ninguno colado'
-    assert p.title().startswith(ref)
+    assert p.title() == f'{XSS_TITULAR.upper()} · Bandeja de tramitación', p.title()  # la pestaña lleva el titular (como texto: nada se ejecuta) y no la referencia
     # El dato del cambio de titular sale con su nombre de verdad: «Titular anterior» (16-oct-2026), nunca «Nuevo titular»
     assert 'Titular anterior' in [x.inner_text() for x in p.locator('#colDatos dt').all()], 'La ficha enseña «Titular anterior»'
     assert not re.search(r'nuevo titular', ficha, re.I), 'En la ficha no queda «Nuevo titular»'
@@ -821,7 +839,8 @@ def caso_9(c):
 
 
 def caso_10(c):
-    """Fichas especiales: incompleta (sin «Marcar como tramitada», documentos sin subir), descartada, una que no existe y una referencia que no es referencia."""
+    """Fichas especiales: incompleta (sin «Marcar como tramitada», documentos sin subir), descartada, una sin CUPS (la cabecera enseña el titular) o sin CUPS ni
+    titular (una frase en llano), una que no existe y una referencia que no es referencia."""
     ref_c = crear('gnew', [(1, 'pendiente.pdf', b'%PDF-1.4\n' + b'x' * 2048), (2, 'otro.png', PNG.read_bytes())], extra={'titular': 'Titular Subiendo SL'}, completo=False)
     ref_d = crear('gnew', [(1, 'bot.pdf', b'%PDF-1.4\n' + b'x' * 2048)], extra={'titular': 'Titular Bot SL'}, hp='soy un robot')
     c.con_sesion()
@@ -843,6 +862,33 @@ def caso_10(c):
     assert 'Este envío no tiene documentos.' in p.inner_text('#bloqueDocs')
     assert p.get_by_role('button', name='Descargar todo (ZIP)').count() == 0
     c.sin_jerga()
+
+    # la cabecera grande es el CUPS; si un contrato raro no lo tiene, el titular (y, sin ninguno de los dos, una frase en llano: nunca vacía)
+    c.sin_referencia()
+    assert p.inner_text('#refEtiqueta').strip().upper() == 'CUPS' and p.inner_text('#ref') == CUPS_LUZ
+
+    def sin_cups(quitar_titular):
+        def manejador(route, request):
+            real = route.fetch()
+            cuerpo = real.json()
+            cuerpo['tramitacion']['cups'] = ''
+            if quitar_titular:
+                cuerpo['tramitacion']['titular_nombre'] = ''
+            route.fulfill(response=real, json=cuerpo)
+        return manejador
+
+    p.route('**/api/bandeja/ficha**', sin_cups(False))
+    c.abrir_ficha(ref_c)
+    assert p.inner_text('#refEtiqueta').strip().upper() == 'TITULAR' and p.inner_text('#ref') == 'TITULAR SUBIENDO SL'
+    assert p.title() == 'TITULAR SUBIENDO SL · Bandeja de tramitación', p.title()
+    c.sin_referencia()
+    p.unroute('**/api/bandeja/ficha**')
+    p.route('**/api/bandeja/ficha**', sin_cups(True))
+    c.abrir_ficha(ref_c)
+    assert p.inner_text('#refEtiqueta').strip().upper() == 'CONTRATO' and p.inner_text('#ref') == 'Sin CUPS ni titular'
+    assert p.title() == 'Ficha · Bandeja de tramitación', p.title()
+    c.sin_referencia()
+    p.unroute('**/api/bandeja/ficha**')
 
     # una referencia con forma de referencia pero que no existe: el servidor dice 404 y la página lo cuenta en llano
     c.rota('/api/bandeja/ficha')
@@ -972,7 +1018,7 @@ def caso_13(c):
     p.unroute('**/api/bandeja/ficha**')
     p.get_by_role('button', name='Reintentar', exact=True).click()
     p.wait_for_selector('#ficha:not([hidden])')
-    assert p.inner_text('#ref') == ref
+    assert p.inner_text('#ref') == CUPS_LUZ
 
     # marcar como tramitada sin red: lo dice, no cambia nada y deja volver a intentarlo
     p.route('**/api/bandeja/estado', sin_red)
@@ -1270,13 +1316,14 @@ def caso_17(c):
     assert c.refs_en_filas() == refs_tarjetas, 'Los mismos contratos, en el mismo orden'
     cabecera = p.locator('#cajaLista .tabla-cabecera')
     assert cabecera.is_visible() and cabecera.get_attribute('aria-hidden') == 'true'
-    assert [x.inner_text() for x in cabecera.locator('span').all()] == ['Referencia', 'Titular', 'Compañía', 'CUPS', 'Comercial', 'Recibida', 'Docs', 'Abierta', 'Estado', '']
+    assert [x.inner_text() for x in cabecera.locator('span').all()] == ['Titular', 'Compañía', 'CUPS', 'Comercial', 'Recibida', 'Docs', 'Abierta', 'Estado', ''], 'Sin columna Referencia'
+    assert p.locator('.c-ref').count() == 0, 'Ninguna fila lleva una celda de referencia'
     assert p.evaluate("() => document.querySelector('.contenedor').getBoundingClientRect().width") == 1400, 'En modo Lista la página se ensancha a 1400 px'
 
     # 3) una fila de GNEW y una de MEGA: todas sus columnas (lo que escribe el comercial, como texto)
     fa = fila(ref_a)
     assert fa.get_attribute('href') == f'/bandeja/c/{ref_a}', 'Toda la fila es un enlace a su ficha'
-    assert fa.locator('.c-ref').inner_text() == ref_a
+    assert not REF_A_LA_VISTA.search(fa.inner_text()), f'La fila no enseña la referencia: {fa.inner_text()!r}'
     assert fa.locator('.pildora-nombre').inner_text() == 'TITULAR DE PRUEBA SL'
     assert fa.locator('.avatar').inner_text() == 'TP' and 'avatar-gnew' in fa.locator('.avatar').get_attribute('class').split()
     assert fa.locator('.c-compania .marca-gnew').inner_text() == 'GNEW' and fa.locator('.c-compania .c-txt').inner_text() == 'COMPAÑÍA DE PRUEBA · 2.0TD'
@@ -1291,6 +1338,7 @@ def caso_17(c):
     assert fb.locator('.marca-mega').inner_text() == 'MEGA' and '2.0TD' in fb.locator('.c-compania').inner_text()
     assert fb.locator('.avatar').inner_text() == 'TM' and 'avatar-mega' in fb.locator('.avatar').get_attribute('class').split()
     assert fb.locator('.c-docs').inner_text() == '2'
+    c.sin_referencia()  # y en toda la tabla (cabecera, filas, buscador, pestaña): ni la referencia ni la palabra
 
     # 4) «Sin abrir» (raya azul de 4 px, pastilla, titular en negrita) y «Abierta por …» (ojo, correo, «hace …»), con la misma regla que las tarjetas
     c.buscar('marcador17')
@@ -1389,7 +1437,7 @@ def caso_17(c):
     fila(ref_a).click()
     p.wait_for_selector('#ficha:not([hidden])')
     assert p.url == f'{BASE}/bandeja/c/{ref_a}', p.url
-    assert p.inner_text('#ref') == ref_a
+    assert p.inner_text('#ref') == CUPS_LUZ
     p.go_back()
     p.wait_for_url(re.compile(r'/bandeja(\?estado=todas)?$'))
     c.esperar_lista()
@@ -1440,7 +1488,7 @@ def caso_17(c):
         const cabe = (pastilla, celda) => pastilla.getBoundingClientRect().right <= celda.getBoundingClientRect().right + 1 && celda.scrollWidth <= celda.clientWidth + 1;
         filas.forEach((fila) => {
             [...fila.children].forEach((celda, i) => { if (Math.abs(izq(celda) - cabecera[i]) > 1) desalineadas.push(i); });
-            ['.c-ref', '.c-cups', '.c-recibida', '.c-docs', '.c-estado'].forEach((s) => {
+            ['.c-cups', '.c-recibida', '.c-docs', '.c-estado'].forEach((s) => {
                 const e = fila.querySelector(s);
                 if (e && e.scrollWidth > e.clientWidth + 1) recortadas.push(s);
             });
@@ -1452,10 +1500,13 @@ def caso_17(c):
         });
         return { columnas: cabecera.length, filas: filas.length, desalineadas, recortadas, pastillas: [...pastillas].sort() };
     }""")
-    assert columnas['columnas'] == 10 and columnas['filas'] >= 5, columnas
+    assert columnas['columnas'] == 9 and columnas['filas'] >= 5, columnas
     assert columnas['desalineadas'] == [], 'Cada celda, bajo su cabecera (también en las filas con raya azul)'
-    assert columnas['recortadas'] == [], 'Referencia, CUPS, «hace …», docs y las pastillas de estado y de «Sin abrir» caben enteros (solo se recortan titular, compañía, comercial y quién)'
+    assert columnas['recortadas'] == [], 'CUPS, «hace …», docs y las pastillas de estado y de «Sin abrir» caben enteros (solo se recortan titular, compañía, comercial y quién)'
     assert columnas['pastillas'] == ['Descartada', 'Incompleta', 'Pendiente', 'Subiendo', 'Tramitada'], f'Hay una fila de cada estado: {columnas["pastillas"]}'
+    # el sitio que ocupaba la columna Referencia se lo reparten Titular, Compañía y Comercial (con ella medían ~227, ~222 y ~136 px a 1440)
+    anchos = p.evaluate("""() => [...document.querySelectorAll('.tabla-cabecera > span')].slice(0, 4).map((e) => e.getBoundingClientRect().width)""")
+    assert anchos[0] >= 280 and anchos[1] >= 275 and anchos[3] >= 165, f'Titular, Compañía y Comercial no han ganado el sitio de Referencia: {anchos}'
 
     # lo que Victor veía cortado a 1440 px se lee ENTERO: el titular, la compañía con su tarifa y el comercial de LARGOS, y «MEGA ENERGIA · 2.0TD»
     def leido_entero(ref):
