@@ -108,13 +108,15 @@ function refNueva(formulario) {
  * hasta la fila `descartada`, que tiene columnas NOT NULL). La validación estricta es validarDatos().
  *   · textos de una línea sin saltos ni caracteres de control; cada uno recortado a su máximo
  *   · TODO lo que escribe el comercial se guarda EN MAYÚSCULAS, con sus tildes y la Ñ («Peñíscola» → «PEÑÍSCOLA»): nombre del
- *     comercial, compañía, oferta, tarifa, titular, firmante, dirección, población, provincia, código postal, teléfono, nuevo
- *     titular y observaciones (que conservan sus saltos de línea). Se pasa a mayúsculas DESPUÉS de recortar y los opcionales
+ *     comercial, compañía, oferta, tarifa, titular, firmante, dirección, población, provincia, código postal, teléfono, titular
+ *     anterior y observaciones (que conservan sus saltos de línea). Se pasa a mayúsculas DESPUÉS de recortar y los opcionales
  *     vacíos siguen siendo null. Decisión de Victor del 15-oct-2026 (en el CRM se escribe todo en mayúsculas). De esta fila
  *     salen la bandeja, el aviso a backoffice (con su asunto) y el acuse al comercial: por eso el cambio vive SOLO aquí
  *   · EXCEPCIÓN: los correos electrónicos (comercial_email y email_cliente) van en minúsculas; el acuse se manda a comercial_email
  *   · CUPS, NIF/NIE/CIF e IBAN compactados y en mayúsculas
  *   · potencias: solo las rellenas, con coma → punto, tal como se tecleó
+ *   · cambio de titular (16-oct-2026): con «Sí» se guarda el titular ANTERIOR (`titular_anterior`; o `nuevo_titular`, que es como lo
+ *     mandaba una página abierta antes de ese día: gana el primero que traiga texto); con «No» no se guarda nada (null), aunque llegue texto
  *   · MEGA: compañía fija y tipo de suministro deducido de la tarifa TAL CUAL llega (antes de pasarla a mayúsculas) y guardado
  *     en mayúsculas (LUZ / GAS)
  */
@@ -126,6 +128,8 @@ export function mapearDatos(formulario, datos) {
     if (valor) potencias[clave] = valor;
   }
   const tarifa = linea(d.tarifa, 100); // tal cual llega: tipoSuministroDe la mira así (la lista de tarifas de MEGA está en mayúsculas)
+  const cambioTitular = ['si', 'sí'].includes(linea(d.cambio_titular, 10).toLowerCase());
+  const titularAnterior = linea(d.titular_anterior, 500) || linea(d.nuevo_titular, 500); // el primero que traiga texto (`nuevo_titular` = página vieja)
   return {
     comercial_nombre: lineaMayus(d.quien_eres, 200),
     comercial_email: linea(d.email_comercial, 254).toLowerCase(),
@@ -146,8 +150,10 @@ export function mapearDatos(formulario, datos) {
     provincia: lineaMayus(d.provincia, 100),
     telefono: lineaMayus(d.movil, 30),
     email_cliente: linea(d.email_cliente, 254).toLowerCase(),
-    cambio_titular: ['si', 'sí'].includes(linea(d.cambio_titular, 10).toLowerCase()),
-    nuevo_titular: vacioANull(lineaMayus(d.nuevo_titular, 500)),
+    cambio_titular: cambioTitular,
+    // OJO, nombre histórico: la columna `nuevo_titular` guarda desde el 16-oct-2026 el titular ANTERIOR (no se renombra: sin SQL). Se ESCRIBE solo aquí;
+    // al leerla, el aviso (correos.js) y la ficha (bandeja.js) ya la llaman «titular anterior».
+    nuevo_titular: cambioTitular ? vacioANull(titularAnterior.toUpperCase()) : null,
     observaciones: vacioANull(multilineaMayus(d.observaciones, 4000)),
   };
 }

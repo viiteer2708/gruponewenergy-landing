@@ -31,7 +31,7 @@ const ENTRADA_GNEW = Object.freeze({
   movil: '600 000 000',
   email_cliente: 'cliente@ejemplo.es',
   cambio_titular: 'Sí',
-  nuevo_titular: 'ñandú e hijos, s.l.',
+  titular_anterior: 'ñandú e hijos, s.l.',
   observaciones: 'línea uno\nlínea dos',
   terminos: true,
 });
@@ -155,11 +155,50 @@ test('mapearDatos GNEW: el tipo de suministro no se guarda (solo existe en MEGA)
 });
 
 // ---------------------------------------------------------------------------
+// Cambio de titular (Victor, 16-oct-2026): se guardan los datos del titular ANTERIOR, en la columna `nuevo_titular` (nombre histórico, sin SQL)
+// ---------------------------------------------------------------------------
+
+test('mapearDatos: con cambio de titular «Sí», la columna `nuevo_titular` guarda el titular ANTERIOR en MAYÚSCULAS (con sus tildes y la Ñ)', () => {
+  for (const si of ['Si', 'Sí', 'si', 'SÍ']) {
+    const f = mapearDatos('gnew', { ...ENTRADA_GNEW, cambio_titular: si, titular_anterior: 'ñandú e hijos, s.l., b-12345674, calle nueva 3' });
+    assert.equal(f.cambio_titular, true, si);
+    assert.equal(f.nuevo_titular, 'ÑANDÚ E HIJOS, S.L., B-12345674, CALLE NUEVA 3', si);
+  }
+  // el titular NUEVO (el del contrato) no se mezcla con él
+  const f = mapearDatos('mega', { ...ENTRADA_MEGA, titular: 'Titular Nuevo SL', titular_anterior: 'Antiguo Dueño SA' });
+  assert.deepEqual([f.titular_nombre, f.nuevo_titular], ['TITULAR NUEVO SL', 'ANTIGUO DUEÑO SA']);
+  // una sola línea, sin espacios de más, recortado a 500 y DESPUÉS en mayúsculas (como el resto)
+  assert.equal(mapearDatos('gnew', { ...ENTRADA_GNEW, titular_anterior: '  ana\nlópez\tgarcía  ' }).nuevo_titular, 'ANA LÓPEZ GARCÍA');
+  assert.equal(mapearDatos('gnew', { ...ENTRADA_GNEW, titular_anterior: 'ñ'.repeat(600) }).nuevo_titular, 'Ñ'.repeat(500));
+});
+
+test('mapearDatos: con cambio de titular «No» (o sin elegir) la columna `nuevo_titular` es null, aunque llegue texto en el campo oculto', () => {
+  for (const no of ['No', 'no', 'NO', '', undefined, null, 'quizá']) {
+    for (const campo of ['titular_anterior', 'nuevo_titular']) {
+      const f = mapearDatos('gnew', { ...ENTRADA_GNEW, cambio_titular: no, titular_anterior: undefined, [campo]: 'texto que sobra' });
+      assert.equal(f.cambio_titular, false, JSON.stringify(no));
+      assert.equal(f.nuevo_titular, null, `${JSON.stringify(no)} · ${campo}`);
+    }
+  }
+  assert.equal(mapearDatos('mega', { ...ENTRADA_MEGA, cambio_titular: 'No', titular_anterior: '' }).nuevo_titular, null, 'lo que manda el formulario nuevo con «No»');
+});
+
+test('mapearDatos: una página vieja (abierta antes del 16-oct-2026) manda el dato como `nuevo_titular`: vale como sinónimo; gana el primero que traiga texto', () => {
+  const vieja = { ...ENTRADA_GNEW, titular_anterior: undefined, nuevo_titular: 'luis gómez, 11111111h' };
+  assert.equal(mapearDatos('gnew', vieja).nuevo_titular, 'LUIS GÓMEZ, 11111111H');
+  assert.equal(mapearDatos('gnew', { ...vieja, titular_anterior: '' }).nuevo_titular, 'LUIS GÓMEZ, 11111111H', 'el nuevo campo vacío no tapa al viejo');
+  assert.equal(mapearDatos('gnew', { ...vieja, titular_anterior: '   ' }).nuevo_titular, 'LUIS GÓMEZ, 11111111H', 'ni uno en blanco');
+  assert.equal(mapearDatos('gnew', { ...vieja, titular_anterior: 'ana pérez' }).nuevo_titular, 'ANA PÉREZ', 'con los dos, manda el nuevo');
+  assert.equal(mapearDatos('gnew', { ...vieja, nuevo_titular: '' }).nuevo_titular, null, 'sin texto en ninguno, null');
+});
+
+// ---------------------------------------------------------------------------
 // Opcionales vacíos: null (no «»)
 // ---------------------------------------------------------------------------
 
 test('mapearDatos: los opcionales vacíos, en blanco o ausentes siguen siendo null', () => {
-  const opcionales = ['oferta', 'tarifa', 'nombre_firmante', 'dni_firmante', 'nuevo_titular', 'observaciones'];
+  // (claves de ENTRADA: lo que manda el formulario; `esperados` son las COLUMNAS: el titular anterior vive en `nuevo_titular`, nombre histórico)
+  const opcionales = ['oferta', 'tarifa', 'nombre_firmante', 'dni_firmante', 'titular_anterior', 'observaciones'];
   const esperados = { oferta: null, tarifa: null, firmante_nombre: null, firmante_nif: null, nuevo_titular: null, observaciones: null, tipo_suministro: null };
   const sacar = (f) => Object.fromEntries(Object.keys(esperados).map((k) => [k, f[k]]));
   for (const valor of ['', '   ', ' \n\t ', undefined, null]) {

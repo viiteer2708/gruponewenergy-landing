@@ -42,7 +42,7 @@ create table if not exists public.tramitaciones (
   email_cliente     text not null,
   -- otros
   cambio_titular    boolean not null default false,
-  nuevo_titular     text,
+  nuevo_titular     text,                             -- desde el 16-oct-2026 guarda el titular ANTERIOR (nombre histórico: no se renombra, sin SQL)
   observaciones     text,
   busqueda          text not null default '',          -- minúsculas sin tildes: titular+cups+ref+comercial+compañía
   -- origen y tiempos

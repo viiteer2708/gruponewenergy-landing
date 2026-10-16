@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""tests/e2e/formulario.py · Los 11 casos del formulario de tramitación (gnew.html y mega.html) con navegador real.
+"""tests/e2e/formulario.py · Los 12 casos del formulario de tramitación (gnew.html y mega.html) con navegador real.
 
 Uso (lo normal es `bash tests/e2e/run.sh formulario`, que arranca el servidor y limpia después):
-    python tests/e2e/formulario.py                 los 11 casos, en serie
+    python tests/e2e/formulario.py                 los 12 casos, en serie
     python tests/e2e/formulario.py 1 5             solo esos casos
     python tests/e2e/formulario.py capturas        capturas a 390 px ANTES (html de master) y DESPUÉS, y su comparación
-    python tests/e2e/formulario.py extras [N…]     comprobaciones extra (rutas que los 11 casos no tocan); no cuentan en el «11/11»
+    python tests/e2e/formulario.py extras [N…]     comprobaciones extra (rutas que los 12 casos no tocan); no cuentan en el «12/12»
 
 Un solo Chromium, viewport 390×844, `pageerror` y consola vigilados (0 errores inesperados es parte del criterio).
 Todo lo de Google Apps Script está interceptado; la base se lee siempre por /__pruebas/tramitacion.
 
 El interruptor V2_ACTIVO de los html se despliega APAGADO: los casos 1-9 (y los extras) prueban la v2 abriendo la página con
 `?v2=1` (lo pone `Caso.ir`); el 10 prueba lo que ve un comercial SIN ese parámetro; el 11 comprueba que `?v2=1` convive con el
-prefill por URL del comparador DPC.
+prefill por URL del comparador DPC; el 12 prueba el cambio de titular (se piden los datos del titular ANTERIOR, obligatorios con «Sí»).
 """
 import base64
 import json
@@ -461,10 +461,11 @@ def _simular_apps_script(c):
     return recibidos
 
 
-def _envio_de_siempre(c, formulario, recibidos, textos, html=None, foto_grande=False):
+def _envio_de_siempre(c, formulario, recibidos, textos, html=None, foto_grande=False, extra=None):
     """Un envío como lo hace un comercial: la página SIN `?v2=1`, se rellena, se firma y se pulsa enviar. `html` = otro html
     que se sirve en lugar del actual (el de producción de antes de la v2). Espera a la página de gracias y devuelve lo que ha
-    pasado: los textos del botón por orden, el cuerpo que llegó al Apps Script y la dirección final."""
+    pasado: los textos del botón por orden, el cuerpo que llegó al Apps Script y la dirección final. `extra` = datos del formulario
+    que se añaden o cambian (p. ej. el cambio de titular)."""
     ruta = '/' + formulario
     if html is not None:
         c.page.route(BASE + ruta, lambda r, _q: r.fulfill(status=200, content_type='text/html; charset=utf-8', body=html))
@@ -475,7 +476,7 @@ def _envio_de_siempre(c, formulario, recibidos, textos, html=None, foto_grande=F
             c.page.unroute(BASE + ruta)
     del textos[:]  # solo los textos de ESTE envío
     antes = len(recibidos)
-    c.rellenar(formulario)
+    c.rellenar(formulario, **(extra or {}))
     tamano = c.foto_grande('foto-grande.jpeg') if foto_grande else None
     if not foto_grande:
         c.adjuntar(JPG, PNG)
@@ -526,6 +527,21 @@ def caso_10(c):
         assert 'terminos' not in cuerpo and cuerpo['firma'].startswith('data:image/png;base64,')
         assert [a['name'] for a in cuerpo['archivos']] == ['foto-pequena.jpg', 'firma-pequena.png'] and all(a['data'] for a in cuerpo['archivos'])
         assert estado_de(ref) is None, 'El modo dormido no deja fila en la base nueva'
+        assert cuerpo['nuevo_titular'] == '' and 'titular_anterior' not in cuerpo, 'Sin cambio de titular: `nuevo_titular` va vacío, como siempre, y la clave nueva no viaja'
+
+        # Cambio de titular «Sí» (16-oct-2026): el formulario pide el titular ANTERIOR, pero el Code.gs de producción (sin tocar) sigue
+        # esperando `nuevo_titular` y lo etiqueta «Nuevo Titular»: el dato viaja ahí con el prefijo «TITULAR ANTERIOR: » y, salvo ese campo, el
+        # cuerpo sigue siendo IDÉNTICO al del formulario de producción (mismas claves y valores)
+        anterior = 'Antigua Titular SL, B12345674, Calle Vieja 3'
+        con_cambio = _envio_de_siempre(c, formulario, recibidos, textos, extra={'cambio_titular': 'Si', 'titular_anterior': anterior})
+        assert con_cambio['url'] == gracias and con_cambio['textos'] == esperados, (con_cambio['url'], con_cambio['textos'])
+        cuerpo_si = dict(con_cambio['cuerpo'])
+        ref_si = cuerpo_si.pop('ref_id')
+        assert cuerpo_si['nuevo_titular'] == 'TITULAR ANTERIOR: ' + anterior, cuerpo_si['nuevo_titular']
+        assert 'titular_anterior' not in cuerpo_si and cuerpo_si['cambio_titular'] == 'Si', 'El Apps Script no conoce `titular_anterior`'
+        assert estado_de(ref_si) is None, 'El modo dormido no deja fila en la base nueva'
+        sin_titular = dict(cuerpo_si, nuevo_titular='')
+        assert sin_titular == dict(cuerpo, cambio_titular='Si'), 'Con «Sí», el cuerpo solo difiere en `cambio_titular` y `nuevo_titular`'
 
         if antes is None:
             print(f'      (sin {HTML_DE_PRODUCCION} en este clon de git: no se compara {formulario} con el formulario de producción)')
@@ -539,6 +555,17 @@ def caso_10(c):
         assert sorted(cuerpo_viejo) == sorted(cuerpo), (sorted(cuerpo_viejo), sorted(cuerpo))
         for clave in cuerpo:
             assert cuerpo_viejo[clave] == cuerpo[clave], f'{formulario}: «{clave}» no es igual que en producción'
+        # Con cambio de titular «Sí»: el formulario de producción manda lo que se tecleó en «nuevo titular» TAL CUAL; el de hoy, lo del
+        # titular ANTERIOR con el prefijo. Todo lo demás, igual (las mismas claves: la clave nueva `titular_anterior` nunca viaja)
+        viejo_si = _envio_de_siempre(c, formulario, recibidos, textos, html=antes, extra={'cambio_titular': 'Si', 'nuevo_titular': anterior})
+        cuerpo_viejo_si = dict(viejo_si['cuerpo'])
+        cuerpo_viejo_si.pop('ref_id')
+        assert cuerpo_viejo_si['nuevo_titular'] == anterior and viejo_si['textos'] == con_cambio['textos'] and viejo_si['url'] == con_cambio['url']
+        assert sorted(cuerpo_viejo_si) == sorted(cuerpo_si), (sorted(cuerpo_viejo_si), sorted(cuerpo_si))
+        for clave in cuerpo_si:
+            if clave == 'nuevo_titular':
+                continue
+            assert cuerpo_viejo_si[clave] == cuerpo_si[clave], f'{formulario} con cambio de titular: «{clave}» no es igual que en producción'
 
     # reducirFoto + base64 también en el modo dormido: una foto de más de 1 MB sale como .jpg más pequeño (y en singular)
     grande = _envio_de_siempre(c, 'gnew', recibidos, textos, foto_grande=True)
@@ -581,6 +608,136 @@ def caso_11(c):
     assert not c.google, 'Con ?v2=1 no se toca el Apps Script'
 
 
+def _capturar_titular_anterior(c, formulario, sufijo=''):
+    """Captura a 390 px (la pantalla de un móvil, 390×844) con el bloque «Cambio de Titular» en el centro, tal como está ahora (con «Sí»: el
+    campo del titular anterior)."""
+    seccion = c.page.locator('.form-section', has=c.page.locator('#cambioTitular'))
+    seccion.evaluate("e => e.scrollIntoView({ block: 'center' })")
+    c.page.wait_for_timeout(500)  # que termine la animación del campo (slideDown, 0,3 s)
+    c.page.screenshot(path=str(SALIDAS / f'formulario-titular-anterior-{formulario}-390{sufijo}.png'), animations='disabled')
+
+
+def _envio_por_respaldo(c, formulario, recibidos, **extra):
+    """Un envío con la API de tramitación «caída» (iniciar da 503 tres veces): entra el respaldo de Apps Script (simulado en page.route) con la
+    MISMA referencia. Devuelve el cuerpo que llegó al Apps Script."""
+    c.page.route(BASE + '/api/tramitacion/iniciar', lambda route, _q: route.fulfill(
+        status=503, content_type='application/json', body='{"ok":false,"codigo":"temporal","mensaje":"x","retryable":true}'))
+    try:
+        c.ir(f'/{formulario}')
+        c.rellenar(formulario, **extra)
+        c.adjuntar(JPG, PNG)
+        antes = len(recibidos)
+        c.enviar()
+        ref = c.esperar_gracias()
+    finally:
+        c.page.unroute(BASE + '/api/tramitacion/iniciar')
+    assert len(recibidos) == antes + 1, f'{len(recibidos) - antes} peticiones al Apps Script (tenía que ser 1)'
+    cuerpo = recibidos[-1]
+    assert cuerpo['ref_id'] == ref and estado_de(ref) is None, 'El respaldo usa la misma referencia y no deja fila en la base nueva'
+    return cuerpo
+
+
+def caso_12(c):
+    """CAMBIO DE TITULAR (Victor, 16-oct-2026): con «Sí» se piden los datos del titular ANTERIOR (el nuevo ya lo rellena el comercial), obligatorios; con
+    «No» no se exige ni viaja lo escrito. GNEW y MEGA: «Sí» → «Datos del titular anterior *» (y ninguna casilla de «nuevo titular») · vacío → no envía y
+    avisa en llano · relleno → v2: la fila lo guarda (columna `nuevo_titular`, nombre histórico) y el aviso lo llama «Titular anterior», sin «Nuevo titular» ·
+    «No» con texto escrito → no viaja · respaldo de Apps Script (sin tocar) → `nuevo_titular: «TITULAR ANTERIOR: …»`. Capturas a 390 px del bloque con «Sí»."""
+    p = c.page
+    recibidos = _simular_apps_script(c)  # el respaldo (Apps Script) se atiende en page.route, con el cuerpo entero a la vista
+    c.rota('/api/tramitacion/iniciar')   # (los 503 provocados del respaldo)
+    escrito = 'Antigua Titular SL, B12345674, Calle Vieja 3'
+    esperado = 'ANTIGUA TITULAR SL, B12345674, CALLE VIEJA 3'  # lo que guarda el servidor: en mayúsculas, como todo lo que escribe el comercial
+    frase = 'Indica los datos del titular anterior.'
+    for formulario, prefijo in (('gnew', 'GNE'), ('mega', 'MEGA')):
+        o = 'ó' if formulario == 'gnew' else 'o'  # mega.html escribe sus textos sin tildes
+        campo = p.locator('#titularAnteriorField')
+        entrada = p.locator('[name="titular_anterior"]')
+
+        # --- 1) Con «No» (lo normal) no se ve; ya no existe la casilla de «nuevo titular»; con «Sí» sale «Datos del titular anterior *» ---
+        c.ir(f'/{formulario}')
+        assert campo.is_hidden(), f'{formulario}: con «No» el campo del titular anterior no se ve'
+        assert p.locator('[name="nuevo_titular"]').count() == 0, f'{formulario}: no puede quedar la casilla de «nuevo titular»'
+        p.select_option('#cambioTitular', 'Si')
+        campo.wait_for(state='visible')
+        etiqueta = campo.locator('label')
+        assert etiqueta.inner_text().strip() == 'Datos del titular anterior *', etiqueta.inner_text()
+        asterisco = etiqueta.locator('.required')
+        rojo = asterisco.evaluate('e => getComputedStyle(e).color')
+        assert rojo == p.locator('label:has-text("Titular del contrato") .required').evaluate('e => getComputedStyle(e).color'), 'El asterisco es el rojo de obligatorio de siempre'
+        assert rojo != etiqueta.evaluate('e => getComputedStyle(e).color'), 'y se distingue del texto de la etiqueta'
+        assert entrada.get_attribute('placeholder') == f'Nombre, NIF, direcci{o}n...'
+        assert entrada.get_attribute('required') is None, 'Se valida al enviar, no con `required` (con «No» el campo está oculto)'
+        assert not re.search(r'nuevo titular', p.inner_text('body'), re.I), f'{formulario}: en ningún sitio de la página queda «nuevo titular»'
+        assert p.evaluate("() => document.documentElement.scrollWidth <= document.documentElement.clientWidth"), f'{formulario}: la página se desborda a 390 px'
+        _capturar_titular_anterior(c, formulario)
+
+        # --- 2) «Sí» y nada escrito: no envía, lo marca como el resto de campos obligatorios y lo dice en llano ---
+        c.rellenar(formulario, cambio_titular='Si')
+        c.adjuntar(JPG, PNG)
+        url_antes, n_iniciar, n_subidas = p.url, len(c.iniciar), len(c.puts)
+        c.enviar()
+        p.wait_for_selector('#titularAnteriorField.has-error .error-msg')
+        assert p.inner_text('#titularAnteriorField .error-msg') == frase
+        assert entrada.evaluate('e => e.classList.contains("error")'), 'El campo se marca como los demás (borde rojo)'
+        assert p.locator('.field.has-error').count() == 1, 'Es el único error: lo demás está bien'
+        assert p.url == url_antes, f'No sale de la página: {url_antes} → {p.url}'
+        assert len(c.iniciar) == n_iniciar and len(c.puts) == n_subidas, f'No habla con el servidor: {len(c.iniciar)} iniciar (antes {n_iniciar}), {len(c.puts)} subidas (antes {n_subidas})'
+        assert not p.locator('#overlayEnvio').count(), f'No sale ningún aviso encima: {c.overlay()}'
+        assert p.is_enabled('#submitBtn') and not p.locator('#submitBtn.loading').count(), 'El botón sigue disponible'
+        assert not re.search(r'undefined|\bnull\b|HTTP|JSON|error \d', p.inner_text('#titularAnteriorField'), re.I), 'Ningún mensaje técnico'
+        _capturar_titular_anterior(c, formulario, '-error')
+        # al escribir, el error se va
+        entrada.fill(escrito)
+        assert not p.locator('#titularAnteriorField.has-error').count() and not p.locator('.field.has-error').count(), 'Al escribir, se quita el error'
+
+        # --- 3) Relleno: envía por la v2; la fila guarda el titular ANTERIOR y el aviso lo llama «Titular anterior» ---
+        c.enviar()
+        ref = c.esperar_gracias()
+        ini = c.iniciar[-1]
+        assert ini['formulario'] == formulario and ini['ref'] == ref and ref.startswith(prefijo + '-')
+        assert ini['datos']['cambio_titular'] == 'Si' and ini['datos']['titular_anterior'] == escrito, ini['datos']
+        assert 'nuevo_titular' not in ini['datos'], 'La página nueva no manda el nombre viejo'
+        e = esperar_estado(ref, 'recibida')
+        comprobar_recibida(e, ref, formulario, 2)
+        t = e['tramitacion']
+        assert t['cambio_titular'] is True
+        assert t['nuevo_titular'] == esperado, t['nuevo_titular']  # (la columna se llama nuevo_titular por historia: guarda el titular ANTERIOR)
+        aviso = correo_de(e, 'aviso')
+        for cuerpo in (aviso['cuerpo_html'], aviso['cuerpo_texto']):
+            assert 'Titular anterior' in cuerpo and esperado in cuerpo
+            assert not re.search(r'nuevo titular', cuerpo, re.I), 'El aviso no dice «Nuevo titular»'
+        assert f'Titular anterior: {esperado}' in aviso['cuerpo_texto']
+        assert esperado not in correo_de(e, 'acuse')['cuerpo_texto'], 'El acuse al comercial no lleva el titular anterior'
+
+        # --- 4) «No» con algo escrito antes en el campo oculto: no se exige y NO viaja ---
+        c.ir(f'/{formulario}')
+        c.rellenar(formulario, cambio_titular='Si', titular_anterior='LO QUE NO DEBE VIAJAR')
+        p.select_option('#cambioTitular', 'No')
+        assert campo.is_hidden()
+        c.adjuntar(JPG, PNG)
+        c.enviar()
+        ref_no = c.esperar_gracias()
+        ini = c.iniciar[-1]
+        assert ini['datos']['cambio_titular'] == 'No' and ini['datos']['titular_anterior'] == '', ini['datos']
+        e = esperar_estado(ref_no, 'recibida')
+        comprobar_recibida(e, ref_no, formulario, 2)
+        assert e['tramitacion']['cambio_titular'] is False and e['tramitacion']['nuevo_titular'] is None
+        aviso = correo_de(e, 'aviso')
+        assert 'Titular anterior' not in aviso['cuerpo_html'] and 'LO QUE NO DEBE VIAJAR' not in aviso['cuerpo_html'] + aviso['cuerpo_texto']
+
+        # --- 5) Respaldo de Apps Script: el Code.gs publicado (sin tocar) espera `nuevo_titular`; el dato va ahí con el prefijo ---
+        cuerpo = _envio_por_respaldo(c, formulario, recibidos, cambio_titular='Si', titular_anterior=escrito)
+        assert cuerpo['nuevo_titular'] == 'TITULAR ANTERIOR: ' + escrito, cuerpo['nuevo_titular']
+        assert 'titular_anterior' not in cuerpo and cuerpo['cambio_titular'] == 'Si', 'El Apps Script no conoce `titular_anterior`'
+        if formulario == 'gnew':
+            # sin cambio de titular la clave va igualmente (vacía), como siempre
+            cuerpo = _envio_por_respaldo(c, formulario, recibidos)
+            assert cuerpo['nuevo_titular'] == '' and 'titular_anterior' not in cuerpo and cuerpo['cambio_titular'] == 'No', cuerpo
+
+    assert not c.google, 'Todo el Apps Script se atendió en page.route'
+    assert len(c.puts) == 8 and all('/pruebas/' in x['ruta'] for x in c.puts), 'Dos envíos por la v2 en cada formulario, con 2 documentos cada uno, siempre bajo pruebas/'
+
+
 CASOS = [
     (1, 'GNEW completo: 3 archivos (uno de 5,5 MB) + firma, progreso real y gracias con referencia', caso_1),
     (2, 'Corte de red en confirmar (respuesta perdida) → reintento, una sola fila y un solo aviso', caso_2),
@@ -593,6 +750,7 @@ CASOS = [
     (9, 'Tras un fallo se quita un archivo y se reenvía → vieja «abandonada», nueva «recibida»', caso_9),
     (10, 'Interruptor V2_ACTIVO sin ?v2=1: el envío de SIEMPRE (Apps Script) idéntico al de producción, sin tocar /api/tramitacion', caso_10),
     (11, '?v2=1 con prefill por URL (comparador DPC): campos rellenos, IBAN/DNI fuera de la URL y envío por la v2', caso_11),
+    (12, 'Cambio de titular: con «Sí» se piden los datos del titular ANTERIOR (obligatorios; «No», ni se exige ni viaja); fila, aviso «Titular anterior» y respaldo', caso_12),
 ]
 
 # Qué casos esperan hablar con el Apps Script (respuesta simulada); los demás lo ven abortado y fallan si lo intentan
@@ -647,7 +805,7 @@ def correr(numeros, lista=None, google_simulado=None, etiqueta='caso'):
 
 
 # ---------------------------------------------------------------------------
-# Extras: lo que los 11 casos no tocan (no cuentan en el «11/11»; `run.sh extras`). También con ?v2=1 (lo pone `Caso.ir`)
+# Extras: lo que los 12 casos no tocan (no cuentan en el «12/12»; `run.sh extras`). También con ?v2=1 (lo pone `Caso.ir`)
 # ---------------------------------------------------------------------------
 
 CORS_ABIERTO = {'Access-Control-Allow-Origin': '*'}

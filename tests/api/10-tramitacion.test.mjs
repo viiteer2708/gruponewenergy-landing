@@ -99,7 +99,7 @@ function datosGnew(extra = {}) {
     movil: '600 000 000',
     email_cliente: EMAIL_CLIENTE,
     cambio_titular: 'No',
-    nuevo_titular: '',
+    titular_anterior: '',
     observaciones: 'Línea 1\nLínea 2 con <b>etiqueta</b> & más',
     terminos: true,
     ...extra,
@@ -734,7 +734,7 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
         poblacion: 'Peñíscola',
         provincia: 'castellón',
         cambio_titular: 'Si',
-        nuevo_titular: 'ñandú e hijos, s.l.',
+        titular_anterior: 'ñandú e hijos, s.l.', // (desde el 16-oct-2026 se pide el titular ANTERIOR; se guarda en la columna `nuevo_titular`)
       }),
     });
 
@@ -793,6 +793,91 @@ describe('Tramitación v2 · iniciar y confirmar', { timeout: 900_000 }, () => {
     assert.ok(enviadoAcuse, 'El espía debe haber visto el acuse');
     assert.deepEqual([enviadoAcuse.para, enviadoAcuse.asunto, enviadoAcuse.resultado.estado], [ALIAS, `Recibido: ${asunto}`, 'enviado']);
     t.diagnostic(`${ref}: fila, aviso (con su asunto) y acuse en mayúsculas; los correos electrónicos, en minúsculas`);
+  });
+
+  it('CAMBIO DE TITULAR (16-oct-2026): con «Sí» se pide y se guarda el titular ANTERIOR (columna `nuevo_titular`, nombre histórico), el aviso lo llama «Titular anterior» y nunca «Nuevo titular»; sin él, rechazo en llano; con «No» no se guarda nada; la página vieja (`nuevo_titular`) sigue valiendo', async (t) => {
+    const ANTERIOR = 'ANTIGUA TITULAR SL, 87654321X, CALLE VIEJA 3';
+    const sinNuevoTitular = (cuerpo, donde) => assert.ok(!/nuevo titular/i.test(cuerpo), `${donde}: en ningún sitio visible queda «Nuevo titular»`);
+
+    // 1) «Sí» + titular anterior (GNEW): la fila, el aviso de la base y el aviso simulado que enseña el gancho del espía
+    const { ref, estado: e } = await enviarCompleto({
+      documentos: PEQUENOS(),
+      datos: datosGnew({ titular: 'Titular Nuevo SL', cambio_titular: 'Si', titular_anterior: 'antigua titular sl, 87654321x, calle vieja 3' }),
+    });
+    assert.equal(e.tramitacion.cambio_titular, true);
+    assert.equal(e.tramitacion.titular_nombre, 'TITULAR NUEVO SL', 'El titular del contrato sigue siendo el que rellena el comercial en «Datos del Titular»');
+    assert.equal(e.tramitacion.nuevo_titular, ANTERIOR, 'La columna `nuevo_titular` guarda el titular ANTERIOR, en mayúsculas (nombre histórico, sin SQL)');
+    const aviso = correoDe(e, 'aviso');
+    assert.match(aviso.cuerpo_html, new RegExp(`Titular anterior</td>[^]*?>${ANTERIOR}</td>`));
+    assert.ok(aviso.cuerpo_texto.includes(`Titular anterior: ${ANTERIOR}`), 'También en el texto plano');
+    assert.ok(aviso.cuerpo_texto.includes('Cambio Titular: Sí'));
+    sinNuevoTitular(aviso.cuerpo_html, 'aviso (html)');
+    sinNuevoTitular(aviso.cuerpo_texto, 'aviso (texto)');
+    const acuse = correoDe(e, 'acuse');
+    assert.ok(!acuse.cuerpo_html.includes(ANTERIOR) && !acuse.cuerpo_texto.includes(ANTERIOR), 'El acuse al comercial no lleva el titular anterior (no lleva datos de más)');
+    // el aviso simulado, tal como lo ve el gancho de pruebas del servidor (los 5 últimos avisos simulados con su cuerpo): el nuestro lleva la referencia
+    const espia = await llamar('GET', '/__pruebas/correos?tipo=aviso');
+    assert.equal(espia.status, 200, espia.texto);
+    const simulado = espia.json.correos.find((c) => typeof c.cuerpo_texto === 'string' && c.cuerpo_texto.includes(ref));
+    assert.ok(simulado, 'El gancho del espía enseña el aviso de esta referencia');
+    assert.ok(simulado.cuerpo_texto.includes(`Titular anterior: ${ANTERIOR}`));
+    sinNuevoTitular(simulado.cuerpo_texto, 'aviso simulado (gancho del espía, texto)');
+    sinNuevoTitular(simulado.cuerpo_html, 'aviso simulado (gancho del espía, html)');
+
+    // 2) «Sí» sin titular anterior (vacío, solo espacios, o sin la clave): rechazo con la frase en llano, y sin dejar fila
+    const documentos = PEQUENOS();
+    const sinClave = datosGnew({ cambio_titular: 'Si' });
+    delete sinClave.titular_anterior;
+    for (const [formulario, datos] of [
+      ['gnew', datosGnew({ cambio_titular: 'Si', titular_anterior: '' })],
+      ['gnew', datosGnew({ cambio_titular: 'Sí', titular_anterior: '   ' })],
+      ['gnew', sinClave],
+      ['mega', datosMega({ cambio_titular: 'Si', titular_anterior: '' })],
+    ]) {
+      const refSin = nuevaRef(formulario);
+      const r = await iniciar(entradaIniciar({ formulario, ref: refSin, documentos, datos }));
+      assert.equal(r.status, 400, `${formulario}: ${r.texto}`);
+      assert.deepEqual(r.json.campos, { titular_anterior: 'Indica los datos del titular anterior.' }, `${formulario}: el error es del campo titular_anterior y con su frase en llano`);
+      assert.equal(r.json.campos.titular_anterior, FRASES.titularAnterior);
+      assert.equal(await existe(refSin), false, `${formulario}: un envío rechazado no deja fila`);
+    }
+
+    // 3) «No» (con o sin texto en el campo oculto): no se guarda nada y el aviso no lleva la fila
+    for (const texto of ['', 'texto que sobra']) {
+      const { estado: eNo } = await enviarCompleto({ documentos: PEQUENOS(), datos: datosGnew({ cambio_titular: 'No', titular_anterior: texto }) });
+      assert.equal(eNo.tramitacion.cambio_titular, false);
+      assert.equal(eNo.tramitacion.nuevo_titular, null, `Con «No» la columna queda en null (texto: «${texto}»)`);
+      for (const cuerpo of [correoDe(eNo, 'aviso').cuerpo_html, correoDe(eNo, 'aviso').cuerpo_texto]) {
+        assert.ok(!cuerpo.includes('Titular anterior') && !cuerpo.includes('texto que sobra'));
+        sinNuevoTitular(cuerpo, 'aviso sin cambio de titular');
+      }
+    }
+
+    // 4) MEGA con «Sí»: lo mismo
+    const { estado: eMega } = await enviarCompleto({
+      formulario: 'mega',
+      documentos: PEQUENOS(),
+      datos: datosMega({ cambio_titular: 'Si', titular_anterior: 'antigua titular sl, 87654321x, calle vieja 3' }),
+    });
+    assert.equal(eMega.tramitacion.nuevo_titular, ANTERIOR);
+    assert.ok(correoDe(eMega, 'aviso').cuerpo_texto.includes(`Titular anterior: ${ANTERIOR}`));
+    sinNuevoTitular(correoDe(eMega, 'aviso').cuerpo_html, 'aviso MEGA');
+
+    // 5) Una página vieja (abierta antes de este cambio) sigue mandando el dato como `nuevo_titular`: vale, y se guarda y se enseña igual
+    const vieja = datosGnew({ cambio_titular: 'Si' });
+    delete vieja.titular_anterior;
+    vieja.nuevo_titular = 'antigua titular sl, 87654321x, calle vieja 3';
+    const { estado: eVieja } = await enviarCompleto({ documentos: PEQUENOS(), datos: vieja });
+    assert.equal(eVieja.tramitacion.nuevo_titular, ANTERIOR, 'El sinónimo viejo también llega a la columna, en mayúsculas');
+    assert.ok(correoDe(eVieja, 'aviso').cuerpo_texto.includes(`Titular anterior: ${ANTERIOR}`));
+    sinNuevoTitular(correoDe(eVieja, 'aviso').cuerpo_html, 'aviso de una página vieja');
+    //    ...pero con «Sí» y el campo vacío tampoco pasa: ahora es obligatorio
+    const refViejaVacia = nuevaRef();
+    const rVieja = await iniciar(entradaIniciar({ ref: refViejaVacia, documentos, datos: { ...vieja, nuevo_titular: '' } }));
+    assert.equal(rVieja.status, 400, rVieja.texto);
+    assert.deepEqual(rVieja.json.campos, { titular_anterior: FRASES.titularAnterior });
+    assert.equal(await existe(refViejaVacia), false);
+    t.diagnostic(`${ref}: «Sí» → titular anterior guardado y en el aviso; sin él, 400 con su frase; «No» → null; página vieja (nuevo_titular) → vale`);
   });
 
   it('datos corregidos antes de terminar: iniciar de nuevo con la misma ref actualiza la fila y lo apunta (sin datos personales en el historial)', async () => {

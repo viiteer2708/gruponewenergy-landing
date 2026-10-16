@@ -506,6 +506,10 @@ def caso_4(c):
         assert esperado in cuerpo, f'Falta «{esperado}» en la ficha'
     # Con el contenido en MAYÚSCULAS, «COMERCIAL» o «TITULAR» ya salen en cualquier valor («COMERCIAL DE PRUEBA»): los títulos de las secciones, aparte
     assert [x.inner_text() for x in p.locator('#colDatos h2').all()] == ['COMERCIAL', 'CONTRATO', 'TITULAR', 'SUMINISTRO', 'CONTACTO', 'CAMBIO DE TITULAR', 'OBSERVACIONES']
+    # «Cambio de titular»: «¿Cambio de titular?» No y la fila «Titular anterior» (16-oct-2026; antes «Nuevo titular»), vacía (—) porque A no cambia de titular
+    assert [x.inner_text() for x in p.locator('#colDatos section:has(h2:text-is("Cambio de titular")) dt').all()] == ['¿Cambio de titular?', 'Titular anterior']
+    assert [x.inner_text() for x in p.locator('#colDatos section:has(h2:text-is("Cambio de titular")) dd').all()] == ['No', '—']
+    assert not re.search(r'nuevo titular', cuerpo, re.I), 'En la ficha no queda «Nuevo titular»'
     assert 'ES9121000418450200051332' not in p.url
     assert p.get_attribute('#irDocs', 'href') == '#bloqueDocs'
     nombres = [x.inner_text() for x in p.locator('.doc-nombre').all()]
@@ -786,7 +790,7 @@ def caso_9(c):
     c.ctx.add_init_script(JS_ALIAS_EN_MAYUSCULAS)  # ver JS_ALIAS_EN_MAYUSCULAS
     ref = crear('gnew', [(1, 'escaneo.jpg', JPG.read_bytes())], extra={
         'titular': XSS_TITULAR, 'quien_eres': XSS_COMERCIAL, 'observaciones': XSS_OBSERVACIONES, 'dir_suministro': XSS_DIRECCION,
-        'cambio_titular': 'Si', 'nuevo_titular': '<script>window.__xss=6</script> Nuevo SL'})
+        'cambio_titular': 'Si', 'titular_anterior': '<script>window.__xss=6</script> Antiguo SL'})  # (el titular ANTERIOR; la columna se llama nuevo_titular)
     c.con_sesion()
     p = c.page
     c.ver('/bandeja', 'a.tarjeta')
@@ -803,13 +807,16 @@ def caso_9(c):
     p.wait_for_selector('#ficha:not([hidden])')
     c.sin_desbordes()
     ficha = p.inner_text('#ficha')
-    for texto in [XSS_TITULAR, XSS_COMERCIAL, XSS_DIRECCION, 'línea uno', '<iframe src="javascript:window.__xss=5"></iframe> línea dos', '<script>window.__xss=6</script> Nuevo SL']:
+    for texto in [XSS_TITULAR, XSS_COMERCIAL, XSS_DIRECCION, 'línea uno', '<iframe src="javascript:window.__xss=5"></iframe> línea dos', '<script>window.__xss=6</script> Antiguo SL']:
         assert texto.upper() in ficha, f'La ficha debe enseñar «{texto.upper()[:40]}» (en mayúsculas) como texto'
     # (`i`: el valor de `src` sale en mayúsculas —`X`— y el selector tiene que seguir detectando una imagen colada)
     assert p.locator('#ficha img[src="x" i], #ficha iframe, #ficha svg[onload], #ficha b[onmouseover], #ficha u').count() == 0
     assert p.evaluate("() => typeof window.__xss") == 'undefined' and p.evaluate("() => typeof window.__XSS") == 'undefined', 'Se ha ejecutado algo del contenido del comercial'
     assert p.evaluate("() => document.querySelectorAll('script').length") == 1, 'La página tiene su único script y ninguno colado'
     assert p.title().startswith(ref)
+    # El dato del cambio de titular sale con su nombre de verdad: «Titular anterior» (16-oct-2026), nunca «Nuevo titular»
+    assert 'Titular anterior' in [x.inner_text() for x in p.locator('#colDatos dt').all()], 'La ficha enseña «Titular anterior»'
+    assert not re.search(r'nuevo titular', ficha, re.I), 'En la ficha no queda «Nuevo titular»'
     c.sin_jerga()
 
 

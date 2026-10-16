@@ -801,9 +801,12 @@
                             <option value="Si">Sí</option>
                         </select>
                     </div>
-                    <div class="field conditional-field" id="nuevoTitularField">
-                        <label>Datos del nuevo titular</label>
-                        <input type="text" name="nuevo_titular" placeholder="Nombre, NIF, dirección...">
+                    <!-- Con «Sí» se piden los datos del titular ANTERIOR (16-oct-2026): el titular NUEVO ya lo rellena el comercial
+                         en «Datos del Titular». Es obligatorio solo con «Sí»: se valida al enviar, no con el atributo del campo
+                         (que bloquearía el envío con «No», cuando el campo está oculto). -->
+                    <div class="field conditional-field" id="titularAnteriorField">
+                        <label>Datos del titular anterior <span class="required">*</span></label>
+                        <input type="text" name="titular_anterior" placeholder="Nombre, NIF, dirección...">
                     </div>
                 </div>
             </div>
@@ -925,10 +928,10 @@
 
     // ===== CAMBIO TITULAR TOGGLE =====
     const cambioSelect = document.getElementById('cambioTitular');
-    const nuevoField = document.getElementById('nuevoTitularField');
+    const titularAnteriorField = document.getElementById('titularAnteriorField');
 
     cambioSelect.addEventListener('change', function() {
-        nuevoField.classList.toggle('visible', this.value === 'Si');
+        titularAnteriorField.classList.toggle('visible', this.value === 'Si');
     });
 
     // ===== FILE UPLOAD =====
@@ -1355,6 +1358,11 @@
         if (!validPhone(form.movil.value)) {
             fieldErrors.push([form.movil, 'Móvil no válido: 9 dígitos empezando por 6, 7, 8 o 9']);
         }
+        // Cambio de titular «Sí»: hay que decir quién era el titular ANTERIOR (el nuevo ya lo rellena el comercial más arriba).
+        // Con «No» no se exige. Se comprueba aquí y no con `required`, que bloquearía el envío con el campo oculto.
+        if (form.cambio_titular.value === 'Si' && !form.titular_anterior.value.trim()) {
+            fieldErrors.push([form.titular_anterior, 'Indica los datos del titular anterior.']);
+        }
         if (selectedFiles.files.length === 0) {
             fieldErrors.push([fileInput, 'Adjunta al menos un documento (contrato escaneado, DNI, factura...)']);
         }
@@ -1449,7 +1457,8 @@
             email_cliente: form.email_cliente.value,
             cuenta_bancaria: form.cuenta_bancaria.value,
             cambio_titular: form.cambio_titular.value,
-            nuevo_titular: form.nuevo_titular ? form.nuevo_titular.value : '',
+            // Con «Sí», los datos del titular ANTERIOR (16-oct-2026); con «No» no viaja lo que hubiera escrito en el campo oculto
+            titular_anterior: form.cambio_titular.value === 'Si' && form.titular_anterior ? form.titular_anterior.value : '',
             observaciones: form.observaciones.value,
             terminos: form.terminos.checked === true
         };
@@ -1795,8 +1804,14 @@
         ocultarBarra();
         const formData = { token: FORM_TOKEN, ref_id: refId, hp: p.hp };
         Object.keys(p.datos).forEach(function(k) {
-            if (k !== 'terminos') formData[k] = p.datos[k];
+            if (k !== 'terminos' && k !== 'titular_anterior') formData[k] = p.datos[k];
         });
+        // Titular ANTERIOR (16-oct-2026): el Code.gs publicado en Apps Script espera `nuevo_titular` y lo etiqueta «Nuevo Titular».
+        // No se toca ningún Code.gs (habría que pegarlo a mano en Google): para que ese correo no engañe, el dato viaja en ese
+        // mismo campo con el prefijo «TITULAR ANTERIOR: » (solo si hay valor; la clave va siempre, como en producción). El
+        // respaldo se apaga hacia el 19-oct (RESPALDO_APPS_SCRIPT = false) y entonces sobra este apaño.
+        const anterior = String(p.datos.titular_anterior || '').trim();
+        formData.nuevo_titular = anterior ? 'TITULAR ANTERIOR: ' + anterior : '';
         formData.firma = p.firma;
         formData.archivos = [];
 

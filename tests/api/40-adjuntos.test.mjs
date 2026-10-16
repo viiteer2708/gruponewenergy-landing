@@ -106,7 +106,7 @@ function datosGnew(extra = {}) {
     movil: '600000000',
     email_cliente: EMAIL_CLIENTE,
     cambio_titular: 'No',
-    nuevo_titular: '',
+    titular_anterior: '',
     observaciones: 'Prueba de adjuntos',
     terminos: true,
     ...extra,

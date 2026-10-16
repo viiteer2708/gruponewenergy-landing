@@ -473,9 +473,13 @@ const CAMPOS_FICHA = Object.freeze([
   'titular_nombre', 'titular_nif', 'firmante_nombre', 'firmante_nif', 'iban',
   'direccion', 'cp', 'poblacion', 'provincia',
   'telefono', 'email_cliente',
-  'cambio_titular', 'nuevo_titular', 'observaciones',
+  'cambio_titular', 'titular_anterior', 'observaciones',
   'creada_en', 'recibida_en', 'tramitada_en', 'tramitada_por', 'actualizada_en',
 ]);
+
+// Campos de la ficha que en la tabla `tramitaciones` se llaman de otra manera. `titular_anterior` vive en la columna `nuevo_titular`
+// (nombre histórico, sin SQL): desde el 16-oct-2026 esa columna guarda el titular ANTERIOR, y la ficha lo enseña con su nombre de verdad.
+const COLUMNA_DE_CAMPO = Object.freeze({ titular_anterior: 'nuevo_titular' });
 
 /** Busca una tramitación por referencia, solo del modo del servidor. null si no existe o la referencia no es válida. */
 async function buscarPorRef(ref, select) {
@@ -570,7 +574,7 @@ export async function ficha(ref, { sesion, abrir = false } = {}) {
 
   return resp(200, {
     ok: true,
-    tramitacion: Object.fromEntries(CAMPOS_FICHA.map((campo) => [campo, fila[campo] ?? null])),
+    tramitacion: Object.fromEntries(CAMPOS_FICHA.map((campo) => [campo, fila[COLUMNA_DE_CAMPO[campo] ?? campo] ?? null])),
     documentos: documentos.map((d) => ({
       orden: d.orden,
       nombre: d.nombre,

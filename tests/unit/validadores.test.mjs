@@ -198,7 +198,7 @@ for (const [fichero, marcaFinal] of [['gnew.html', '// ===== ERRORES INLINE ====
 test('las frases coinciden con las de gnew.html (y con las de mega.html salvo las tildes)', () => {
   const gnew = leer('gnew.html');
   const mega = leer('mega.html');
-  for (const clave of ['cups', 'idFiscal', 'dniFirmante', 'iban', 'movil', 'documentos']) {
+  for (const clave of ['cups', 'idFiscal', 'dniFirmante', 'iban', 'movil', 'documentos', 'titularAnterior']) {
     const frase = FRASES[clave];
     assert.ok(gnew.includes(`'${frase}'`), `gnew.html no tiene la frase de ${clave}: ${frase}`);
     assert.ok(mega.includes(`'${sinTildes(frase)}'`), `mega.html no tiene (sin tildes) la frase de ${clave}`);
@@ -248,7 +248,7 @@ const GNEW_OK = Object.freeze({
   titular: 'Juan García López', cif_nif: '12345678Z', nombre_firmante: '', dni_firmante: '',
   cuenta_bancaria: 'ES91 2100 0418 4502 0005 1332', dir_suministro: 'Calle Mayor 1, 2º B',
   codigo_postal: '28001', poblacion: 'Madrid', provincia: 'Madrid', movil: '600 123 456',
-  email_cliente: 'cliente@ejemplo.es', cambio_titular: 'No', nuevo_titular: '', observaciones: '',
+  email_cliente: 'cliente@ejemplo.es', cambio_titular: 'No', titular_anterior: '', observaciones: '',
   terminos: true,
 });
 const { compania: _c, ...SIN_COMPANIA } = GNEW_OK;
@@ -334,14 +334,82 @@ test('validarDatos MEGA: la tarifa tiene que ser una de las 13 de la lista (exac
   assert.deepEqual(validarDatos('gnew', { ...GNEW_OK, tarifa: 'Peaje 2.0TD indexada' }).campos, {}, 'en GNEW es texto libre');
 });
 
-test('validarDatos: cambio de titular solo admite No, Si, Sí o vacío', () => {
-  for (const ok of ['No', 'Si', 'Sí', 'si', 'NO', '', undefined, null]) {
+test('validarDatos: cambio de titular solo admite No, Si, Sí o vacío (con «Sí» hace falta el titular anterior: ver el test siguiente)', () => {
+  for (const ok of ['No', 'NO', 'no', '', undefined, null]) {
     assert.deepEqual(validarDatos('gnew', { ...GNEW_OK, cambio_titular: ok }).campos, {}, JSON.stringify(ok));
+  }
+  for (const si of ['Si', 'Sí', 'si', 'SÍ', ' Si ']) {
+    assert.deepEqual(validarDatos('gnew', { ...GNEW_OK, cambio_titular: si, titular_anterior: 'María López, 87654321X, Calle Sol 3' }).campos, {}, JSON.stringify(si));
   }
   for (const mal of ['Quizás', 'true', 1, true, {}]) {
     assert.deepEqual(validarDatos('gnew', { ...GNEW_OK, cambio_titular: mal }).campos, { cambio_titular: FRASES.cambioTitular }, JSON.stringify(mal));
   }
-  assert.deepEqual(validarDatos('gnew', { ...GNEW_OK, cambio_titular: 'Si', nuevo_titular: 'María López, 87654321X, Calle Sol 3' }).campos, {});
+});
+
+test('validarDatos: con cambio de titular «Sí» los datos del titular ANTERIOR son obligatorios (también si llegan como `nuevo_titular`, de una página vieja); con «No» no se exige', () => {
+  assert.equal(FRASES.titularAnterior, 'Indica los datos del titular anterior.');
+  for (const formulario of ['gnew', 'mega']) {
+    const base = formulario === 'gnew' ? GNEW_OK : MEGA_OK;
+    // «Sí» y nada escrito (vacío, solo espacios, ausente, null): error en llano en el campo `titular_anterior`
+    for (const vacio of ['', '   ', '\t\n', undefined, null]) {
+      for (const si of ['Si', 'Sí']) {
+        const r = validarDatos(formulario, { ...base, cambio_titular: si, titular_anterior: vacio });
+        assert.deepEqual(r.campos, { titular_anterior: FRASES.titularAnterior }, `${formulario} · ${si} · ${JSON.stringify(vacio)}`);
+      }
+    }
+    const sinCampo = { ...base, cambio_titular: 'Si' };
+    delete sinCampo.titular_anterior;
+    assert.deepEqual(validarDatos(formulario, sinCampo).campos, { titular_anterior: FRASES.titularAnterior }, `${formulario}: sin la clave`);
+    // «Sí» con el titular anterior: vale (con tildes, ñ y símbolos), y también recortado
+    for (const texto of ['María López, 87654321X, Calle Sol 3', 'ñandú e hijos, s.l.', '  X  ']) {
+      assert.deepEqual(validarDatos(formulario, { ...base, cambio_titular: 'Si', titular_anterior: texto }).campos, {}, `${formulario} · ${texto}`);
+    }
+    // Una página vieja (abierta antes del 16-oct-2026) manda el dato como `nuevo_titular`: se acepta como sinónimo
+    const vieja = { ...base, cambio_titular: 'Si', nuevo_titular: 'María López, 87654321X, Calle Sol 3' };
+    delete vieja.titular_anterior;
+    assert.deepEqual(validarDatos(formulario, vieja).campos, {}, `${formulario}: página vieja con nuevo_titular`);
+    assert.deepEqual(validarDatos(formulario, { ...vieja, titular_anterior: '' }).campos, {}, `${formulario}: vale el que traiga texto de los dos`);
+    // La página vieja con «Sí» y el campo vacío tampoco pasa (antes sí pasaba: ahora es obligatorio)
+    assert.deepEqual(validarDatos(formulario, { ...vieja, nuevo_titular: '' }).campos, { titular_anterior: FRASES.titularAnterior }, `${formulario}: página vieja sin texto`);
+    // Con «No» (o sin elegir) no se exige nada, venga o no texto en el campo
+    for (const no of ['No', 'no', '', undefined, null]) {
+      assert.deepEqual(validarDatos(formulario, { ...base, cambio_titular: no, titular_anterior: '' }).campos, {}, `${formulario} · ${JSON.stringify(no)} · vacío`);
+      assert.deepEqual(validarDatos(formulario, { ...base, cambio_titular: no, titular_anterior: 'texto que sobra' }).campos, {}, `${formulario} · ${JSON.stringify(no)} · con texto`);
+    }
+  }
+});
+
+test('validarDatos: el titular anterior tiene su tope (500) y no admite lo que no es texto; el error propio no se pisa con el de «obligatorio»', () => {
+  const largo = (n) => 'x'.repeat(n);
+  assert.deepEqual(validarDatos('gnew', { ...GNEW_OK, cambio_titular: 'Si', titular_anterior: largo(500) }).campos, {});
+  assert.deepEqual(validarDatos('gnew', { ...GNEW_OK, cambio_titular: 'Si', titular_anterior: largo(501) }).campos, { titular_anterior: 'Es demasiado largo (máximo 500 caracteres)' });
+  assert.deepEqual(validarDatos('gnew', { ...GNEW_OK, cambio_titular: 'Si', titular_anterior: 42 }).campos, { titular_anterior: FRASES.invalido });
+  assert.deepEqual(validarDatos('gnew', { ...GNEW_OK, cambio_titular: 'Si', titular_anterior: ['a'] }).campos, { titular_anterior: FRASES.invalido });
+  // El sinónimo viejo tiene el mismo tope y se queja con SU nombre (la página vieja solo conoce ese campo)
+  const vieja = { ...GNEW_OK, cambio_titular: 'Si' };
+  delete vieja.titular_anterior;
+  assert.deepEqual(validarDatos('gnew', { ...vieja, nuevo_titular: largo(500) }).campos, {});
+  assert.deepEqual(validarDatos('gnew', { ...vieja, nuevo_titular: largo(501) }).campos, { nuevo_titular: 'Es demasiado largo (máximo 500 caracteres)' });
+});
+
+test('gnew.html y mega.html piden el titular ANTERIOR (no el nuevo): etiqueta con asterisco, campo `titular_anterior` sin `required`, su frase y nada que diga «nuevo titular»', () => {
+  for (const fichero of ['gnew.html', 'mega.html']) {
+    const html = leer(fichero);
+    assert.ok(html.includes('<label>Datos del titular anterior <span class="required">*</span></label>'), `${fichero}: la etiqueta con el asterisco rojo de siempre`);
+    // (mega.html escribe sus textos sin tildes, como siempre)
+    const placeholder = fichero === 'gnew.html' ? 'Nombre, NIF, dirección...' : 'Nombre, NIF, direccion...';
+    assert.ok(html.includes(`<input type="text" name="titular_anterior" placeholder="${placeholder}">`), `${fichero}: el campo, con el mismo placeholder de antes y SIN required`);
+    assert.ok(html.includes('id="titularAnteriorField"') && html.includes("getElementById('titularAnteriorField')"), `${fichero}: el contenedor renombrado con coherencia`);
+    assert.ok(!html.includes('name="nuevo_titular"') && !html.includes('nuevoTitularField') && !/datos del nuevo titular/i.test(html), `${fichero}: no queda rastro del campo «nuevo titular»`);
+    // Obligatorio solo con «Sí»: se comprueba al enviar, con el mismo tipo de error en línea que los demás campos
+    assert.ok(html.includes("form.cambio_titular.value === 'Si' && !form.titular_anterior.value.trim()"), `${fichero}: la validación del cliente`);
+    assert.ok(html.includes("fieldErrors.push([form.titular_anterior, 'Indica los datos del titular anterior.'])"), `${fichero}: su frase en llano`);
+    // Con «No» no viaja lo escrito
+    assert.ok(html.includes("titular_anterior: form.cambio_titular.value === 'Si' && form.titular_anterior ? form.titular_anterior.value : ''"), `${fichero}: con «No» se manda vacío`);
+    // El respaldo de Apps Script (Code.gs, sin tocar) sigue recibiendo `nuevo_titular`, con el prefijo, y nunca `titular_anterior`
+    assert.ok(html.includes("formData.nuevo_titular = anterior ? 'TITULAR ANTERIOR: ' + anterior : '';"), `${fichero}: el respaldo manda «TITULAR ANTERIOR: …» en nuevo_titular`);
+    assert.ok(html.includes("if (k !== 'terminos' && k !== 'titular_anterior') formData[k] = p.datos[k];"), `${fichero}: el respaldo no manda la clave nueva`);
+  }
 });
 
 test('validarDatos: valores que no son texto (números, listas, objetos) se rechazan en llano', () => {

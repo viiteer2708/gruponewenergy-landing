@@ -420,12 +420,15 @@ test('aviso: pie con el email del comercial y el buzón de tramitación', () => 
   assert.ok(AVISO.texto.includes(`enviar cualquier documento adicional a ${DESTINO} citando la referencia.`));
 });
 
-test('aviso: cambio de titular Sí/No, y la franja de antibots solo si la fila es sospechosa', () => {
+test('aviso: cambio de titular Sí/No (con «Sí», la fila «Titular anterior»; en ningún sitio «Nuevo titular»), y la franja de antibots solo si la fila es sospechosa', () => {
   assert.match(AVISO.html, /Cambio Titular<\/td>[^]*?>No<\/td>/);
-  assert.ok(!AVISO.html.includes('Nuevo Titular'));
+  assert.ok(!AVISO.html.includes('Titular anterior') && !/nuevo titular/i.test(AVISO.html), 'Sin cambio de titular no hay fila de titular anterior');
+  // (la columna se llama `nuevo_titular` por historia: desde el 16-oct-2026 guarda el titular ANTERIOR)
   const cambio = armarAviso({ tramitacion: { ...FILA_GNEW, cambio_titular: true, nuevo_titular: 'Luis Gómez, 11111111H' }, documentos: [], urlFicha: URL_FICHA, destino: DESTINO });
   assert.match(cambio.html, /Cambio Titular<\/td>[^]*?>Sí<\/td>/);
-  assert.ok(cambio.html.includes('Nuevo Titular') && cambio.html.includes('Luis Gómez, 11111111H'));
+  assert.match(cambio.html, /Titular anterior<\/td>[^]*?>Luis Gómez, 11111111H<\/td>/);
+  assert.ok(cambio.texto.includes('Titular anterior: Luis Gómez, 11111111H'), 'También en el texto plano');
+  assert.ok(!/nuevo titular/i.test(cambio.html) && !/nuevo titular/i.test(cambio.texto), 'En ningún sitio visible queda «Nuevo titular»');
   assert.ok(!AVISO.html.includes('filtro antibots') && !AVISO.texto.toLowerCase().includes('antibots'));
   const sospechosa = armarAviso({ tramitacion: { ...FILA_GNEW, sospechosa: true }, documentos: [], urlFicha: URL_FICHA, destino: DESTINO });
   assert.ok(sospechosa.html.includes('Este envío ha activado el filtro antibots: revísalo con cuidado'));

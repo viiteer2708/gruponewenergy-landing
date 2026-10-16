@@ -241,7 +241,7 @@ function filasAviso(t) {
     ['Email Cliente', t.email_cliente],
     ['Cuenta Bancaria (IBAN)', t.iban],
     ['Cambio Titular', textoCambioTitular(t.cambio_titular)],
-    ['Nuevo Titular', t.nuevo_titular],
+    ['Titular anterior', t.nuevo_titular], // la columna se llama `nuevo_titular` por historia: desde el 16-oct-2026 guarda el titular ANTERIOR
     ['Observaciones', t.observaciones],
   ].filter(([, valor]) => tieneValor(valor));
 }

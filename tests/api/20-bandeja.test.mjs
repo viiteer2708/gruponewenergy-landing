@@ -178,7 +178,7 @@ function datosGnew(extra = {}) {
     movil: '600000000',
     email_cliente: EMAIL_CLIENTE,
     cambio_titular: 'No',
-    nuevo_titular: '',
+    titular_anterior: '',
     observaciones: 'Línea 1\nLínea 2 con <b>etiqueta</b> & más',
     terminos: true,
     ...extra,
@@ -832,9 +832,10 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
       { oferta: 'FIJO 12 MESES', tarifa: '2.0TD', potencias: { p1: '4.6', p2: '4.6' }, titular_nombre: 'TITULAR DE PRUEBA SL', titular_nif: '00000000T', firmante_nombre: 'FIRMANTE DE PRUEBA', firmante_nif: '12345678Z' },
     );
     assert.deepEqual(
-      { direccion: f.direccion, cp: f.cp, poblacion: f.poblacion, provincia: f.provincia, telefono: f.telefono, email_cliente: f.email_cliente, cambio_titular: f.cambio_titular, nuevo_titular: f.nuevo_titular },
-      { direccion: 'CALLE DE PRUEBA 1, 2.º A', cp: '28001', poblacion: 'MADRID', provincia: 'MADRID', telefono: '600000000', email_cliente: EMAIL_CLIENTE, cambio_titular: false, nuevo_titular: null },
+      { direccion: f.direccion, cp: f.cp, poblacion: f.poblacion, provincia: f.provincia, telefono: f.telefono, email_cliente: f.email_cliente, cambio_titular: f.cambio_titular, titular_anterior: f.titular_anterior },
+      { direccion: 'CALLE DE PRUEBA 1, 2.º A', cp: '28001', poblacion: 'MADRID', provincia: 'MADRID', telefono: '600000000', email_cliente: EMAIL_CLIENTE, cambio_titular: false, titular_anterior: null },
     );
+    assert.ok(!('nuevo_titular' in f), 'La ficha devuelve el dato como `titular_anterior` (la columna `nuevo_titular` es un nombre histórico que no sale de la base)');
     assert.equal(f.observaciones, 'LÍNEA 1\nLÍNEA 2 CON <B>ETIQUETA</B> & MÁS', 'Los datos viajan tal cual en el JSON (en mayúsculas, como se guardan); escaparlos es cosa de la página');
     assert.ok(f.creada_en && f.recibida_en && f.actualizada_en);
     assert.equal(f.tramitada_en, null);
@@ -1056,6 +1057,28 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
     }
     const plano = await llamar('POST', '/api/bandeja/reenviar', { cuerpo: JSON.stringify({ ref: A, tipo: 'aviso' }), tipo: 'text/plain', cookie });
     assert.equal(plano.status, 415);
+  });
+
+  it('ficha con cambio de titular (16-oct-2026): devuelve los datos del titular ANTERIOR como `titular_anterior`, en mayúsculas, y NO como `nuevo_titular` (la columna de la base conserva su nombre histórico)', async (t) => {
+    const ref = await crearTramitacion({
+      formulario: 'mega',
+      datos: datosMega({ titular: 'Titular Nuevo SL', cambio_titular: 'Si', titular_anterior: 'antigua titular sl, 87654321x, calle vieja 3' }),
+      documentos: [documento(1, 'cambio.pdf', generarPdf(2048))],
+    });
+    // en la base: la columna histórica guarda el titular ANTERIOR
+    const fila = (await estadoDe(ref)).tramitacion;
+    assert.equal(fila.cambio_titular, true);
+    assert.equal(fila.nuevo_titular, 'ANTIGUA TITULAR SL, 87654321X, CALLE VIEJA 3');
+    // en la ficha: con su nombre de verdad
+    const r = await get(`/api/bandeja/ficha?ref=${ref}`, autorizado());
+    assert.equal(r.status, 200, r.texto);
+    const f = r.json.tramitacion;
+    assert.equal(f.titular_nombre, 'TITULAR NUEVO SL', 'El titular del contrato es el nuevo, el de siempre');
+    assert.equal(f.cambio_titular, true);
+    assert.equal(f.titular_anterior, 'ANTIGUA TITULAR SL, 87654321X, CALLE VIEJA 3');
+    assert.ok(!('nuevo_titular' in f), 'La ficha no devuelve `nuevo_titular`');
+    assert.ok(!JSON.stringify(r.json).includes('nuevo_titular'), 'Ni en ninguna otra parte de la respuesta');
+    t.diagnostic(`${ref}: la ficha devuelve titular_anterior (la columna sigue llamándose nuevo_titular)`);
   });
 
   it('una tramitación ya tramitada también deja volver a enviar sus correos, y la sesión cerrada ya no puede nada', async () => {
