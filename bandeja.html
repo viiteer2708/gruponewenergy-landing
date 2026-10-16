@@ -523,10 +523,17 @@
         :root {
             --margen-lista: .75rem;
             --hueco-lista: .5rem;
-            /* Referencia · Titular · Compañía · CUPS · Comercial · Recibida · Docs · Abierta · Estado · › */
-            --cols-lista: 9.75rem minmax(9rem, 1.5fr) minmax(8.5rem, 1.3fr) 9.5rem minmax(5.5rem, .7fr) 7.5rem 2.75rem minmax(11rem, 1.4fr) 6.25rem .875rem;
-            /* Por debajo de este ancho la caja se desliza de lado: la suma de los mínimos de --cols-lista (70,625 rem) + los 9 huecos + los márgenes + la raya */
-            --ancho-lista: calc(70.625rem + 9 * var(--hueco-lista) + 2 * var(--margen-lista) + 4px);
+            /* Referencia · Titular · Compañía · CUPS · Comercial · Recibida · Docs · Abierta · Estado · ›
+               Las columnas de datos cortos van a lo JUSTO y todo el sobrante es de Titular, Compañía y Comercial, que son las que se cortaban
+               (16-oct-2026). Medido a 1440 px con la fuente de las pruebas (DejaVu Sans, más ancha que Inter): Referencia, «MEGA-20261015-ZBYZ7G»
+               143 px; CUPS, 148 px; Recibida, «hace 59 min» 70 px (y «hace unos segundos», 115 px, se parte en dos líneas: ver .c-recibida);
+               Docs, un número; Abierta, «Sin abrir» 93 px (el nombre se recorta con «…» y el title lo dice entero); Estado, «Descartada» 97 px.
+               A 1440 px (la página no pasa de 1400) Titular, Compañía y Comercial quedan en ~227, ~222 y ~136 px (antes, ~203, ~176 y ~95): «JOSE MANUEL
+               FERNANDEZ», «NET FIJO BOE · 2.0TD», «MEGA ENERGIA · 2.0TD» e «ISABEL HERNANDEZ» se leen enteros (en las filas «Sin abrir» el titular va en
+               negrita, más ancha: ~2 caracteres menos). Nombres de más de ~22 letras no caben a 1440 px con ese tope de 1400. */
+            --cols-lista: 9.5rem minmax(10rem, 2.25fr) minmax(9rem, 2.2fr) 9.5rem minmax(7rem, 1.35fr) 4.75rem 2.25rem 8.5rem 6.25rem .875rem;
+            /* Por debajo de este ancho la caja se desliza de lado: la suma de los mínimos de --cols-lista (67,625 rem) + los 9 huecos + los márgenes + la raya */
+            --ancho-lista: calc(67.625rem + 9 * var(--hueco-lista) + 2 * var(--margen-lista) + 4px);
         }
 
         .caja-lista[hidden] {
@@ -627,6 +634,12 @@
             color: var(--text-muted);
         }
 
+        /* Recibida es una columna estrecha: «hace unos segundos» (solo los primeros 45 s) se parte en dos líneas en vez de cortarse con «…» */
+        .fila > .c-recibida {
+            white-space: normal;
+            line-height: 1.25;
+        }
+
         .c-cups {
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
             font-size: .7rem;
@@ -724,6 +737,13 @@
             font-size: .72rem;
             color: var(--text-muted);
             white-space: nowrap;
+        }
+
+        /* Abierta es estrecha: «hace unos segundos» (solo los primeros 45 s) acaba en «…» en vez de cortarse en seco */
+        .a-linea .t-cuando {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
 
         .a-mas {

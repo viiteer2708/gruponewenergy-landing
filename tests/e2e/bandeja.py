@@ -59,6 +59,10 @@ JERGA = re.compile(
     re.I,
 )
 
+# Lo que Victor veía CORTADO en la tabla (modo Lista) a 1440 px —«JOSE MANUEL FERNA…», «NET FIJO BOE · …», «ISABEL HER…»—, completo: el caso 8 lo
+# deja en las capturas y el caso 17 comprueba que a 1440 px se lee ENTERO (el servidor lo guarda en MAYÚSCULAS; la tarifa, 2.0TD, la pone el formulario)
+LARGOS = {'titular': 'Jose Manuel Fernandez', 'compania': 'Net Fijo BOE', 'quien_eres': 'Isabel Hernandez'}
+
 XSS_TITULAR = '<img src=x onerror="window.__xss=1"> Titular & Co <script>window.__xss=2</script>'
 XSS_COMERCIAL = '<b onmouseover="window.__xss=3">Comercial</b> "Peligroso"'
 XSS_OBSERVACIONES = '<svg onload="window.__xss=4"> línea uno\n<iframe src="javascript:window.__xss=5"></iframe> línea dos'
@@ -760,6 +764,10 @@ def caso_8(c):
 
     # El modo Lista (tabla): con una pendiente que nadie ha abierto (su raya azul) además de las de antes; las capturas de arriba no cambian
     crear('gnew', [(1, 'captura.jpg', JPG.read_bytes())], extra={'titular': 'Titular Sin Abrir de Prueba SL'})
+    largos = crear('gnew', [(1, 'captura-largos.jpg', JPG.read_bytes())], extra=LARGOS)  # y una con los textos largos: a 1440 px se leen enteros (caso 17)
+    galleta = {'Cookie': 'bandeja_sesion=' + [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion'][0]['value']}
+    st, _, cuerpo = http('GET', f'/api/bandeja/ficha?ref={largos}&abrir=1', cabeceras=galleta)  # abierta: su titular va con el peso normal (en las «Sin abrir», negrita: más ancho)
+    assert st == 200, cuerpo
     p.get_by_role('button', name='Actualizar la lista').click()
     c.esperar_lista()
     p.get_by_role('button', name='Lista', exact=True).click()
@@ -1206,18 +1214,21 @@ def caso_16(c):
 
 
 def caso_17(c):
-    """El modo Lista (tabla): el interruptor Tarjetas / Lista (por defecto Tarjetas; se recuerda al recargar), la cabecera y las filas con todas sus columnas, «Sin abrir» con su raya azul, «Abierta por …» con +N, «Cargar más» en la tabla, volver a Tarjetas sin pedir otra vez la lista, clic en una fila y «atrás», lo que escribe el comercial como texto, sin jerga, sin desbordes a 390 px y, a 1440 px, la tabla entera sin deslizarse."""
+    """El modo Lista (tabla): el interruptor Tarjetas / Lista (por defecto Tarjetas; se recuerda al recargar), la cabecera y las filas con todas sus columnas, «Sin abrir» con su raya azul, «Abierta por …» con +N, «Cargar más» en la tabla, volver a Tarjetas sin pedir otra vez la lista, clic en una fila y «atrás», lo que escribe el comercial como texto, sin jerga, sin desbordes a 390 px y, a 1440 px, la tabla entera sin deslizarse, con las columnas estrechas (referencia, CUPS, recibida, docs, abierta y estado) enteras y lo que Victor veía cortado (titular, compañía y comercial: LARGOS, y «MEGA ENERGIA · 2.0TD») leyéndose entero."""
     c.ctx.add_init_script(JS_ALIAS_EN_MAYUSCULAS)  # ver JS_ALIAS_EN_MAYUSCULAS
     ref_a, ref_b = SEMILLAS['A'], SEMILLAS['B']
     marcador = lambda titular: {'titular': titular, 'quien_eres': 'Comercial Marcador17'}  # la búsqueda `marcador17` encuentra solo estas dos
     sin_abrir = crear('gnew', [(1, 'lista-sin-abrir.jpg', JPG.read_bytes())], extra=marcador('Titular Lista Sin Abrir SL'))
     abierta = crear('mega', [(1, 'lista-abierta.jpg', JPG.read_bytes()), (2, 'lista-abierta.png', PNG.read_bytes())], extra=marcador('Titular Lista Abierta SL'))
     peligro = crear('gnew', [(1, 'lista-peligro.jpg', JPG.read_bytes())], extra={'titular': XSS_TITULAR, 'quien_eres': XSS_COMERCIAL})
+    largos = crear('gnew', [(1, 'lista-largos.jpg', JPG.read_bytes())], extra=LARGOS)
     c.con_sesion()
     p = c.page
     galleta = {'Cookie': 'bandeja_sesion=' + [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion'][0]['value']}
     st, _, cuerpo = http('GET', f'/api/bandeja/ficha?ref={abierta}&abrir=1', cabeceras=galleta)  # alguien abre esa ficha: saldrá «Abierta por …»
     assert st == 200, cuerpo
+    st, _, cuerpo = http('GET', f'/api/bandeja/ficha?ref={largos}&abrir=1', cabeceras=galleta)  # los textos largos, en una fila abierta: su titular va con el peso normal
+    assert st == 200, cuerpo  # (en las «Sin abrir» el titular va en negrita, que es más ancha: caben ~2 caracteres menos)
     pedidas = []  # peticiones a la lista (las de «quién soy» no cuentan)
     p.on('request', lambda r: pedidas.append(r.url) if '/api/bandeja/lista' in r.url else None)
     boton = lambda nombre: p.get_by_role('button', name=nombre, exact=True)
@@ -1398,26 +1409,61 @@ def caso_17(c):
     p.wait_for_selector('a.fila')
     assert p.is_visible('#cajaLista .tabla-cabecera')
 
-    # 10) a 1440 px la tabla cabe ENTERA (la caja no se desliza), cada celda bajo su cabecera y lo corto no se recorta
+    # 10) a 1440 px la tabla cabe ENTERA (la caja no se desliza), cada celda bajo su cabecera y lo corto no se recorta. Para mirar también «Incompleta» y
+    #     «Descartada» (las pastillas más anchas de Estado) se añaden filas de cada estado a la respuesta de la lista (la base no se toca)
+    def con_todos_los_estados(route, request):
+        real = route.fetch()
+        cuerpo = real.json()
+        base = dict(cuerpo['items'][0])
+        cuerpo['items'] += [dict(base, ref=f'GNE-20260101-ESTADO{n}', estado=estado, vistas=[])
+                            for n, estado in enumerate(('abandonada', 'descartada', 'tramitada', 'subiendo'))]
+        route.fulfill(response=real, json=cuerpo)
+
+    p.route('**/api/bandeja/lista**', con_todos_los_estados)
+    c.buscar('')
+    p.wait_for_selector('a.fila[href$="ESTADO3"]')
     assert caja_se_desliza()[0] <= caja_se_desliza()[1], f'A 1440 px la tabla se desliza dentro de su caja: {caja_se_desliza()}'
     c.sin_desbordes(1440)
     columnas = p.evaluate("""() => {
         const izq = (e) => e.getBoundingClientRect().left;
         const cabecera = [...document.querySelectorAll('.tabla-cabecera > span')].map(izq);
-        const desalineadas = [], recortadas = [];
+        const desalineadas = [], recortadas = [], pastillas = new Set();
         const filas = document.querySelectorAll('a.fila');
+        // una pastilla cabe si no se sale de su celda por la derecha
+        const cabe = (pastilla, celda) => pastilla.getBoundingClientRect().right <= celda.getBoundingClientRect().right + 1 && celda.scrollWidth <= celda.clientWidth + 1;
         filas.forEach((fila) => {
             [...fila.children].forEach((celda, i) => { if (Math.abs(izq(celda) - cabecera[i]) > 1) desalineadas.push(i); });
-            ['.c-cups', '.c-recibida', '.c-docs', '.c-estado'].forEach((s) => {
+            ['.c-ref', '.c-cups', '.c-recibida', '.c-docs', '.c-estado'].forEach((s) => {
                 const e = fila.querySelector(s);
                 if (e && e.scrollWidth > e.clientWidth + 1) recortadas.push(s);
             });
+            const estado = fila.querySelector('.c-estado .ins');
+            pastillas.add(estado.textContent);
+            if (!cabe(estado, fila.querySelector('.c-estado'))) recortadas.push('pastilla ' + estado.textContent);
+            const sinAbrir = fila.querySelector('.c-abierta .ins-sin-abrir');
+            if (sinAbrir && !cabe(sinAbrir, fila.querySelector('.c-abierta'))) recortadas.push('pastilla Sin abrir');
         });
-        return { columnas: cabecera.length, filas: filas.length, desalineadas, recortadas };
+        return { columnas: cabecera.length, filas: filas.length, desalineadas, recortadas, pastillas: [...pastillas].sort() };
     }""")
     assert columnas['columnas'] == 10 and columnas['filas'] >= 5, columnas
     assert columnas['desalineadas'] == [], 'Cada celda, bajo su cabecera (también en las filas con raya azul)'
-    assert columnas['recortadas'] == [], 'CUPS, «hace …», docs y estado caben enteros (solo se recortan titular, compañía, comercial y correo)'
+    assert columnas['recortadas'] == [], 'Referencia, CUPS, «hace …», docs y las pastillas de estado y de «Sin abrir» caben enteros (solo se recortan titular, compañía, comercial y quién)'
+    assert columnas['pastillas'] == ['Descartada', 'Incompleta', 'Pendiente', 'Subiendo', 'Tramitada'], f'Hay una fila de cada estado: {columnas["pastillas"]}'
+
+    # lo que Victor veía cortado a 1440 px se lee ENTERO: el titular, la compañía con su tarifa y el comercial de LARGOS, y «MEGA ENERGIA · 2.0TD»
+    def leido_entero(ref):
+        return fila(ref).evaluate("""f => {
+            const q = (s) => f.querySelector(s);
+            const corto = (e) => e.scrollWidth > e.clientWidth + 1;
+            return { titular: [q('.pildora-nombre').innerText, corto(q('.pildora-nombre'))],
+                     compania: [q('.c-compania .c-txt').innerText, corto(q('.c-compania .c-txt'))],
+                     comercial: [q('.c-comercial').innerText, corto(q('.c-comercial'))] };
+        }""")
+
+    assert leido_entero(largos) == {'titular': ['JOSE MANUEL FERNANDEZ', False], 'compania': ['NET FIJO BOE · 2.0TD', False], 'comercial': ['ISABEL HERNANDEZ', False]}, leido_entero(largos)
+    assert leido_entero(ref_b)['compania'] == ['MEGA ENERGIA · 2.0TD', False], leido_entero(ref_b)
+    p.unroute('**/api/bandeja/lista**')
+    c.buscar('')
     c.sin_jerga()
 
     # 11) a 390 px la PÁGINA no se sale por los lados: es la tabla la que se desliza, dentro de su caja; y el interruptor, solo con iconos (con su nombre)
