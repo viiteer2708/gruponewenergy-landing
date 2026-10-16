@@ -678,17 +678,17 @@ describe('Bandeja · lista, ficha, estado y volver a enviar', { timeout: 900_000
     for (const ref of [C, D, E]) assert.ok(!porRef.has(ref), `${ref}: lo que no está recibido no sale en Pendientes`);
     const a = porRef.get(A);
     assert.deepEqual(Object.keys(a).sort(), [
-      'cups', 'compania', 'comercial_nombre', 'creada_en', 'estado', 'formulario', 'n_documentos', 'recibida_en', 'ref', 'tarifa', 'titular_nombre', 'vistas',
+      'cups', 'compania', 'comercial_nombre', 'creada_en', 'estado', 'formulario', 'n_documentos', 'oferta', 'recibida_en', 'ref', 'tarifa', 'titular_nombre', 'vistas',
     ].sort());
     assert.deepEqual(a.vistas, [], 'Nadie ha abierto todavía la ficha de A: `vistas` va vacía, no ausente');
     assert.deepEqual(
-      { formulario: a.formulario, estado: a.estado, compania: a.compania, titular_nombre: a.titular_nombre, cups: a.cups, comercial_nombre: a.comercial_nombre, tarifa: a.tarifa, n_documentos: a.n_documentos },
-      { formulario: 'gnew', estado: 'recibida', compania: 'COMPAÑÍA DE PRUEBA', titular_nombre: 'TITULAR DE PRUEBA SL', cups: CUPS, comercial_nombre: 'COMERCIAL DE PRUEBA', tarifa: '2.0TD', n_documentos: 4 },
+      { formulario: a.formulario, estado: a.estado, compania: a.compania, oferta: a.oferta, titular_nombre: a.titular_nombre, cups: a.cups, comercial_nombre: a.comercial_nombre, tarifa: a.tarifa, n_documentos: a.n_documentos },
+      { formulario: 'gnew', estado: 'recibida', compania: 'COMPAÑÍA DE PRUEBA', oferta: 'FIJO 12 MESES', titular_nombre: 'TITULAR DE PRUEBA SL', cups: CUPS, comercial_nombre: 'COMERCIAL DE PRUEBA', tarifa: '2.0TD', n_documentos: 4 },
     );
     assert.ok(a.creada_en && a.recibida_en);
     assert.deepEqual(
-      { formulario: porRef.get(B).formulario, compania: porRef.get(B).compania, n_documentos: porRef.get(B).n_documentos },
-      { formulario: 'mega', compania: 'MEGA ENERGIA', n_documentos: 2 },
+      { formulario: porRef.get(B).formulario, compania: porRef.get(B).compania, oferta: porRef.get(B).oferta, n_documentos: porRef.get(B).n_documentos },
+      { formulario: 'mega', compania: 'MEGA ENERGIA', oferta: 'GAS FIJO', n_documentos: 2 },
     );
     const crudo = JSON.stringify(r.json);
     for (const secreto of [IBAN, IBAN_TECLEADO, EMAIL_CLIENTE, EMAIL_COMERCIAL, '12345678Z', '600000000']) assert.ok(!crudo.includes(secreto), 'La lista no lleva datos que solo hacen falta en la ficha');
@@ -1300,8 +1300,8 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir») 
     assert.deepEqual(mira(lejana), [p3], 'El tope de 20 es por ficha: la de al lado no se la come');
     for (const ficha of [siete, una, ninguna, veintidos, lejana]) {
       assert.deepEqual(Object.keys(lista.get(ficha.ref)).sort(), [
-        'comercial_nombre', 'compania', 'creada_en', 'cups', 'estado', 'formulario', 'n_documentos', 'recibida_en', 'ref', 'tarifa', 'titular_nombre', 'vistas',
-      ], 'El item solo lleva el campo nuevo `vistas`: los eventos embebidos no se cuelan');
+        'comercial_nombre', 'compania', 'creada_en', 'cups', 'estado', 'formulario', 'n_documentos', 'oferta', 'recibida_en', 'ref', 'tarifa', 'titular_nombre', 'vistas',
+      ], 'El item solo lleva el campo nuevo `vistas` (y la `oferta`, que enseña la tabla): los eventos embebidos no se cuelan');
     }
     assert.ok(!JSON.stringify([...lista.values()]).includes('tramitacion_eventos'), 'Ni el nombre de la tabla');
   });
@@ -1454,8 +1454,8 @@ describe('Bandeja · quién ha abierto cada ficha (y «Marcar como sin abrir») 
     assert.deepEqual(mira(varias), [p1, p3], 'Dos marcas: manda la más nueva');
     for (const f of [nueva, medio, antigua, varias]) {
       assert.deepEqual(Object.keys(lista.get(f.ref)).sort(), [
-        'comercial_nombre', 'compania', 'creada_en', 'cups', 'estado', 'formulario', 'n_documentos', 'recibida_en', 'ref', 'tarifa', 'titular_nombre', 'vistas',
-      ], 'El item sigue llevando solo `vistas`: ni el tipo ni los eventos embebidos se cuelan');
+        'comercial_nombre', 'compania', 'creada_en', 'cups', 'estado', 'formulario', 'n_documentos', 'oferta', 'recibida_en', 'ref', 'tarifa', 'titular_nombre', 'vistas',
+      ], 'El item sigue llevando solo `vistas` (y la `oferta`): ni el tipo ni los eventos embebidos se cuelan');
     }
   });
 

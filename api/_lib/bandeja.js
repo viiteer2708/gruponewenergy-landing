@@ -369,7 +369,7 @@ const ESTADOS_DE_LA_LISTA = Object.freeze({
 // `tramitacion_eventos(tipo,actor,creado_en)` trae las aperturas y las marcas «sin abrir» de cada ficha: `listar` le pone el filtro
 // (solo `ficha_abierta` y `marcada_sin_abrir`), el orden y el tope con parámetros de la propia consulta (`tramitacion_eventos.tipo`,
 // `.order`, `.limit`), que PostgREST aplica a cada ficha por separado.
-const COLUMNAS_LISTA = 'ref,formulario,estado,compania,titular_nombre,cups,comercial_nombre,tarifa,creada_en,recibida_en,tramitacion_documentos(count),tramitacion_eventos(tipo,actor,creado_en)';
+const COLUMNAS_LISTA = 'ref,formulario,estado,compania,oferta,titular_nombre,cups,comercial_nombre,tarifa,creada_en,recibida_en,tramitacion_documentos(count),tramitacion_eventos(tipo,actor,creado_en)';
 
 // El cursor es la `creada_en` del último elemento tal como la devolvió la base (con microsegundos): se reutiliza el texto
 // original, no una fecha de JavaScript (que solo llega al milisegundo y podría saltarse filas).
@@ -402,7 +402,7 @@ export function vistasDe(eventos) {
 
 /**
  * GET /api/bandeja/lista?estado=&q=&antes=. Devuelve {status, cuerpo}:
- *   200 {ok, items:[{ref, formulario, estado, compania, titular_nombre, cups, comercial_nombre, tarifa, creada_en,
+ *   200 {ok, items:[{ref, formulario, estado, compania, oferta, titular_nombre, cups, comercial_nombre, tarifa, creada_en,
  *        recibida_en, n_documentos, vistas:[{por, en}]}], siguiente}      30 por página, de más reciente a más antigua
  *   400 peticion                                        `estado` desconocido o `antes` que no es una fecha
  * `siguiente` es el valor de `antes` para pedir la página siguiente (null si no hay más). `q` busca, palabra a palabra
@@ -440,6 +440,7 @@ export async function listar(consulta = {}) {
     formulario: f.formulario,
     estado: f.estado,
     compania: f.compania,
+    oferta: f.oferta, // la tabla (modo Lista) enseña «compañía · oferta»; puede ser null
     titular_nombre: f.titular_nombre,
     cups: f.cups,
     comercial_nombre: f.comercial_nombre,

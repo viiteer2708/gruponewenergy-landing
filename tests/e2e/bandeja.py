@@ -3,7 +3,8 @@
 descargas (una a una y en ZIP), cambio de estado, volver a enviar y las capturas a 390 y 1440 px; (14-oct-2026) quién ha
 abierto cada ficha («Sin abrir» solo en las pendientes / «Abierta por …» en la lista y en la ficha: casos 14, 15 y 16); y
 (15-oct-2026) el interruptor Tarjetas / Lista y la tabla (caso 17; las capturas de la tabla, en el caso 8); y (16-oct-2026)
-el orden de las columnas de la tabla, lo 1.º el comercial (caso 17), «Marcar como sin abrir» (caso 18: devolver una pendiente a «Sin abrir»
+el orden de las columnas de la tabla, lo 1.º el comercial, y (17-oct-2026) la celda Compañía = «COMPAÑÍA · OFERTA» con las columnas ajustadas (caso 17),
+«Marcar como sin abrir» (caso 18: devolver una pendiente a «Sin abrir»
 para que la coja otro compañero) y el NOMBRE de quien entra
 (caso 19: cada persona lo escribe la primera vez y es el «quién» de abrir, marcar y tramitar; sin nombre no se apunta ninguna apertura).
 
@@ -64,22 +65,24 @@ JERGA = re.compile(
 # (solo vive en la dirección de la ficha, /bandeja/c/<ref>). `Caso.sin_referencia` lo comprueba sobre todo lo que ve una persona.
 REF_A_LA_VISTA = re.compile(r'\b(?:GNE|MEGA)-\d{8}-[A-Z0-9]{4,10}\b|referencia', re.I)
 
-# Lo que Victor veía CORTADO en la tabla (modo Lista) a 1440 px —el comercial («ISABEL HERNANDEZ GRA…»), «NET FIJO BOE · …» y el titular—, con la longitud que
-# ahora tiene que leerse ENTERA (orden del 16-oct-2026, comercial primero): comercial y titular de 24 caracteres y «NET FIJO BOE · 3.0 TD», con el espacio (la
-# tarifa de GNEW es texto libre: la escriben así). El caso 8 lo deja en las capturas y el caso 17 comprueba que a 1440 px se lee ENTERO (el servidor lo guarda
-# en MAYÚSCULAS)
-LARGOS = {'titular': 'Jose Manuel Fernandez SL', 'compania': 'Net Fijo BOE', 'tarifa': '3.0 TD', 'quien_eres': 'Isabel Hernandez Gallego'}
+# Lo que tiene que leerse ENTERO en la tabla (modo Lista) a 1440 px (órdenes del 16 y el 17-oct-2026): un comercial de 30 caracteres, un titular de 24, «NET · FIJO
+# POWER PLUS (FIJO)» (la celda Compañía enseña solo «COMPAÑÍA · OFERTA»: la tarifa no sale en la tabla, aunque aquí lleva su espacio porque la de GNEW es texto libre)
+# y el CUPS completo, de 22 caracteres (el 0F del final es la terminación opcional). El caso 8 lo deja en las capturas y el caso 17 comprueba que a 1440 px se lee
+# ENTERO (el servidor lo guarda en MAYÚSCULAS)
+LARGOS = {'titular': 'Jose Manuel Fernandez SL', 'compania': 'Net', 'oferta': 'Fijo Power Plus (Fijo)', 'tarifa': '3.0 TD',
+          'quien_eres': 'Isabel Hernandez Gallego Lopez', 'cups': CUPS_LUZ + '0F'}
 
 # Las columnas de la tabla (modo Lista) por su orden —Victor, 16-oct-2026: «lo 1.º el comercial, luego compañía / titular / CUPS y resto»—: el texto de la
 # cabecera y la clase de la celda que va debajo de ella (la última, el ›, no lleva texto). El caso 17 comprueba las dos cosas: que la cabecera dice esto y que
 # cada celda de cada fila es la de SU cabecera (estar alineadas por posición no lo prueba: la cabecera y las celdas podrían cambiar de orden a la vez)
-COLUMNAS_LISTA = [('Comercial', 'c-comercial'), ('Compañía', 'c-compania'), ('Titular', 'c-titular'), ('CUPS', 'c-cups'), ('Recibida', 'c-recibida'),
+COLUMNAS_LISTA = [('Comercial', 'c-comercial'), ('Compañía · Oferta', 'c-compania'), ('Titular', 'c-titular'), ('CUPS', 'c-cups'), ('Recibida', 'c-recibida'),
                   ('Docs', 'c-docs'), ('Abierta', 'c-abierta'), ('Estado', 'c-estado'), ('', 'c-ir')]
 
 XSS_TITULAR = '<img src=x onerror="window.__xss=1"> Titular & Co <script>window.__xss=2</script>'
 XSS_COMERCIAL = '<b onmouseover="window.__xss=3">Comercial</b> "Peligroso"'
 XSS_OBSERVACIONES = '<svg onload="window.__xss=4"> línea uno\n<iframe src="javascript:window.__xss=5"></iframe> línea dos'
 XSS_DIRECCION = "Calle <u>Rara</u> 1 & 'comillas'"
+XSS_OFERTA = '<i onmouseover="window.__xss=6">Oferta</i> <script>window.__xss=7</script>'
 
 # El servidor guarda lo que escribe el comercial EN MAYÚSCULAS: `onerror="window.__xss=1"` llega como `ONERROR="WINDOW.__XSS=1"`, que no haría
 # nada aunque se colara (JavaScript distingue mayúsculas y `WINDOW` no existe), y entonces «no se ha ejecutado nada» no probaría nada. Por eso
@@ -1276,15 +1279,18 @@ def caso_16(c):
 
 
 def caso_17(c):
-    """El modo Lista (tabla): el interruptor Tarjetas / Lista (por defecto Tarjetas; se recuerda al recargar), la cabecera y las filas con todas sus columnas en su orden (Comercial · Compañía · Titular · CUPS · Recibida · Docs · Abierta · Estado · ›: lo 1.º el comercial, Victor, 16-oct-2026; cada celda es la de SU cabecera), «Sin abrir» con su raya azul, «Abierta por …» con +N, «Cargar más» en la tabla, volver a Tarjetas sin pedir otra vez la lista, clic en una fila y «atrás», lo que escribe el comercial como texto, sin jerga, sin desbordes a 390 px y, a 1440 px, la tabla entera sin deslizarse, con el reparto del ancho (Compañía fija y lo justo; Comercial y Titular, el resto en 7 : 9; CUPS, recibida, docs, abierta y estado como estaban), las columnas estrechas enteras y lo que Victor veía cortado (comercial y titular de 24 caracteres, «NET FIJO BOE · 3.0 TD»: LARGOS, y «MEGA ENERGIA · 2.0TD») leyéndose entero, también el titular en negrita de una fila «Sin abrir»."""
+    """El modo Lista (tabla): el interruptor Tarjetas / Lista (por defecto Tarjetas; se recuerda al recargar), la cabecera y las filas con todas sus columnas en su orden (Comercial · Compañía · Titular · CUPS · Recibida · Docs · Abierta · Estado · ›: lo 1.º el comercial, Victor, 16-oct-2026; cada celda es la de SU cabecera), la celda Compañía = «COMPAÑÍA · OFERTA» y nada más (sin pastilla de marca ni tarifa; sin oferta, solo la compañía; sin ninguna de las dos, vacía; Victor, 17-oct-2026) mientras las Tarjetas siguen con su pastilla y «compañía · tarifa», «Sin abrir» con su raya azul, «Abierta por …» con +N, «Cargar más» en la tabla, volver a Tarjetas sin pedir otra vez la lista, clic en una fila y «atrás», lo que escribe el comercial (también la oferta) como texto, sin jerga, sin desbordes a 390 px y, a 1440 px, la tabla entera sin deslizarse, con el reparto del ancho (Compañía fija y lo justo para «MEGA · CLEAR 7,5 (INDEXADO)»; CUPS fija y lo justo para sus 22 caracteres, con 11 px de letra como mínimo; todo lo liberado a Comercial, que da para 30 letras A-Z, y Titular como estaba, ~292 px; recibida, docs, abierta y estado como estaban), las columnas estrechas enteras y lo que tiene que leerse entero (un comercial de 30 caracteres, un titular de 24, «NET · FIJO POWER PLUS (FIJO)» y el CUPS de 22: LARGOS) leyéndose entero, también el titular en negrita de una fila «Sin abrir», y lo más largo («NET · FIJO POWER PLUS PRIORITY (FIJO)») acabando en «…» con su title entero."""
     c.ctx.add_init_script(JS_ALIAS_EN_MAYUSCULAS)  # ver JS_ALIAS_EN_MAYUSCULAS
     ref_a, ref_b = SEMILLAS['A'], SEMILLAS['B']
     marcador = lambda titular: {'titular': titular, 'quien_eres': 'Comercial Marcador17'}  # la búsqueda `marcador17` encuentra solo estas dos
     sin_abrir = crear('gnew', [(1, 'lista-sin-abrir.jpg', JPG.read_bytes())], extra=marcador('Titular Lista Sin Abrir SL'))
     abierta = crear('mega', [(1, 'lista-abierta.jpg', JPG.read_bytes()), (2, 'lista-abierta.png', PNG.read_bytes())], extra=marcador('Titular Lista Abierta SL'))
-    peligro = crear('gnew', [(1, 'lista-peligro.jpg', JPG.read_bytes())], extra={'titular': XSS_TITULAR, 'quien_eres': XSS_COMERCIAL})
+    peligro = crear('gnew', [(1, 'lista-peligro.jpg', JPG.read_bytes())], extra={'titular': XSS_TITULAR, 'quien_eres': XSS_COMERCIAL, 'oferta': XSS_OFERTA})
     largos = crear('gnew', [(1, 'lista-largos.jpg', JPG.read_bytes())], extra=LARGOS)
     largos_sin_abrir = crear('gnew', [(1, 'lista-largos-sin-abrir.jpg', JPG.read_bytes())], extra=LARGOS)  # lo mismo, SIN abrir: titular en negrita (más ancha)
+    # lo más largo de lo frecuente que tiene que caber entero («NET · FIJO POWER PLUS (FIJO)» es el de `largos`) y lo que ya no cabe, que acaba en «…»
+    tipica_mega = crear('gnew', [(1, 'lista-tipica-mega.jpg', JPG.read_bytes())], extra={'compania': 'Mega', 'oferta': 'Clear 7,5 (Indexado)'})
+    recortada = crear('gnew', [(1, 'lista-recortada.jpg', JPG.read_bytes())], extra={'compania': 'Net', 'oferta': 'Fijo Power Plus Priority (Fijo)'})
     c.con_sesion()
     p = c.page
     galleta = {'Cookie': 'bandeja_sesion=' + [x for x in c.ctx.cookies() if x['name'] == 'bandeja_sesion'][0]['value']}
@@ -1314,6 +1320,11 @@ def caso_17(c):
     assert boton('Tarjetas').inner_text().strip() == 'Tarjetas' and boton('Lista').inner_text().strip() == 'Lista', 'En ordenador, icono y texto'
     refs_tarjetas = c.refs_en_lista()
     assert ref_a in refs_tarjetas and ref_b in refs_tarjetas
+    # las Tarjetas NO han cambiado: siguen con su línea de siempre, la pastilla de la marca y «compañía · tarifa» (la oferta no sale en la tarjeta)
+    linea_a, linea_b = p.locator(f'a.tarjeta[href$="{ref_a}"] .t-linea'), p.locator(f'a.tarjeta[href$="{ref_b}"] .t-linea')
+    assert linea_a.locator('.marca-gnew').inner_text() == 'GNEW' and linea_a.locator('span:not(.ins)').inner_text() == 'COMPAÑÍA DE PRUEBA · 2.0TD', linea_a.inner_text()
+    assert linea_b.locator('.marca-mega').inner_text() == 'MEGA' and linea_b.locator('span:not(.ins)').inner_text() == 'MEGA ENERGIA · 2.0TD', linea_b.inner_text()
+    assert 'FIJO 12 MESES' not in linea_a.inner_text() and 'FIJO 12 MESES' not in linea_b.inner_text(), 'La oferta no sale en las tarjetas'
 
     # 2) pasar a Lista: cabecera, filas con los mismos contratos y sin pedir nada más; se guarda la elección
     antes = len(pedidas)
@@ -1326,7 +1337,7 @@ def caso_17(c):
     assert c.refs_en_filas() == refs_tarjetas, 'Los mismos contratos, en el mismo orden'
     cabecera = p.locator('#cajaLista .tabla-cabecera')
     assert cabecera.is_visible() and cabecera.get_attribute('aria-hidden') == 'true'
-    assert [x.inner_text() for x in cabecera.locator('span').all()] == ['Comercial', 'Compañía', 'Titular', 'CUPS', 'Recibida', 'Docs', 'Abierta', 'Estado', ''], 'Lo 1.º el comercial; sin columna Referencia'
+    assert [x.inner_text() for x in cabecera.locator('span').all()] == ['Comercial', 'Compañía · Oferta', 'Titular', 'CUPS', 'Recibida', 'Docs', 'Abierta', 'Estado', ''], 'Lo 1.º el comercial; sin columna Referencia'
     assert [t for t, _ in COLUMNAS_LISTA] == [x.inner_text() for x in cabecera.locator('span').all()], 'COLUMNAS_LISTA, al día con la cabecera'
     clases_de_las_celdas = p.evaluate("""() => [...document.querySelectorAll('a.fila')].map((fila) => [...fila.children].map((c) => [...c.classList].find((k) => k.startsWith('c-'))))""")
     assert len(clases_de_las_celdas) >= 2 and all(orden == [k for _, k in COLUMNAS_LISTA] for orden in clases_de_las_celdas), \
@@ -1340,7 +1351,10 @@ def caso_17(c):
     assert not REF_A_LA_VISTA.search(fa.inner_text()), f'La fila no enseña la referencia: {fa.inner_text()!r}'
     assert fa.locator('.pildora-nombre').inner_text() == 'TITULAR DE PRUEBA SL'
     assert fa.locator('.avatar').inner_text() == 'TP' and 'avatar-gnew' in fa.locator('.avatar').get_attribute('class').split()
-    assert fa.locator('.c-compania .marca-gnew').inner_text() == 'GNEW' and fa.locator('.c-compania .c-txt').inner_text() == 'COMPAÑÍA DE PRUEBA · 2.0TD'
+    # Compañía = «COMPAÑÍA · OFERTA» y nada más (Victor, 17-oct-2026): ni la pastilla GNEW / MEGA, ni la tarifa, ni ningún elemento dentro; el title dice lo mismo
+    compania_a = fa.locator('.c-compania')
+    assert compania_a.inner_text() == 'COMPAÑÍA DE PRUEBA · FIJO 12 MESES' and compania_a.get_attribute('title') == 'COMPAÑÍA DE PRUEBA · FIJO 12 MESES', compania_a.inner_text()
+    assert compania_a.locator('*').count() == 0 and fa.locator('.marca-gnew, .marca-mega').count() == 0 and '2.0TD' not in compania_a.inner_text(), 'Sin pastilla de marca y sin la tarifa'
     assert fa.locator('.c-cups').inner_text() == 'ES0021000000000001RK' and 'monospace' in fa.locator('.c-cups').evaluate("e => getComputedStyle(e).fontFamily")
     assert fa.locator('.c-comercial').inner_text() == 'COMERCIAL DE PRUEBA'
     assert re.fullmatch(r'hace (unos segundos|\d+ min|\d+ h)', fa.locator('.c-recibida').inner_text()), fa.locator('.c-recibida').inner_text()
@@ -1349,7 +1363,8 @@ def caso_17(c):
     assert fa.locator('.c-estado .estado-recibida').inner_text() == 'Pendiente'
     assert fa.locator('.c-estado .estado-recibida').evaluate("e => getComputedStyle(e).borderTopWidth") == '1px', 'La pastilla del estado lleva su borde fino'
     fb = fila(ref_b)
-    assert fb.locator('.marca-mega').inner_text() == 'MEGA' and '2.0TD' in fb.locator('.c-compania').inner_text()
+    assert fb.locator('.c-compania').inner_text() == 'MEGA ENERGIA · FIJO 12 MESES' and fb.locator('.c-compania').get_attribute('title') == 'MEGA ENERGIA · FIJO 12 MESES'
+    assert fb.locator('.c-compania *').count() == 0 and fb.locator('.marca-gnew, .marca-mega').count() == 0 and '2.0TD' not in fb.locator('.c-compania').inner_text()
     assert fb.locator('.avatar').inner_text() == 'TM' and 'avatar-mega' in fb.locator('.avatar').get_attribute('class').split()
     assert fb.locator('.c-docs').inner_text() == '2'
     c.sin_referencia()  # y en toda la tabla (cabecera, filas, buscador, pestaña): ni la referencia ni la palabra
@@ -1421,6 +1436,7 @@ def caso_17(c):
     assert visto['antes'] == '2026-10-09T20:11:12.123456+00:00', f'El cursor viaja entero (con el +): {visto["antes"]!r}'
     nueva = fila('GNE-20260101-PAGINA')
     assert nueva.locator('.pildora-nombre').inner_text() == 'Titular de la segunda página' and nueva.locator('.c-docs').inner_text() == '1'
+    assert nueva.locator('.c-compania').inner_text() == 'Compañía de otra página', 'Sin `oferta` en la respuesta, la celda enseña solo la compañía'
     assert p.is_hidden('#mas'), 'Sin siguiente, el botón desaparece'
     p.unroute('**/api/bandeja/lista**')
     refs_filas = c.refs_en_filas()
@@ -1463,8 +1479,9 @@ def caso_17(c):
     fp = fila(peligro)
     assert fp.count() == 1
     assert XSS_TITULAR.upper() in fp.locator('.pildora-nombre').inner_text() and XSS_COMERCIAL.upper() in fp.locator('.c-comercial').inner_text()
-    assert fp.locator('img, script, svg, iframe, b, u').count() == 0, 'La fila no ha creado ningún elemento con lo que escribió el comercial'
-    assert p.locator('#lista img, #lista script, #lista iframe, #lista b, #lista u').count() == 0
+    assert XSS_OFERTA.upper() in fp.locator('.c-compania').inner_text(), 'La oferta, que ahora se ve en la tabla, también como texto'
+    assert fp.locator('img, script, svg, iframe, b, u, i').count() == 0, 'La fila no ha creado ningún elemento con lo que escribió el comercial'
+    assert p.locator('#lista img, #lista script, #lista iframe, #lista b, #lista u, #lista i').count() == 0
     assert p.locator('#lista svg:not(.t-ojo)').count() == 0, 'En la tabla no hay más SVG que los ojos'
     assert p.evaluate("() => typeof window.__xss") == 'undefined' and p.evaluate("() => typeof window.__XSS") == 'undefined', 'Se ha ejecutado algo del contenido del comercial'
     assert re.fullmatch(r'[A-Z0-9]{1,2}', fp.locator('.avatar').inner_text()), 'Las iniciales salen de las letras del nombre, no de los signos'
@@ -1479,18 +1496,22 @@ def caso_17(c):
     assert p.is_visible('#cajaLista .tabla-cabecera')
 
     # 10) a 1440 px la tabla cabe ENTERA (la caja no se desliza), cada celda bajo su cabecera y lo corto no se recorta. Para mirar también «Incompleta» y
-    #     «Descartada» (las pastillas más anchas de Estado) se añaden filas de cada estado a la respuesta de la lista (la base no se toca)
+    #     «Descartada» (las pastillas más anchas de Estado) y las celdas de Compañía sin oferta o sin nada, se añaden filas a la respuesta de la lista (la base no se toca)
     def con_todos_los_estados(route, request):
         real = route.fetch()
         cuerpo = real.json()
         base = dict(cuerpo['items'][0])
         cuerpo['items'] += [dict(base, ref=f'GNE-20260101-ESTADO{n}', estado=estado, vistas=[])
                             for n, estado in enumerate(('abandonada', 'descartada', 'tramitada', 'subiendo'))]
+        # la oferta puede venir vacía (`iniciar` la exige, pero una fila de antes o de otro camino puede no tenerla: null o ''); la compañía, también (aquí, ninguna de las dos)
+        cuerpo['items'] += [dict(base, ref='GNE-20260101-OFERTANULA', compania='NET', oferta=None, vistas=[]),
+                            dict(base, ref='GNE-20260101-OFERTAVACIA', compania='NET', oferta='', vistas=[]),
+                            dict(base, ref='GNE-20260101-SINNADA', compania='', oferta=None, vistas=[])]
         route.fulfill(response=real, json=cuerpo)
 
     p.route('**/api/bandeja/lista**', con_todos_los_estados)
     c.buscar('')
-    p.wait_for_selector('a.fila[href$="ESTADO3"]')
+    p.wait_for_selector('a.fila[href$="SINNADA"]')
     assert caja_se_desliza()[0] <= caja_se_desliza()[1], f'A 1440 px la tabla se desliza dentro de su caja: {caja_se_desliza()}'
     c.sin_desbordes(1440)
     columnas = p.evaluate("""(esperadas) => {
@@ -1522,35 +1543,71 @@ def caso_17(c):
     assert columnas['desordenadas'] == [], f'Y es la celda de SU cabecera (Comercial · Compañía · Titular · CUPS · Recibida · Docs · Abierta · Estado · ›), en todas las filas: {columnas["desordenadas"][:1]}'
     assert columnas['recortadas'] == [], 'CUPS, «hace …», docs y las pastillas de estado y de «Sin abrir» caben enteros (solo se recortan titular, compañía, comercial y quién)'
     assert columnas['pastillas'] == ['Descartada', 'Incompleta', 'Pendiente', 'Subiendo', 'Tramitada'], f'Hay una fila de cada estado: {columnas["pastillas"]}'
-    # el reparto del ancho a 1440 px (orden de Victor del 16-oct-2026, comercial primero): Compañía, FIJA y lo justo para lo más largo que dan los formularios («MEGA
-    # ENERGIA · 2.0TD» con su pastilla MEGA: 218 px medidos con la fuente de las pruebas → 14 rem = 224, sin que sobre); Comercial y Titular, lo que queda en 7 : 9
-    # (~227 y ~292 px: caben 26,0 letras A-Z en mayúscula en Comercial y 27,9 en Titular, o 24,9 con la negrita de «Sin abrir»; antes ~173 y ~289); y CUPS,
-    # Recibida, Docs, Abierta, Estado y › como estaban (152, 76, 36, 136, 100 y 14 px)
-    anchos = p.evaluate("""() => [...document.querySelectorAll('.tabla-cabecera > span')].map((e) => e.getBoundingClientRect().width)""")
-    # (por este orden —lo que no cambia, la Compañía, y por último el reparto de lo que queda— para que un fallo señale lo que de verdad se ha movido: el ancho total
-    # es fijo, así que si una columna crece las de Comercial y Titular se descuadran a la vez)
-    assert [round(x) for x in anchos[3:]] == [152, 76, 36, 136, 100, 14], f'CUPS, Recibida, Docs, Abierta, Estado y › tienen que seguir como estaban: {anchos}'
-    assert 218 <= anchos[1] <= 232, f'Compañía tiene que ser lo justo para «MEGA ENERGIA · 2.0TD» con su pastilla (218 px) y no más: {anchos}'
-    assert anchos[0] >= 225 and anchos[2] >= 290, f'Comercial y Titular no tienen el ancho que les toca (~227 y ~292): {anchos}'
+    # la celda Compañía sin oferta (null o vacía) enseña solo la compañía; sin compañía ni oferta, va vacía y sin title
+    for ref in ('GNE-20260101-OFERTANULA', 'GNE-20260101-OFERTAVACIA'):
+        assert fila(ref).locator('.c-compania').inner_text() == 'NET' and fila(ref).locator('.c-compania').get_attribute('title') == 'NET', 'Sin oferta, solo la compañía'
+    sin_nada = fila('GNE-20260101-SINNADA').locator('.c-compania')
+    assert sin_nada.inner_text() == '' and sin_nada.get_attribute('title') is None and sin_nada.locator('*').count() == 0, 'Sin compañía ni oferta, la celda va vacía'
 
-    # lo que Victor veía cortado a 1440 px se lee ENTERO: el comercial (24 caracteres), la compañía con su tarifa («NET FIJO BOE · 3.0 TD») y el titular (24 caracteres) de
-    # LARGOS, y «MEGA ENERGIA · 2.0TD»
+    # el reparto del ancho a 1440 px (orden de Victor del 17-oct-2026: «en compañía debe salir COMPAÑÍA + oferta, nada más; ajusta la siguiente columna pegada a esta para dar más
+    # espacio a la columna comercial»). Compañía, FIJA y lo justo para lo más largo de lo frecuente («MEGA · CLEAR 7,5 (INDEXADO)»: 202,2 px con la fuente de las pruebas →
+    # 12,6875 rem = 203, sin que sobre más de un píxel y medio); CUPS, FIJA y lo justo para sus 22 caracteres en monoespaciada de 11 px (136,0 px → 8,5625 rem = 137); Recibida,
+    # Docs, Abierta, Estado y › como estaban (76, 36, 136, 100 y 14 px); y Comercial y Titular, lo que queda (556 px) en 9 : 10 (~263 y ~293): lo liberado (21 + 15 px) va a Comercial,
+    # que da para 30 letras A-Z en mayúscula (antes 26,0), y Titular se queda como estaba (292,5 px: 28,0 letras A-Z, o 24,9 con la negrita de «Sin abrir»)
+    anchos = p.evaluate("""() => [...document.querySelectorAll('.tabla-cabecera > span')].map((e) => e.getBoundingClientRect().width)""")
+    # lo que miden de verdad los textos que cada columna tiene que enseñar enteros (con la fuente de las pruebas): el ancho del TEXTO, que un Range da completo aunque la celda lo
+    # recorte, y el de una letra A-Z media (el alfabeto entero / 26) en la fuente de la celda de Comercial
+    medidas = p.evaluate("""(refs) => {
+        const texto = (e) => { const r = document.createRange(); r.selectNodeContents(e); return r.getBoundingClientRect().width; };
+        const fila = (ref) => document.querySelector(`a.fila[href$="${ref}"]`);
+        const comercial = fila(refs.largos).querySelector('.c-comercial');
+        const sonda = document.createElement('span');
+        sonda.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap';
+        sonda.textContent = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        comercial.appendChild(sonda);
+        const letra_az = sonda.getBoundingClientRect().width / 26;
+        sonda.remove();
+        const cups = fila(refs.largos).querySelector('.c-cups');
+        return { compania: refs.tipicas.map((ref) => texto(fila(ref).querySelector('.c-compania'))), cups: texto(cups), cups_letra: parseFloat(getComputedStyle(cups).fontSize), letra_az };
+    }""", {'tipicas': [largos, tipica_mega], 'largos': largos})
+    # (por este orden —lo que no cambia, los dos «a lo justo» y por último el reparto de lo que queda— para que un fallo señale lo que de verdad se ha movido: el ancho total
+    # es fijo, así que si una columna crece las de Comercial y Titular se descuadran a la vez)
+    assert [round(x) for x in anchos[4:]] == [76, 36, 136, 100, 14], f'Recibida, Docs, Abierta, Estado y › tienen que seguir como estaban: {anchos}'
+    justo_compania = max(medidas['compania'])
+    assert justo_compania <= anchos[1] <= justo_compania + 1.5, f'Compañía tiene que ser lo justo para lo más largo de lo frecuente («MEGA · CLEAR 7,5 (INDEXADO)», {justo_compania:.1f} px) y no más: {anchos}'
+    assert len(leido_cups := p.locator(f'a.fila[href$="{largos}"] .c-cups').inner_text()) == 22, f'El CUPS de la prueba tiene que ser de 22 caracteres: {leido_cups!r}'
+    assert medidas['cups'] <= anchos[3] <= medidas['cups'] + 1.5, f'CUPS tiene que ser lo justo para sus 22 caracteres ({medidas["cups"]:.1f} px) y no más: {anchos}'
+    assert medidas['cups_letra'] >= 11, f'La letra del CUPS no baja de 11 px: {medidas["cups_letra"]}'
+    assert anchos[0] / medidas['letra_az'] >= 30, f'Comercial tiene que dar para 30 letras A-Z (a {medidas["letra_az"]:.2f} px cada una; caben {anchos[0] / medidas["letra_az"]:.1f}): {anchos}'
+    assert anchos[2] >= 292, f'Titular se queda como estaba (~292 px): {anchos}'
+
+    # lo que tiene que leerse ENTERO a 1440 px: el comercial (30 caracteres), la compañía con su oferta («NET · FIJO POWER PLUS (FIJO)»), el CUPS completo (22 caracteres) y el titular
+    # (24 caracteres) de LARGOS. «Cortado» = el texto es más ancho que su celda y ésta lo recortaría con «…»: se compara el ancho del TEXTO (un Range, que no se recorta) con el de
+    # la celda, sin tolerancia: Compañía y CUPS van a lo justo y un píxel de más ya sería un «…»
     def leido_entero(ref):
         return fila(ref).evaluate("""f => {
             const q = (s) => f.querySelector(s);
-            const corto = (e) => e.scrollWidth > e.clientWidth + 1;
+            const corto = (e) => { const r = document.createRange(); r.selectNodeContents(e); return r.getBoundingClientRect().width > e.getBoundingClientRect().width + 0.01; };
             return { comercial: [q('.c-comercial').innerText, corto(q('.c-comercial'))],
-                     compania: [q('.c-compania .c-txt').innerText, corto(q('.c-compania .c-txt'))],
+                     compania: [q('.c-compania').innerText, corto(q('.c-compania'))],
+                     cups: [q('.c-cups').innerText, corto(q('.c-cups'))],
                      titular: [q('.pildora-nombre').innerText, corto(q('.pildora-nombre'))] };
         }""")
 
-    entero = {'comercial': ['ISABEL HERNANDEZ GALLEGO', False], 'compania': ['NET FIJO BOE · 3.0 TD', False], 'titular': ['JOSE MANUEL FERNANDEZ SL', False]}
+    entero = {'comercial': ['ISABEL HERNANDEZ GALLEGO LOPEZ', False], 'compania': ['NET · FIJO POWER PLUS (FIJO)', False],
+              'cups': [CUPS_LUZ + '0F', False], 'titular': ['JOSE MANUEL FERNANDEZ SL', False]}
     assert leido_entero(largos) == entero, leido_entero(largos)
     # y con el titular en NEGRITA (más ancha), que es como se ve casi toda la pestaña «Pendientes»: una fila «Sin abrir» con los mismos textos largos
     sa = fila(largos_sin_abrir)
     assert 'sin-abrir' in sa.get_attribute('class').split() and sa.locator('.pildora-nombre').evaluate("e => getComputedStyle(e).fontWeight") == '700'
     assert leido_entero(largos_sin_abrir) == entero, leido_entero(largos_sin_abrir)
-    assert leido_entero(ref_b)['compania'] == ['MEGA ENERGIA · 2.0TD', False], leido_entero(ref_b)
+    assert leido_entero(tipica_mega)['compania'] == ['MEGA · CLEAR 7,5 (INDEXADO)', False], leido_entero(tipica_mega)
+    # lo más largo acaba en «…» (la celda recorta con puntos suspensivos) y el title lo dice entero; lo mismo pasa con el «MEGA ENERGIA · …» del formulario MEGA (compañía fija)
+    celda = fila(recortada).locator('.c-compania')
+    assert leido_entero(recortada)['compania'] == ['NET · FIJO POWER PLUS PRIORITY (FIJO)', True], leido_entero(recortada)
+    assert celda.get_attribute('title') == 'NET · FIJO POWER PLUS PRIORITY (FIJO)' and celda.evaluate("e => getComputedStyle(e).textOverflow") == 'ellipsis'
+    assert celda.evaluate("e => getComputedStyle(e).display") == 'block', 'La celda no puede ser flex: el texto de un flex no acaba en «…», se corta en seco'
+    assert leido_entero(ref_b)['compania'][0] == 'MEGA ENERGIA · FIJO 12 MESES' and fila(ref_b).locator('.c-compania').get_attribute('title') == 'MEGA ENERGIA · FIJO 12 MESES'
     p.unroute('**/api/bandeja/lista**')
     c.buscar('')
     c.sin_jerga()

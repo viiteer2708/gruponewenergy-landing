@@ -525,21 +525,28 @@
             --hueco-lista: .5rem;
             /* Comercial · Compañía · Titular · CUPS · Recibida · Docs · Abierta · Estado · ›
                Orden de Victor (16-oct-2026): «lo 1.º el comercial, luego compañía / titular / CUPS y resto». La raya azul de «Sin abrir» sigue en el borde
-               izquierdo de la fila (ahora junto a Comercial) y el titular conserva su píldora con las iniciales. Las columnas de datos cortos siguen a lo JUSTO
-               y no se han movido de tamaño. Medido a 1440 px con la fuente de las pruebas (DejaVu Sans, más ancha que Inter) y 30 filas: CUPS, 148 px;
-               Recibida, «hace 59 min» 70 px (y «hace unos segundos», 115 px, se parte en dos líneas: ver .c-recibida); Docs, un número; Abierta, «Sin abrir»
-               93 px (el nombre se recorta con «…» y el title lo dice entero); Estado, «Descartada» 97 px.
-               El resto del ancho (la página no pasa de 1400: la caja mide 1350 y, sin esas columnas, los 8 huecos, los márgenes y la raya, quedan 744 px) va así:
-               · Compañía, FIJA en 14 rem (224 px): lo justo para lo más largo que dan los formularios, «MEGA ENERGIA · 2.0TD» con su pastilla MEGA (218 px;
-                 «NET FIJO BOE · 3.0 TD» con GNEW, 210 px). Fija y no `fr`: así no le sobra sitio (no le sirve) ni se corta cuando la ventana encoge.
-               · Comercial y Titular, lo que queda (520 px) en 7 : 9: 227,5 y 292,5 px. Letras A-Z en mayúscula que caben (el peor caso: los nombres de verdad, con
-                 I, L, J y espacios, caben más): Comercial, 26,0 (antes 19,8); Titular, 27,9 (antes 27,5) y 24,9 en las filas «Sin abrir», con el titular en negrita, más
-                 ancha. Se leen enteros «ISABEL HERNANDEZ GALLEGO» y «JOSE MANUEL FERNANDEZ SL» (24 caracteres cada uno, también en negrita) y, con su pastilla,
-                 «NET FIJO BOE · 3.0 TD» y «MEGA ENERGIA · 2.0TD».
-               La caja ya no se desliza hasta ventanas de ~1150 px (antes, ~1070: Compañía ya no encoge). */
-            --cols-lista: minmax(7rem, 7fr) 14rem minmax(10rem, 9fr) 9.5rem 4.75rem 2.25rem 8.5rem 6.25rem .875rem;
-            /* Por debajo de este ancho la caja se desliza de lado: la suma de los mínimos de --cols-lista (63,125 rem) + los 8 huecos + los márgenes + la raya */
-            --ancho-lista: calc(63.125rem + 8 * var(--hueco-lista) + 2 * var(--margen-lista) + 4px);
+               izquierdo de la fila (junto a Comercial) y el titular conserva su píldora con las iniciales. Y (17-oct-2026): «En compañía debe salir COMPAÑÍA +
+               oferta, nada más. Ajusta la siguiente columna pegada a esta para dar más espacio a la columna comercial»: la celda Compañía enseña solo
+               «COMPAÑÍA · OFERTA» (sin la pastilla GNEW / MEGA ni la tarifa), su columna se ajusta a ese texto, CUPS se estrecha y todo lo que se libera va a
+               Comercial. Las columnas de datos cortos siguen a lo JUSTO y no se han movido de tamaño. Medido a 1440 px con la fuente de las pruebas (DejaVu Sans,
+               más ancha que Inter) y 30 filas: Recibida, «hace 59 min» 70 px (y «hace unos segundos», 115 px, se parte en dos líneas: ver .c-recibida); Docs, un
+               número; Abierta, «Sin abrir» 93 px (el nombre se recorta con «…» y el title lo dice entero); Estado, «Descartada» 97 px.
+               El resto del ancho (la página no pasa de 1400: la caja mide 1350 y, sin esas columnas, CUPS, los 8 huecos, los márgenes y la raya, quedan 759 px) va así:
+               · Compañía, FIJA en 12,6875 rem (203 px; antes 14 rem = 224, con su pastilla y la tarifa): lo justo para lo más largo de lo frecuente, «MEGA · CLEAR 7,5
+                 (INDEXADO)» (202,2 px; «NET · FIJO POWER PLUS (FIJO)» mide 192,0). Lo más largo («NET · FIJO POWER PLUS PRIORITY (FIJO)», 255,8 px; «NET FIJO BOE · NET
+                 FIJO BOE TRAMOS», 244,9; y los contratos del formulario MEGA, cuya compañía es siempre «MEGA ENERGIA»: «MEGA ENERGIA · CLEAR 7,5 (INDEXADO)», 264,3) acaba
+                 en «…» y el title lo dice entero. Fija y no `fr`: así no le sobra sitio (no le sirve) ni se corta cuando la ventana encoge.
+               · CUPS, FIJA en 8,5625 rem (137 px; antes 9,5 rem = 152): el CUPS completo, de 22 caracteres («ES0027700137431001MC0F»), en monoespaciada de 11 px (antes 11,2)
+                 con el espaciado a -.04em mide 136,0 px (antes 148,2). De 11 px de letra no se baja; con -.05em los dígitos ya se pegan.
+               · Comercial y Titular, lo que queda (556 px; antes 520: se han liberado 21 de Compañía y 15 de CUPS) en 9 : 10 → 263,4 y 292,6 px (antes, en 7 : 9, 227,5 y
+                 292,5): todo lo liberado va a Comercial y Titular se queda igual. Letras A-Z en mayúscula que caben (el peor caso: los nombres de verdad, con I, L, J y
+                 espacios, caben más): Comercial, 30,1 (antes 26,0); Titular, 28,0 y 24,9 en las filas «Sin abrir», con el titular en negrita, más ancha (antes 27,9 y 24,9).
+                 Se leen enteros «ISABEL HERNANDEZ GALLEGO LOPEZ» (30 caracteres), «JOSE MANUEL FERNANDEZ SL» (24, también en negrita), «NET · FIJO POWER PLUS (FIJO)» y el
+                 CUPS de 22 caracteres.
+               La caja ya no se desliza hasta ventanas de ~1115 px (antes, ~1150). */
+            --cols-lista: minmax(7rem, 9fr) 12.6875rem minmax(10rem, 10fr) 8.5625rem 4.75rem 2.25rem 8.5rem 6.25rem .875rem;
+            /* Por debajo de este ancho la caja se desliza de lado: la suma de los mínimos de --cols-lista (60,875 rem) + los 8 huecos + los márgenes + la raya */
+            --ancho-lista: calc(60.875rem + 8 * var(--hueco-lista) + 2 * var(--margen-lista) + 4px);
         }
 
         .caja-lista[hidden] {
@@ -630,7 +637,7 @@
             white-space: nowrap;
         }
 
-        .c-titular, .c-compania, .c-abierta, .c-estado, .c-ir {
+        .c-titular, .c-abierta, .c-estado, .c-ir {
             display: flex;
             align-items: center;
         }
@@ -648,7 +655,8 @@
 
         .c-cups {
             font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-            font-size: .7rem;
+            font-size: .6875rem; /* 11 px: de aquí no se baja */
+            letter-spacing: -.04em;
             color: #4B5563;
         }
 
@@ -698,17 +706,6 @@
 
         .fila.sin-abrir .pildora-nombre {
             font-weight: 700;
-        }
-
-        .c-compania {
-            gap: .4rem;
-        }
-
-        .c-txt {
-            min-width: 0;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
         }
 
         /* Abierta: el ojo y, en dos líneas, quién (el nombre; lo que se recorta con «…») y debajo su «hace 5 min» y «+N» si hubo más personas */
@@ -766,8 +763,6 @@
         .fila .estado-subiendo { border-color: #93C5FD; }
         .fila .estado-abandonada { border-color: #FDBA74; }
         .fila .estado-descartada { border-color: #FCA5A5; }
-        .fila .marca-gnew { border-color: #A7D7C3; }
-        .fila .marca-mega { border-color: #5EEAD4; }
         .fila .ins-sin-abrir { border-color: #93C5FD; }
 
         /* ›: lo dibuja el CSS (sin SVG: en la tabla el único dibujo es el ojo) */
@@ -856,7 +851,7 @@
     <div class="caja-lista" id="cajaLista" hidden>
         <div class="tabla-cabecera" aria-hidden="true">
             <span>Comercial</span>
-            <span>Compañía</span>
+            <span>Compañía · Oferta</span>
             <span>Titular</span>
             <span>CUPS</span>
             <span>Recibida</span>
@@ -1084,7 +1079,8 @@
     }
 
     // Una fila de la tabla: lo mismo que la tarjeta, en columnas (Comercial · Compañía · Titular · CUPS · Recibida · Docs · Abierta · Estado · ›;
-    // el mismo orden que la cabecera y que --cols-lista: lo 1.º el comercial, Victor, 16-oct-2026).
+    // el mismo orden que la cabecera y que --cols-lista: lo 1.º el comercial, Victor, 16-oct-2026). La tarjeta no cambia: sigue con su pastilla y
+    // «compañía · tarifa»; la celda Compañía de la tabla enseña «compañía · oferta».
     // La referencia (GNE-…/MEGA-…) no se enseña en ninguna columna: solo va en la dirección de la ficha (Victor, 16-oct-2026)
     function fila(it) {
         var vistas = Array.isArray(it.vistas) ? it.vistas : [];
@@ -1099,14 +1095,11 @@
         if (it.comercial_nombre) celdaComercial.title = it.comercial_nombre;
         a.appendChild(celdaComercial);
 
-        // Compañía: la pastilla GNEW / MEGA y «Compañía · Tarifa»
-        var empresa = [it.compania, it.tarifa].filter(Boolean).join(' · ');
-        var celdaCompania = el('span', 'c c-compania');
-        if (ETIQUETA_MARCA[it.formulario]) celdaCompania.appendChild(el('span', 'ins marca-' + it.formulario, ETIQUETA_MARCA[it.formulario]));
-        if (empresa) {
-            celdaCompania.appendChild(el('span', 'c-txt', empresa));
-            celdaCompania.title = empresa;
-        }
+        // Compañía · Oferta: «NET · FIJO POWER PLUS (FIJO)» y nada más (Victor, 17-oct-2026): ni la pastilla GNEW / MEGA ni la tarifa; sin oferta, solo la
+        // compañía; sin ninguna de las dos, la celda vacía. Si se recorta con «…», el title lo dice entero (como en las demás celdas)
+        var companiaOferta = [it.compania, it.oferta].filter(Boolean).join(' · ');
+        var celdaCompania = el('span', 'c c-compania', companiaOferta);
+        if (companiaOferta) celdaCompania.title = companiaOferta;
         a.appendChild(celdaCompania);
 
         // Titular: una píldora con el círculo de las iniciales (verde GNEW / turquesa MEGA) y el nombre
